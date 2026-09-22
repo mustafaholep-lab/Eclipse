@@ -1,0 +1,136 @@
+name: Build Patched Eclipse IPA
+
+on:
+  push:
+    branches:
+      - stremio-playback-fix-v2.2.1
+    paths:
+      - "Eclipse/**"
+      - "Eclipse.xcodeproj/**"
+      - "Package.swift"
+      - "Build.xcconfig"
+      - ".github/workflows/build-patched-ipa.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patched-eclipse-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout patched Eclipse
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Checkout matching MPVKit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: Soupy-dev/MPVKit
+          ref: 7485d3ef01f21963443824002566a7d0d3c50fae
+          path: MPVKit
+
+      - name: Expose sibling MPVKit package
+        run: ln -sfn "$GITHUB_WORKSPACE/MPVKit" "$GITHUB_WORKSPACE/../MPVKit"
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Create unsigned local build config
+        run: |
+          cat > Build.local.xcconfig <<'EOF'
+          APP_NAME = Eclipse Patched
+          BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
+          DEVELOPMENT_TEAM = ANMK3Y568U
+          ECLIPSE_RELEASE_VERSION = 2.2.1-patched
+          CODE_SIGN_ENTITLEMENTS =
+          ICLOUD_CONTAINER_ID =
+          TMDB_API_KEY =
+          ANILIST_CLIENT_ID =
+          ANILIST_CLIENT_SECRET =
+          ANILIST_REDIRECT_URI = luna:/$()/anilist-callback
+          TRAKT_CLIENT_ID =
+          TRAKT_CLIENT_SECRET =
+          TRAKT_REDIRECT_URI = luna:/$()/trakt-callback
+          MAL_CLIENT_ID =
+          MAL_CLIENT_SECRET =
+          MAL_REDIRECT_URI = luna:/$()/mal-callback
+          EOF
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          SOURCE_PACKAGES_DIR="$RUNNER_TEMP/SourcePackages"
+          rm -rf "$SOURCE_PACKAGES_DIR"
+          xcodebuild -resolvePackageDependencies \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation
+          echo "SOURCE_PACKAGES_DIR=$SOURCE_PACKAGES_DIR" >> "$GITHUB_ENV"
+
+      - name: Build unsigned archive
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="$RUNNER_TEMP/EclipsePatched.xcarchive"
+          DERIVED_DATA_PATH="$RUNNER_TEMP/DerivedData"
+          rm -rf "$ARCHIVE_PATH" "$DERIVED_DATA_PATH"
+
+          xcodebuild archive \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -configuration Release \
+            -archivePath "$ARCHIVE_PATH" \
+            -destination "generic/platform=iOS" \
+            -sdk iphoneos \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -disableAutomaticPackageResolution \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            ECLIPSE_SOURCE_REVISION="$GITHUB_SHA" \
+            ECLIPSE_MPVKIT_SOURCE_REVISION="7485d3ef01f21963443824002566a7d0d3c50fae" \
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ECLIPSE_UNSIGNED_BUILD' \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO
+
+          APP_PATH="$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          PACKAGE_ROOT="$RUNNER_TEMP/unsigned-ipa"
+          OUTPUT_DIR="$GITHUB_WORKSPACE/build"
+          IPA_PATH="$OUTPUT_DIR/Eclipse-2.2.1-StremioFix-unsigned.ipa"
+
+          rm -rf "$PACKAGE_ROOT" "$OUTPUT_DIR"
+          mkdir -p "$PACKAGE_ROOT/Payload" "$OUTPUT_DIR"
+          cp -R "$APP_PATH" "$PACKAGE_ROOT/Payload/Eclipse Patched.app"
+          rm -rf "$PACKAGE_ROOT/Payload/Eclipse Patched.app/_CodeSignature"
+          rm -f "$PACKAGE_ROOT/Payload/Eclipse Patched.app/embedded.mobileprovision"
+
+          (
+            cd "$PACKAGE_ROOT"
+            zip -qry "$IPA_PATH" Payload
+          )
+          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Eclipse-2.2.1-StremioFix-unsigned
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 7
