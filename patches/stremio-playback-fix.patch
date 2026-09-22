@@ -1,0 +1,221 @@
+--- a/Eclipse/Player/MPVNativeRenderer.swift
++++ b/Eclipse/Player/MPVNativeRenderer.swift
+@@ -2141,9 +2141,21 @@
+         }
+ 
+         let headerString = headers
+-            .filter { !$0.key.isEmpty && !$0.value.isEmpty }
+-            .map { key, value in "\(key): \(value)" }
+-            .joined(separator: "\r\n")
++            .filter { key, value in
++                !key.isEmpty && !value.isEmpty
++                    && !key.contains("\r") && !key.contains("\n")
++                    && !value.contains("\r") && !value.contains("\n")
++            }
++            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
++            .map { key, value in
++                // mpv's http-header-fields is a comma-separated string-list option.
++                // Escape list separators/backslashes inside individual header values.
++                let field = "\(key): \(value)"
++                return field
++                    .replacingOccurrences(of: "\\", with: "\\\\")
++                    .replacingOccurrences(of: ",", with: "\\,")
++            }
++            .joined(separator: ",")
+ 
+         if headerString.isEmpty {
+             logMPV("HTTP header update had no usable values; clearing")
+@@ -2328,7 +2340,7 @@
+ 
+     private func redactIfSensitive(name: String, value: String) -> String {
+         if name == "http-header-fields" {
+-            return "<\(value.components(separatedBy: "\r\n").count) headers>"
++            return "<http-header-list>"
+         }
+         return shortText(value, limit: 120)
+     }
+@@ -7227,9 +7239,21 @@
+             return
+         }
+         let headerString = headers
+-            .filter { !$0.key.isEmpty && !$0.value.isEmpty }
+-            .map { key, value in "\(key): \(value)" }
+-            .joined(separator: "\r\n")
++            .filter { key, value in
++                !key.isEmpty && !value.isEmpty
++                    && !key.contains("\r") && !key.contains("\n")
++                    && !value.contains("\r") && !value.contains("\n")
++            }
++            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
++            .map { key, value in
++                // mpv's http-header-fields is a comma-separated string-list option.
++                // Escape list separators/backslashes inside individual header values.
++                let field = "\(key): \(value)"
++                return field
++                    .replacingOccurrences(of: "\\", with: "\\\\")
++                    .replacingOccurrences(of: ",", with: "\\,")
++            }
++            .joined(separator: ",")
+         if headerString.isEmpty {
+             clearProperty(name: "http-header-fields")
+         } else {
+@@ -7482,7 +7506,7 @@
+ 
+     private func redactIfSensitive(name: String, value: String) -> String {
+         if name == "http-header-fields" {
+-            return "<\(value.components(separatedBy: "\r\n").count) headers>"
++            return "<http-header-list>"
+         }
+         return shortText(value, limit: 120)
+     }
+--- a/Eclipse/Player/PlaybackLaunchContext.swift
++++ b/Eclipse/Player/PlaybackLaunchContext.swift
+@@ -119,6 +119,11 @@
+     let streamURL: String
+     let streamName: String?
+     let headers: [String: String]
++    /// Prefer Eclipse's loopback header/HLS proxy instead of handing the URL
++    /// directly to MPV. Stremio marks protected/non-web-ready streams via
++    /// behaviorHints.notWebReady/proxyHeaders; preserving that intent fixes
++    /// providers that require Referer/Origin/Cookie headers on HLS child requests.
++    let prefersHeaderProxy: Bool
+     let subtitles: [String]
+     let subtitleNames: [String]?
+     let subtitleHeadersByURL: [String: [String: String]]?
+@@ -145,6 +150,7 @@
+         streamURL: String,
+         streamName: String? = nil,
+         headers: [String: String],
++        prefersHeaderProxy: Bool = false,
+         subtitles: [String],
+         subtitleNames: [String]?,
+         subtitleHeadersByURL: [String: [String: String]]? = nil,
+@@ -164,6 +170,7 @@
+         self.streamURL = streamURL
+         self.streamName = streamName
+         self.headers = headers
++        self.prefersHeaderProxy = prefersHeaderProxy
+         self.subtitles = subtitles
+         self.subtitleNames = subtitleNames
+         self.subtitleHeadersByURL = subtitleHeadersByURL
+--- a/Eclipse/Player/PlayerViewController.swift
++++ b/Eclipse/Player/PlayerViewController.swift
+@@ -10619,8 +10619,15 @@
+             "User-Agent": URLSession.randomUserAgent
+         ]
+         if let custom {
+-            for (k, v) in custom { finalHeaders[k] = v }
+-            if finalHeaders["User-Agent"] == nil {
++            for (k, v) in custom {
++                if let existing = finalHeaders.keys.first(where: {
++                    $0.caseInsensitiveCompare(k) == .orderedSame
++                }) {
++                    finalHeaders.removeValue(forKey: existing)
++                }
++                finalHeaders[k] = v
++            }
++            if !finalHeaders.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) {
+                 finalHeaders["User-Agent"] = URLSession.randomUserAgent
+             }
+         }
+@@ -10630,7 +10637,14 @@
+     private static func mergedUserAgentHeaders(custom: [String: String]?) -> [String: String] {
+         var finalHeaders: [String: String] = ["User-Agent": URLSession.randomUserAgent]
+         if let custom {
+-            for (k, v) in custom { finalHeaders[k] = v }
++            for (k, v) in custom {
++                if let existing = finalHeaders.keys.first(where: {
++                    $0.caseInsensitiveCompare(k) == .orderedSame
++                }) {
++                    finalHeaders.removeValue(forKey: existing)
++                }
++                finalHeaders[k] = v
++            }
+         }
+         return finalHeaders
+     }
+@@ -10878,7 +10892,14 @@
+         guard isRemoteHTTPURL(originalURL), !isLocalProxyURL(originalURL) else { return (originalURL, headers) }
+ 
+         let proxyHeaders = buildProxyHeaders(for: originalURL, baseHeaders: headers ?? [:])
+-        if forceHeaderProxyForStartup || (
++        let isStremioPlayback = playbackLaunchContext?.sourceKind == .stremio
++        let stremioRequestedProxy = isStremioPlayback
++            && (playbackLaunchContext?.prefersHeaderProxy == true)
++        let lowerURL = originalURL.absoluteString.lowercased()
++        let stremioLooksLikeHLS = isStremioPlayback
++            && (originalURL.pathExtension.lowercased() == "m3u8" || lowerURL.contains(".m3u8?"))
++
++        if forceHeaderProxyForStartup || stremioRequestedProxy || stremioLooksLikeHLS || (
+             isMetalMPVRenderer
+                 && ExperimentalMPVPreloadManager.shared.shouldUsePlaybackProxy(for: originalURL)
+         ) {
+@@ -10891,7 +10912,16 @@
+             }
+ 
+             registerMPVHeaderProxyURL(proxyURL)
+-            let reason = forceHeaderProxyForStartup ? "coordinator-engine-fallback" : "warmup"
++            let reason: String
++            if forceHeaderProxyForStartup {
++                reason = "coordinator-engine-fallback"
++            } else if stremioRequestedProxy {
++                reason = "stremio-behavior-hints"
++            } else if stremioLooksLikeHLS {
++                reason = "stremio-hls"
++            } else {
++                reason = "warmup"
++            }
+             Logger.shared.log("[PlayerVC.PlaybackStart] MPV header proxy activated reason=\(reason) target={\(playbackURLSummary(originalURL))} headerKeys=[\(proxyHeaders.keys.sorted().joined(separator: ","))]", type: "PlaybackTrace")
+             return (proxyURL, nil)
+         }
+--- a/Eclipse/Views/View Elements/ServicesResultsSheet.swift
++++ b/Eclipse/Views/View Elements/ServicesResultsSheet.swift
+@@ -8817,11 +8817,23 @@
+             )
+ #endif
+         } else {
+-            playStremioStreamURL(urlString, addon: addon, subtitles: subtitleURLs, subtitleNames: subtitleNames, headers: stream.proxyHeaders, streamName: smartPlayerMetadata(for: stream), autoModeLaunch: autoModeLaunch, retryCount: retryCount)
++            let prefersHeaderProxy = stream.behaviorHints?.notWebReady == true
++                || !(stream.proxyHeaders?.isEmpty ?? true)
++            playStremioStreamURL(
++                urlString,
++                addon: addon,
++                subtitles: subtitleURLs,
++                subtitleNames: subtitleNames,
++                headers: stream.proxyHeaders,
++                prefersHeaderProxy: prefersHeaderProxy,
++                streamName: smartPlayerMetadata(for: stream),
++                autoModeLaunch: autoModeLaunch,
++                retryCount: retryCount
++            )
+         }
+     }
+ 
+-    private func playStremioStreamURL(_ url: String, addon: StremioAddon, subtitles: [String], subtitleNames: [String], headers: [String: String]?, streamName: String? = nil, autoModeLaunch: Bool = false, retryCount: Int = 0) {
++    private func playStremioStreamURL(_ url: String, addon: StremioAddon, subtitles: [String], subtitleNames: [String], headers: [String: String]?, prefersHeaderProxy: Bool = false, streamName: String? = nil, autoModeLaunch: Bool = false, retryCount: Int = 0) {
+         let playbackTraceID = String(UUID().uuidString.prefix(8))
+         let playbackTraceCreatedAt = Date()
+         let scopeAuthority = ProviderPlaybackScopeAuthority.capture()
+@@ -8863,6 +8875,14 @@
+ 
+             if let custom = headers {
+                 for (k, v) in custom {
++                    // HTTP header names are case-insensitive. Remove any existing
++                    // spelling first so MPV/proxies never receive duplicate
++                    // User-Agent/Referer/etc. fields with different casing.
++                    if let existing = finalHeaders.keys.first(where: {
++                        $0.caseInsensitiveCompare(k) == .orderedSame
++                    }) {
++                        finalHeaders.removeValue(forKey: existing)
++                    }
+                     finalHeaders[k] = v
+                 }
+             }
+@@ -8974,6 +8994,7 @@
+                 streamURL: playbackURL.absoluteString,
+                 streamName: streamName,
+                 headers: playbackHeaders,
++                prefersHeaderProxy: prefersHeaderProxy,
+                 subtitles: resolvedSubtitleArray ?? [],
+                 subtitleNames: resolvedSubtitleNames,
+                 retryCount: retryCount,
