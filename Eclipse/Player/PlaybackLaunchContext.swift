@@ -119,6 +119,11 @@ struct PlaybackLaunchContext {
     let streamURL: String
     let streamName: String?
     let headers: [String: String]
+    /// Prefer Eclipse's loopback header/HLS proxy instead of handing the URL
+    /// directly to MPV. Stremio marks protected/non-web-ready streams via
+    /// behaviorHints.notWebReady/proxyHeaders; preserving that intent fixes
+    /// providers that require Referer/Origin/Cookie headers on HLS child requests.
+    let prefersHeaderProxy: Bool
     let subtitles: [String]
     let subtitleNames: [String]?
     let subtitleHeadersByURL: [String: [String: String]]?
@@ -145,6 +150,7 @@ struct PlaybackLaunchContext {
         streamURL: String,
         streamName: String? = nil,
         headers: [String: String],
+        prefersHeaderProxy: Bool = false,
         subtitles: [String],
         subtitleNames: [String]?,
         subtitleHeadersByURL: [String: [String: String]]? = nil,
@@ -164,6 +170,7 @@ struct PlaybackLaunchContext {
         self.streamURL = streamURL
         self.streamName = streamName
         self.headers = headers
+        self.prefersHeaderProxy = prefersHeaderProxy
         self.subtitles = subtitles
         self.subtitleNames = subtitleNames
         self.subtitleHeadersByURL = subtitleHeadersByURL

@@ -10619,8 +10619,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "User-Agent": URLSession.randomUserAgent
         ]
         if let custom {
-            for (k, v) in custom { finalHeaders[k] = v }
-            if finalHeaders["User-Agent"] == nil {
+            for (k, v) in custom {
+                if let existing = finalHeaders.keys.first(where: {
+                    $0.caseInsensitiveCompare(k) == .orderedSame
+                }) {
+                    finalHeaders.removeValue(forKey: existing)
+                }
+                finalHeaders[k] = v
+            }
+            if !finalHeaders.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) {
                 finalHeaders["User-Agent"] = URLSession.randomUserAgent
             }
         }
@@ -10630,7 +10637,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private static func mergedUserAgentHeaders(custom: [String: String]?) -> [String: String] {
         var finalHeaders: [String: String] = ["User-Agent": URLSession.randomUserAgent]
         if let custom {
-            for (k, v) in custom { finalHeaders[k] = v }
+            for (k, v) in custom {
+                if let existing = finalHeaders.keys.first(where: {
+                    $0.caseInsensitiveCompare(k) == .orderedSame
+                }) {
+                    finalHeaders.removeValue(forKey: existing)
+                }
+                finalHeaders[k] = v
+            }
         }
         return finalHeaders
     }
@@ -10878,7 +10892,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         guard isRemoteHTTPURL(originalURL), !isLocalProxyURL(originalURL) else { return (originalURL, headers) }
 
         let proxyHeaders = buildProxyHeaders(for: originalURL, baseHeaders: headers ?? [:])
-        if forceHeaderProxyForStartup || (
+        let isStremioPlayback = playbackLaunchContext?.sourceKind == .stremio
+        let stremioRequestedProxy = isStremioPlayback
+            && (playbackLaunchContext?.prefersHeaderProxy == true)
+        let lowerURL = originalURL.absoluteString.lowercased()
+        let stremioLooksLikeHLS = isStremioPlayback
+            && (originalURL.pathExtension.lowercased() == "m3u8" || lowerURL.contains(".m3u8?"))
+
+        if forceHeaderProxyForStartup || stremioRequestedProxy || stremioLooksLikeHLS || (
             isMetalMPVRenderer
                 && ExperimentalMPVPreloadManager.shared.shouldUsePlaybackProxy(for: originalURL)
         ) {
@@ -10891,7 +10912,16 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
 
             registerMPVHeaderProxyURL(proxyURL)
-            let reason = forceHeaderProxyForStartup ? "coordinator-engine-fallback" : "warmup"
+            let reason: String
+            if forceHeaderProxyForStartup {
+                reason = "coordinator-engine-fallback"
+            } else if stremioRequestedProxy {
+                reason = "stremio-behavior-hints"
+            } else if stremioLooksLikeHLS {
+                reason = "stremio-hls"
+            } else {
+                reason = "warmup"
+            }
             Logger.shared.log("[PlayerVC.PlaybackStart] MPV header proxy activated reason=\(reason) target={\(playbackURLSummary(originalURL))} headerKeys=[\(proxyHeaders.keys.sorted().joined(separator: ","))]", type: "PlaybackTrace")
             return (proxyURL, nil)
         }

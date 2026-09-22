@@ -8817,11 +8817,23 @@ struct ModulesSearchResultsSheet: View {
             )
 #endif
         } else {
-            playStremioStreamURL(urlString, addon: addon, subtitles: subtitleURLs, subtitleNames: subtitleNames, headers: stream.proxyHeaders, streamName: smartPlayerMetadata(for: stream), autoModeLaunch: autoModeLaunch, retryCount: retryCount)
+            let prefersHeaderProxy = stream.behaviorHints?.notWebReady == true
+                || !(stream.proxyHeaders?.isEmpty ?? true)
+            playStremioStreamURL(
+                urlString,
+                addon: addon,
+                subtitles: subtitleURLs,
+                subtitleNames: subtitleNames,
+                headers: stream.proxyHeaders,
+                prefersHeaderProxy: prefersHeaderProxy,
+                streamName: smartPlayerMetadata(for: stream),
+                autoModeLaunch: autoModeLaunch,
+                retryCount: retryCount
+            )
         }
     }
 
-    private func playStremioStreamURL(_ url: String, addon: StremioAddon, subtitles: [String], subtitleNames: [String], headers: [String: String]?, streamName: String? = nil, autoModeLaunch: Bool = false, retryCount: Int = 0) {
+    private func playStremioStreamURL(_ url: String, addon: StremioAddon, subtitles: [String], subtitleNames: [String], headers: [String: String]?, prefersHeaderProxy: Bool = false, streamName: String? = nil, autoModeLaunch: Bool = false, retryCount: Int = 0) {
         let playbackTraceID = String(UUID().uuidString.prefix(8))
         let playbackTraceCreatedAt = Date()
         let scopeAuthority = ProviderPlaybackScopeAuthority.capture()
@@ -8863,6 +8875,14 @@ struct ModulesSearchResultsSheet: View {
 
             if let custom = headers {
                 for (k, v) in custom {
+                    // HTTP header names are case-insensitive. Remove any existing
+                    // spelling first so MPV/proxies never receive duplicate
+                    // User-Agent/Referer/etc. fields with different casing.
+                    if let existing = finalHeaders.keys.first(where: {
+                        $0.caseInsensitiveCompare(k) == .orderedSame
+                    }) {
+                        finalHeaders.removeValue(forKey: existing)
+                    }
                     finalHeaders[k] = v
                 }
             }
@@ -8974,6 +8994,7 @@ struct ModulesSearchResultsSheet: View {
                 streamURL: playbackURL.absoluteString,
                 streamName: streamName,
                 headers: playbackHeaders,
+                prefersHeaderProxy: prefersHeaderProxy,
                 subtitles: resolvedSubtitleArray ?? [],
                 subtitleNames: resolvedSubtitleNames,
                 retryCount: retryCount,

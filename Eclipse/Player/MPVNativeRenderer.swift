@@ -2141,9 +2141,21 @@ final class MPVNativeRenderer: PlayerRenderer {
         }
 
         let headerString = headers
-            .filter { !$0.key.isEmpty && !$0.value.isEmpty }
-            .map { key, value in "\(key): \(value)" }
-            .joined(separator: "\r\n")
+            .filter { key, value in
+                !key.isEmpty && !value.isEmpty
+                    && !key.contains("\r") && !key.contains("\n")
+                    && !value.contains("\r") && !value.contains("\n")
+            }
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { key, value in
+                // mpv's http-header-fields is a comma-separated string-list option.
+                // Escape list separators/backslashes inside individual header values.
+                let field = "\(key): \(value)"
+                return field
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: ",", with: "\\,")
+            }
+            .joined(separator: ",")
 
         if headerString.isEmpty {
             logMPV("HTTP header update had no usable values; clearing")
@@ -2328,7 +2340,7 @@ final class MPVNativeRenderer: PlayerRenderer {
 
     private func redactIfSensitive(name: String, value: String) -> String {
         if name == "http-header-fields" {
-            return "<\(value.components(separatedBy: "\r\n").count) headers>"
+            return "<http-header-list>"
         }
         return shortText(value, limit: 120)
     }
@@ -7227,9 +7239,21 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
             return
         }
         let headerString = headers
-            .filter { !$0.key.isEmpty && !$0.value.isEmpty }
-            .map { key, value in "\(key): \(value)" }
-            .joined(separator: "\r\n")
+            .filter { key, value in
+                !key.isEmpty && !value.isEmpty
+                    && !key.contains("\r") && !key.contains("\n")
+                    && !value.contains("\r") && !value.contains("\n")
+            }
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { key, value in
+                // mpv's http-header-fields is a comma-separated string-list option.
+                // Escape list separators/backslashes inside individual header values.
+                let field = "\(key): \(value)"
+                return field
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: ",", with: "\\,")
+            }
+            .joined(separator: ",")
         if headerString.isEmpty {
             clearProperty(name: "http-header-fields")
         } else {
@@ -7482,7 +7506,7 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
 
     private func redactIfSensitive(name: String, value: String) -> String {
         if name == "http-header-fields" {
-            return "<\(value.components(separatedBy: "\r\n").count) headers>"
+            return "<http-header-list>"
         }
         return shortText(value, limit: 120)
     }
