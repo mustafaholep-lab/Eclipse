@@ -43,15 +43,21 @@ jobs:
           xcode-version: latest-stable
 
       - name: Create unsigned local build config
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: |
-          cat > Build.local.xcconfig <<'EOF'
+          if [ -z "${TMDB_API_KEY:-}" ]; then
+            echo "::error::TMDB_API_KEY GitHub Actions secret is missing."
+            exit 1
+          fi
+          cat > Build.local.xcconfig <<EOF
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
           ECLIPSE_RELEASE_VERSION = 2.2.1-patched
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =
-          TMDB_API_KEY =
+          TMDB_API_KEY = ${TMDB_API_KEY}
           ANILIST_CLIENT_ID =
           ANILIST_CLIENT_SECRET =
           ANILIST_REDIRECT_URI = luna:/$()/anilist-callback
