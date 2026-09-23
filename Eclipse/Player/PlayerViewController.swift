@@ -1409,6 +1409,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var mpvSilentStartupRetryKey: String?
     private var pendingRendererRestartRetryGeneration: Int?
     private var pendingPlaybackFailureAlert: UIAlertController?
+    private var stremioAlternateTransportTried = false
+    private var forceDirectStremioTransport = false
+    private var forceProxyStremioTransport = false
+    private var currentPlaybackUsesHeaderProxy = false
     private var userSelectedAudioTrack = false
     private var userSelectedSubtitleTrack = false
     private var attemptedAudioAutoSelectSignature: String?
@@ -4854,6 +4858,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "startup-failure",
             "sourceFailure=\(isSourceFailure) message=\(message) loading=\(isRendererLoading) paused=\(rendererIsPausedState()) renderer={\(rendererPictureInPictureDebugSnapshot())}"
         )
+        if !isVLCPlayer, attemptStremioAlternateTransportIfNeeded(reason: message) {
+            return
+        }
         if !isVLCPlayer, attemptMPVTransportBridgeFallbackIfNeeded(after: message) {
             return
         }
@@ -10899,7 +10906,16 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let stremioLooksLikeHLS = isStremioPlayback
             && (originalURL.pathExtension.lowercased() == "m3u8" || lowerURL.contains(".m3u8?"))
 
-        if forceHeaderProxyForStartup || stremioRequestedProxy || stremioLooksLikeHLS || (
+        if isStremioPlayback && forceDirectStremioTransport {
+            currentPlaybackUsesHeaderProxy = false
+            Logger.shared.log(
+                "[PlayerVC.PlaybackStart] Stremio transport override=direct target={\(playbackURLSummary(originalURL))} headerKeys=[\(proxyHeaders.keys.sorted().joined(separator: ","))]",
+                type: "PlaybackTrace"
+            )
+            return (originalURL, proxyHeaders.isEmpty ? headers : proxyHeaders)
+        }
+
+        if forceHeaderProxyForStartup || (isStremioPlayback && forceProxyStremioTransport) || stremioRequestedProxy || stremioLooksLikeHLS || (
             isMetalMPVRenderer
                 && ExperimentalMPVPreloadManager.shared.shouldUsePlaybackProxy(for: originalURL)
         ) {
@@ -10912,9 +10928,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
 
             registerMPVHeaderProxyURL(proxyURL)
+            currentPlaybackUsesHeaderProxy = true
             let reason: String
             if forceHeaderProxyForStartup {
                 reason = "coordinator-engine-fallback"
+            } else if isStremioPlayback && forceProxyStremioTransport {
+                reason = "stremio-alternate-transport"
             } else if stremioRequestedProxy {
                 reason = "stremio-behavior-hints"
             } else if stremioLooksLikeHLS {
@@ -10926,6 +10945,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             return (proxyURL, nil)
         }
 
+        currentPlaybackUsesHeaderProxy = false
         let proxySkipReason = isMetalMPVRenderer
             ? (ExperimentalMPVPreloadManager.shared.playbackProxySkipReason(for: originalURL) ?? "not-requested")
             : "renderer-not-moltenvk-active"
@@ -10974,6 +10994,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
               !cloudflareStartupRecoveryInProgress,
               !isClosing,
               let preset = initialPreset else { return }
+
+        if playbackLaunchContext?.sourceKind == .stremio,
+           attemptStremioAlternateTransportIfNeeded(reason: "HTTP \(statusCode) from proxied media host") {
+            return
+        }
 
         let hasRefreshableProviderReference: Bool = {
             guard let context = playbackLaunchContext else { return false }
@@ -11451,6 +11476,58 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         } else {
             showManualPlaybackFailureAlert(report)
         }
+    }
+
+    private func attemptStremioAlternateTransportIfNeeded(reason: String) -> Bool {
+        guard isMPVRenderer,
+              playbackLaunchContext?.sourceKind == .stremio,
+              !stremioAlternateTransportTried,
+              let originalURL = initialURL,
+              isRemoteHTTPURL(originalURL),
+              !isLocalProxyURL(originalURL),
+              let preset = initialPreset else {
+            return false
+        }
+
+        stremioAlternateTransportTried = true
+        playbackFailureHandled = true
+        playbackStartupWorkItem?.cancel()
+
+        if currentPlaybackUsesHeaderProxy {
+            forceDirectStremioTransport = true
+            forceProxyStremioTransport = false
+            Logger.shared.log(
+                "[PlayerVC.PlaybackStart] Stremio alternate transport proxy->direct reason=\(reason) target={\(playbackURLSummary(originalURL))}",
+                type: "PlaybackTrace"
+            )
+        } else {
+            forceDirectStremioTransport = false
+            forceProxyStremioTransport = true
+            Logger.shared.log(
+                "[PlayerVC.PlaybackStart] Stremio alternate transport direct->proxy reason=\(reason) target={\(playbackURLSummary(originalURL))}",
+                type: "PlaybackTrace"
+            )
+        }
+
+        let failedGeneration = playbackLoadGeneration
+        pendingRendererRestartRetryGeneration = failedGeneration
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.rendererStopAndWait()
+            guard !self.isClosing,
+                  !self.isBeingDismissed,
+                  self.viewIfLoaded?.window != nil,
+                  self.pendingRendererRestartRetryGeneration == failedGeneration,
+                  self.playbackLoadGeneration == failedGeneration else { return }
+            self.pendingRendererRestartRetryGeneration = nil
+            self.playbackFailureHandled = false
+            self.load(
+                url: originalURL,
+                preset: preset,
+                headers: self.playbackLaunchContext?.headers ?? self.initialHeaders
+            )
+        }
+        return true
     }
 
     private func isMPVTransportBridgeCandidate(_ message: String) -> Bool {
