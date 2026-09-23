@@ -7467,11 +7467,46 @@ struct ModulesSearchResultsSheet: View {
            let streamOptions = viewModel.stremioStreamOptions {
             let streams = filteredStremioStreams(streamOptions, addon: addon)
             ForEach(Array(streams.prefix(Self.maxVisibleStremioStreamsPerAddon))) { stream in
+                let metadata = smartPlayerMetadata(for: stream)
+                let quality = AutoModeStreamSelection.streamQualityInfo(from: metadata)
+                let resolution = quality.resolutionHeight.map {
+                    StreamLanguageFilter.qualityLabel(for: $0)
+                }
+                let size = stream.formattedVideoSize ?? quality.sizeMB.flatMap { megabytes in
+                    guard megabytes.isFinite, megabytes > 0 else { return nil as String? }
+                    return megabytes >= 1024
+                        ? String(format: "%.2f GB", megabytes / 1024)
+                        : String(format: "%.0f MB", megabytes)
+                }
+                let summary = [resolution, size, AutoModeStreamSelection.stremioLanguageLabel(for: stream)]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
+                let headline = stremioStreamLabel(for: stream)
+                let details = stremioStyleDetails(for: stream, headline: headline)
+
                 Button {
                     viewModel.showingStremioStreamPicker = false
                     playStremioStream(stream, addon: addon, autoModeLaunch: viewModel.pendingPlaybackAutoMode)
                 } label: {
-                    Text(stremioStreamLabel(for: stream))
+                    VStack(alignment: .leading, spacing: 3) {
+                        if !summary.isEmpty {
+                            Text(summary)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                        Text(headline)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                        if let details {
+                            Text(details)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
                 }
             }
             if streams.count > Self.maxVisibleStremioStreamsPerAddon {
