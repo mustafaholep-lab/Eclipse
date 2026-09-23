@@ -8817,13 +8817,12 @@ struct ModulesSearchResultsSheet: View {
             )
 #endif
         } else {
-            // Direct file streams (for example .mkv) can send Stremio
-            // proxyHeaders straight through MPV. Forcing those through Eclipse's
-            // URLSession loopback proxy can change transport behavior and cause
-            // provider-side 5xx responses. Keep the local proxy preference only
-            // for streams explicitly marked notWebReady; HLS is still proxied
-            // separately by PlayerViewController so child requests keep headers.
-            let prefersHeaderProxy = stream.behaviorHints?.notWebReady == true
+            // Stremio's notWebReady flag means "not suitable for a web
+            // player"; it does not mean a native MPV client must use Eclipse's
+            // URLSession loopback proxy. Let native MPV try direct playback first.
+            // Explicit HLS URLs are still proxied later so child playlist/segment
+            // requests inherit the supplied headers.
+            let prefersHeaderProxy = false
             playStremioStreamURL(
                 urlString,
                 addon: addon,
