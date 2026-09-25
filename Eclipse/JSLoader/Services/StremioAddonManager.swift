@@ -1302,6 +1302,8 @@ class StremioAddonManager: ObservableObject {
             anilistEpisode: animeLocalStremioEpisode(from: playbackContext),
             kitsuId: playbackContext?.kitsuMediaId,
             kitsuEpisode: animeLocalKitsuEpisode(from: playbackContext),
+            malId: playbackContext?.malMediaId,
+            malEpisode: animeLocalMALEpisode(from: playbackContext),
             alternateSeason: animeLocalSeriesSeason(from: playbackContext),
             alternateEpisode: animeLocalSeriesEpisode(from: playbackContext),
             allowParentSeriesIDs: true,
@@ -1315,51 +1317,74 @@ class StremioAddonManager: ObservableObject {
         }
 
         var subtitles: [StremioSubtitle] = []
-        for contentId in contentIds {
-            do {
-                let fetched = try await client.fetchSubtitles(
-                    baseURL: addon.configuredURL,
-                    type: type,
-                    id: contentId,
-                    videoHash: subtitleVideoHash,
-                    videoSize: subtitleVideoSize,
-                    filename: subtitleFilename
-                )
-                Logger.shared.log("Stremio: Subtitle candidate returned \(fetched.count) subtitle(s)", type: "Stremio")
-                subtitles.append(contentsOf: fetched)
-            } catch {
-                let hasFileExtras = subtitleVideoHash?.isEmpty == false
-                    || (subtitleVideoSize ?? 0) > 0
-                    || subtitleFilename?.isEmpty == false
-
-                guard hasFileExtras else {
-                    Logger.shared.log(
-                        "Stremio: Subtitle candidate failed reason=\(servicePinnedNetworkErrorToken(error))",
-                        type: "Stremio"
-                    )
-                    continue
-                }
-
-                // Compatibility path for older/custom servers that expose only
-                // /subtitles/{type}/{id}.json and do not accept standard extras.
+        let hasFileExtras = subtitleVideoHash?.isEmpty == false
+            || (subtitleVideoSize ?? 0) > 0
+            || subtitleFilename?.isEmpty == false
+        let requestTypes = type == "series"
+            && playbackContext?.hasAnimeMediaId == true
+            && addon.manifest.supportsResource("subtitles", type: "anime")
+            ? ["series", "anime"] : [type]
+        for requestType in requestTypes {
+            for contentId in contentIds {
                 do {
                     let fetched = try await client.fetchSubtitles(
                         baseURL: addon.configuredURL,
-                        type: type,
-                        id: contentId
+                        type: requestType,
+                        id: contentId,
+                        videoHash: subtitleVideoHash,
+                        videoSize: subtitleVideoSize,
+                        filename: subtitleFilename
                     )
-                    Logger.shared.log(
-                        "Stremio: Subtitle extra route unsupported; legacy fallback returned \(fetched.count) subtitle(s)",
-                        type: "Stremio"
-                    )
+                    Logger.shared.log("Stremio: Subtitle candidate returned \(fetched.count) subtitle(s)", type: "Stremio")
                     subtitles.append(contentsOf: fetched)
+                    if fetched.isEmpty && hasFileExtras {
+                        // A valid empty file-specific response still leaves an ID-only
+                        // subtitle search worth trying for this episode.
+                        do {
+                            let legacy = try await client.fetchSubtitles(
+                                baseURL: addon.configuredURL,
+                                type: requestType,
+                                id: contentId
+                            )
+                            subtitles.append(contentsOf: legacy)
+                        } catch {
+                            Logger.shared.log(
+                                "Stremio: ID-only subtitle fallback failed reason=\(servicePinnedNetworkErrorToken(error))",
+                                type: "Stremio"
+                            )
+                        }
+                    }
                 } catch {
-                    Logger.shared.log(
-                        "Stremio: Subtitle candidate failed with extras and legacy fallback reason=\(servicePinnedNetworkErrorToken(error))",
-                        type: "Stremio"
-                    )
+                    guard hasFileExtras else {
+                        Logger.shared.log(
+                            "Stremio: Subtitle candidate failed reason=\(servicePinnedNetworkErrorToken(error))",
+                            type: "Stremio"
+                        )
+                        continue
+                    }
+    
+                    // Compatibility path for older/custom servers that expose only
+                    // /subtitles/{type}/{id}.json and do not accept standard extras.
+                    do {
+                        let fetched = try await client.fetchSubtitles(
+                            baseURL: addon.configuredURL,
+                            type: requestType,
+                            id: contentId
+                        )
+                        Logger.shared.log(
+                            "Stremio: Subtitle extra route unsupported; legacy fallback returned \(fetched.count) subtitle(s)",
+                            type: "Stremio"
+                        )
+                        subtitles.append(contentsOf: fetched)
+                    } catch {
+                        Logger.shared.log(
+                            "Stremio: Subtitle candidate failed with extras and legacy fallback reason=\(servicePinnedNetworkErrorToken(error))",
+                            type: "Stremio"
+                        )
+                    }
                 }
             }
+            if !subtitles.isEmpty { break }
         }
 
         return dedupeSubtitles(subtitles)
@@ -1599,6 +1624,16 @@ class StremioAddonManager: ObservableObject {
     private static func animeLocalKitsuEpisode(from context: EpisodePlaybackContext?) -> Int? {
         guard let context,
               context.kitsuMediaId != nil,
+              (context.isSpecial || !context.titleOnlySearch),
+              context.localEpisodeNumber > 0 else {
+            return nil
+        }
+        return context.localEpisodeNumber
+    }
+
+    private static func animeLocalMALEpisode(from context: EpisodePlaybackContext?) -> Int? {
+        guard let context,
+              context.malMediaId != nil,
               (context.isSpecial || !context.titleOnlySearch),
               context.localEpisodeNumber > 0 else {
             return nil
