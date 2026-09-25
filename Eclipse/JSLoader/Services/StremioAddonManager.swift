@@ -626,7 +626,10 @@ class StremioAddonManager: ObservableObject {
         anilistId: Int? = nil,
         playbackContext: EpisodePlaybackContext? = nil,
         titleCandidates: [String] = [],
-        expectedYear: Int? = nil
+        expectedYear: Int? = nil,
+        subtitleVideoHash: String? = nil,
+        subtitleVideoSize: Int64? = nil,
+        subtitleFilename: String? = nil
     ) async -> [AddonSubtitleResult] {
         guard let lookupCoordinates = Self.safeLookupCoordinates(
             type: type,
@@ -679,7 +682,10 @@ class StremioAddonManager: ObservableObject {
                         season: lookupCoordinates.season,
                         episode: lookupCoordinates.episode,
                         anilistId: anilistId,
-                        playbackContext: effectivePlaybackContext
+                        playbackContext: effectivePlaybackContext,
+                        subtitleVideoHash: subtitleVideoHash,
+                        subtitleVideoSize: subtitleVideoSize,
+                        subtitleFilename: subtitleFilename
                     )
                     return (addon, subtitles)
                 }
@@ -703,7 +709,10 @@ class StremioAddonManager: ObservableObject {
                             season: lookupCoordinates.season,
                             episode: lookupCoordinates.episode,
                             anilistId: anilistId,
-                            playbackContext: effectivePlaybackContext
+                            playbackContext: effectivePlaybackContext,
+                            subtitleVideoHash: subtitleVideoHash,
+                            subtitleVideoSize: subtitleVideoSize,
+                            subtitleFilename: subtitleFilename
                         )
                         return (addon, subtitles)
                     }
@@ -1257,7 +1266,10 @@ class StremioAddonManager: ObservableObject {
         season: Int?,
         episode: Int?,
         anilistId: Int?,
-        playbackContext: EpisodePlaybackContext?
+        playbackContext: EpisodePlaybackContext?,
+        subtitleVideoHash: String?,
+        subtitleVideoSize: Int64?,
+        subtitleFilename: String?
     ) async -> [StremioSubtitle] {
         guard addon.manifest.supportsSubtitles,
               addon.manifest.supportsResource("subtitles", type: type) else {
@@ -1292,15 +1304,45 @@ class StremioAddonManager: ObservableObject {
                 let fetched = try await client.fetchSubtitles(
                     baseURL: addon.configuredURL,
                     type: type,
-                    id: contentId
+                    id: contentId,
+                    videoHash: subtitleVideoHash,
+                    videoSize: subtitleVideoSize,
+                    filename: subtitleFilename
                 )
                 Logger.shared.log("Stremio: Subtitle candidate returned \(fetched.count) subtitle(s)", type: "Stremio")
                 subtitles.append(contentsOf: fetched)
             } catch {
-                Logger.shared.log(
-                    "Stremio: Subtitle candidate failed reason=\(servicePinnedNetworkErrorToken(error))",
-                    type: "Stremio"
-                )
+                let hasFileExtras = subtitleVideoHash?.isEmpty == false
+                    || (subtitleVideoSize ?? 0) > 0
+                    || subtitleFilename?.isEmpty == false
+
+                guard hasFileExtras else {
+                    Logger.shared.log(
+                        "Stremio: Subtitle candidate failed reason=\(servicePinnedNetworkErrorToken(error))",
+                        type: "Stremio"
+                    )
+                    continue
+                }
+
+                // Compatibility path for older/custom servers that expose only
+                // /subtitles/{type}/{id}.json and do not accept standard extras.
+                do {
+                    let fetched = try await client.fetchSubtitles(
+                        baseURL: addon.configuredURL,
+                        type: type,
+                        id: contentId
+                    )
+                    Logger.shared.log(
+                        "Stremio: Subtitle extra route unsupported; legacy fallback returned \(fetched.count) subtitle(s)",
+                        type: "Stremio"
+                    )
+                    subtitles.append(contentsOf: fetched)
+                } catch {
+                    Logger.shared.log(
+                        "Stremio: Subtitle candidate failed with extras and legacy fallback reason=\(servicePinnedNetworkErrorToken(error))",
+                        type: "Stremio"
+                    )
+                }
             }
         }
 
