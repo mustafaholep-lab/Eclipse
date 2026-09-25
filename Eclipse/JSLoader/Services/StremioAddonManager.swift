@@ -307,7 +307,7 @@ class StremioAddonManager: ObservableObject {
         }
     }
 
-    static func manifestNeedsSubtitleCapabilityRefresh(
+    nonisolated static func manifestNeedsSubtitleCapabilityRefresh(
         _ manifest: StremioManifest,
         type: String
     ) -> Bool {
