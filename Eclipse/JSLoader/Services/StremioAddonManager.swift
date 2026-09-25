@@ -1362,7 +1362,7 @@ class StremioAddonManager: ObservableObject {
                         )
                         continue
                     }
-    
+
                     // Compatibility path for older/custom servers that expose only
                     // /subtitles/{type}/{id}.json and do not accept standard extras.
                     do {
