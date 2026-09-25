@@ -331,19 +331,43 @@ final class StremioClient {
         }
     }
 
-    func fetchSubtitles(baseURL: String, type: String, id: String) async throws -> [StremioSubtitle] {
+    func fetchSubtitles(
+        baseURL: String,
+        type: String,
+        id: String,
+        videoHash: String? = nil,
+        videoSize: Int64? = nil,
+        filename: String? = nil
+    ) async throws -> [StremioSubtitle] {
         let encodedType = encodePathSegment(type, preservingColon: false)
         let encodedId = encodePathSegment(id, preservingColon: true)
+
+        var extras: [String] = []
+        if let videoHash = videoHash?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !videoHash.isEmpty,
+           videoHash.utf8.count <= 256 {
+            extras.append("videoHash=\(encodeExtraValue(videoHash))")
+        }
+        if let videoSize, videoSize > 0 {
+            extras.append("videoSize=\(videoSize)")
+        }
+        if let filename = filename?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !filename.isEmpty,
+           filename.utf8.count <= 1_024 {
+            extras.append("filename=\(encodeExtraValue(filename))")
+        }
+
+        let extraPath = extras.isEmpty ? "" : "/\(extras.joined(separator: "&"))"
         guard let url = Self.endpointURL(
             baseURL: baseURL,
-            appendingPercentEncodedPath: "/subtitles/\(encodedType)/\(encodedId).json"
+            appendingPercentEncodedPath: "/subtitles/\(encodedType)/\(encodedId)\(extraPath).json"
         ) else {
             throw StremioError.invalidURL
         }
         let endpoint = Self.redactedEndpointDescription(for: url)
 
         Logger.shared.log(
-            "Stremio: Fetching subtitles contentType=\(Self.safeContentType(type)) contentIDBytes=\(id.utf8.count) endpoint=\(endpoint)",
+            "Stremio: Fetching subtitles contentType=\(Self.safeContentType(type)) contentIDBytes=\(id.utf8.count) extras=[hash:\(!extras.filter { $0.hasPrefix("videoHash=") }.isEmpty),size:\(!extras.filter { $0.hasPrefix("videoSize=") }.isEmpty),filename:\(!extras.filter { $0.hasPrefix("filename=") }.isEmpty)] endpoint=\(endpoint)",
             type: "Stremio"
         )
 
@@ -379,7 +403,16 @@ final class StremioClient {
         return subtitles
     }
 
-    func fetchOpenSubtitlesV3(tmdbId: Int, imdbId: String?, type: String, season: Int?, episode: Int?) async throws -> [StremioSubtitle] {
+    func fetchOpenSubtitlesV3(
+        tmdbId: Int,
+        imdbId: String?,
+        type: String,
+        season: Int?,
+        episode: Int?,
+        videoHash: String? = nil,
+        videoSize: Int64? = nil,
+        filename: String? = nil
+    ) async throws -> [StremioSubtitle] {
         let manifest = try await fetchManifest(from: Self.openSubtitlesV3BaseURL)
         guard manifest.supportsSubtitles else {
             Logger.shared.log("Stremio: OpenSubtitles v3 manifest does not advertise subtitles", type: "Stremio")
@@ -402,7 +435,10 @@ final class StremioClient {
         return try await fetchSubtitles(
             baseURL: Self.openSubtitlesV3BaseURL,
             type: type,
-            id: contentId
+            id: contentId,
+            videoHash: videoHash,
+            videoSize: videoSize,
+            filename: filename
         )
     }
 
