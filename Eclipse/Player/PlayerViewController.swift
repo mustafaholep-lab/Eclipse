@@ -4511,6 +4511,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         onlineSubtitleLoadedTrackNames.removeAll()
         onlineSubtitleLoadedRendererTrackIds.removeAll()
         lastSkippedMPVBitmapSubtitleSummary = ""
+        subtitleDelaySeconds = 0
         vlcExternalSubtitlePriorityDeadline = nil
         nativePlayerMenuRebuildSuppressionUntil = 0
         isNativeSubtitleMenuPresented = false
@@ -4561,6 +4562,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
         logPlaybackStage("renderer-started", "running=\(isRunning)")
+        if isMPVRenderer {
+            renderer.setSubtitleDelay(0)
+        }
 
         userSelectedAudioTrack = false
         userSelectedSubtitleTrack = false
@@ -6751,8 +6755,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let trackMenu = UIMenu(title: "Select Track", image: UIImage(systemName: "list.bullet"), children: trackActions)
 
         let appearanceMenu = createAppearanceMenu()
+        let syncMenu = createSubtitleSyncMenu()
 
-        let mainMenu = UIMenu(title: "Subtitles", children: [trackMenu, appearanceMenu])
+        let mainMenu = UIMenu(title: "Subtitles", children: [trackMenu, syncMenu, appearanceMenu])
         nativeSubtitleMenuContentSignature = nil
         subtitleButton.menu = mainMenu
     }
@@ -11748,6 +11753,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             sections.append(PlayerOverlayMenuSection(title: "OpenSubtitles", actions: openSubtitlesOverlayActions()))
         }
 
+        if !isVLCPlayer {
+            sections.append(subtitleSyncOverlaySection())
+        }
+
         if !isVLCPlayer && Settings.shared.playerSubtitleAppearanceEnabled {
             sections.append(contentsOf: subtitleAppearanceOverlaySections())
         }
@@ -11830,6 +11839,103 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         })
         return actions
+    }
+
+    private func formattedSubtitleDelay(_ seconds: Double) -> String {
+        let prefix = seconds > 0.0001 ? "+" : ""
+        return "\(prefix)\(String(format: "%.2f", seconds))s"
+    }
+
+    private func setSubtitleDelaySeconds(_ seconds: Double) {
+        guard !isVLCPlayer else { return }
+        let clamped = max(-30.0, min(seconds, 30.0))
+        subtitleDelaySeconds = abs(clamped) < 0.0005 ? 0 : clamped
+        renderer.setSubtitleDelay(subtitleDelaySeconds)
+        Logger.shared.log(
+            "[PlayerVC.Subtitles] sync delay=\(formattedSubtitleDelay(subtitleDelaySeconds))",
+            type: "Player"
+        )
+        nativeSubtitleMenuContentSignature = nil
+        if usesOverlayPlayerMenus, overlayMenuKind == "subtitles" {
+            showMPVSubtitleMenu()
+        } else {
+            scheduleSubtitleMenuRefresh()
+        }
+    }
+
+    private func adjustSubtitleDelay(by delta: Double) {
+        setSubtitleDelaySeconds(subtitleDelaySeconds + delta)
+    }
+
+    private func subtitleSyncOverlaySection() -> PlayerOverlayMenuSection {
+        let adjustments: [(String, Double)] = [
+            ("Earlier 5.0s", -5.0),
+            ("Earlier 1.0s", -1.0),
+            ("Earlier 0.25s", -0.25),
+            ("Later 0.25s", 0.25),
+            ("Later 1.0s", 1.0),
+            ("Later 5.0s", 5.0)
+        ]
+        var actions = adjustments.prefix(3).map { title, delta in
+            makeOverlayAction(title: title, imageName: "backward") { [weak self] in
+                self?.adjustSubtitleDelay(by: delta)
+            }
+        }
+        actions.append(
+            makeOverlayAction(
+                title: "Reset (current \(formattedSubtitleDelay(subtitleDelaySeconds)))",
+                imageName: "arrow.counterclockwise",
+                isSelected: abs(subtitleDelaySeconds) < 0.0005
+            ) { [weak self] in
+                self?.setSubtitleDelaySeconds(0)
+            }
+        )
+        actions.append(contentsOf: adjustments.suffix(3).map { title, delta in
+            makeOverlayAction(title: title, imageName: "forward") { [weak self] in
+                self?.adjustSubtitleDelay(by: delta)
+            }
+        })
+        return PlayerOverlayMenuSection(
+            title: "Subtitle Sync · \(formattedSubtitleDelay(subtitleDelaySeconds))",
+            actions: actions
+        )
+    }
+
+    private func createSubtitleSyncMenu() -> UIMenu {
+        let earlier: [(String, Double)] = [
+            ("Earlier 5.0s", -5.0),
+            ("Earlier 1.0s", -1.0),
+            ("Earlier 0.25s", -0.25)
+        ]
+        let later: [(String, Double)] = [
+            ("Later 0.25s", 0.25),
+            ("Later 1.0s", 1.0),
+            ("Later 5.0s", 5.0)
+        ]
+
+        let earlierActions = earlier.map { title, delta in
+            UIAction(title: title, image: UIImage(systemName: "backward")) { [weak self] _ in
+                self?.adjustSubtitleDelay(by: delta)
+            }
+        }
+        let resetAction = UIAction(
+            title: "Reset to 0.00s",
+            image: UIImage(systemName: "arrow.counterclockwise"),
+            state: abs(subtitleDelaySeconds) < 0.0005 ? .on : .off
+        ) { [weak self] _ in
+            self?.setSubtitleDelaySeconds(0)
+        }
+        let laterActions = later.map { title, delta in
+            UIAction(title: title, image: UIImage(systemName: "forward")) { [weak self] _ in
+                self?.adjustSubtitleDelay(by: delta)
+            }
+        }
+
+        return UIMenu(
+            title: "Subtitle Sync · \(formattedSubtitleDelay(subtitleDelaySeconds))",
+            image: UIImage(systemName: "timer"),
+            children: earlierActions + [resetAction] + laterActions
+        )
     }
 
     private func subtitleAppearanceOverlaySections() -> [PlayerOverlayMenuSection] {
@@ -12025,6 +12131,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "nativeTracks=\(nativeTrackMenuSignature)",
             "stremio=\(stremioMenuSignature)",
             "openSubtitles=\(openSubtitlesMenuSignature)",
+            "subtitleSync=\(String(format: "%.2f", subtitleDelaySeconds))",
             "appearance=\(appearanceEnabled)",
             appearanceEnabled ? subtitleStyleMenuSignature() : ""
         ].joined(separator: "||")
@@ -12143,6 +12250,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
         if let openSubtitlesMenu = openSubtitlesMenu() {
             menuChildren.append(openSubtitlesMenu)
+        }
+        if !isVLCPlayer {
+            menuChildren.append(createSubtitleSyncMenu())
         }
         if !isVLCPlayer && Settings.shared.playerSubtitleAppearanceEnabled {
             let appearanceMenu = createAppearanceMenu()
