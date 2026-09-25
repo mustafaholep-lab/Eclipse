@@ -12628,6 +12628,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             .subtracting(titleTokens)
 
         var score = 0
+        if result.addon.manifest.id.lowercased() == "org.soluserv.animesub" {
+            // AnimeSub+ is anime-specific and already performs release-aware
+            // aggregation. Keep this a small bonus: exact filename/group/hash
+            // evidence below must remain much stronger.
+            score += 10
+        }
         for token in sharedReleaseTokens {
             score += animeSubtitleTechnicalTokens.contains(token) ? 14 : 5
         }
@@ -12937,7 +12943,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             (
                 metadata: openSubtitlesLookupMetadata(),
                 playbackContext: episodePlaybackContext,
-                titleCandidates: stremioSubtitleTitleCandidates()
+                titleCandidates: stremioSubtitleTitleCandidates(),
+                fileExtras: subtitleRequestFileExtras()
             )
         }
         let metadata = lookup.metadata
@@ -12962,12 +12969,21 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             anilistId: lookup.playbackContext?.positiveAniListMediaId
                 ?? lookup.playbackContext?.anilistMediaId,
             playbackContext: lookup.playbackContext,
-            titleCandidates: lookup.titleCandidates
+            titleCandidates: lookup.titleCandidates,
+            subtitleVideoHash: lookup.fileExtras.videoHash,
+            subtitleVideoSize: lookup.fileExtras.videoSize,
+            subtitleFilename: lookup.fileExtras.filename
         )
     }
 
     private func fetchOpenSubtitlesResults(reason: String) async -> [StremioSubtitle] {
-        let metadata = await MainActor.run { openSubtitlesLookupMetadata() }
+        let lookup = await MainActor.run {
+            (
+                metadata: openSubtitlesLookupMetadata(),
+                fileExtras: subtitleRequestFileExtras()
+            )
+        }
+        let metadata = lookup.metadata
         guard let metadata else {
             Logger.shared.log("[PlayerVC.OpenSubtitles] skipped \(reason): missing metadata", type: "Player")
             return []
@@ -12991,7 +13007,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 imdbId: resolvedImdbId,
                 type: metadata.type,
                 season: metadata.season,
-                episode: metadata.episode
+                episode: metadata.episode,
+                videoHash: lookup.fileExtras.videoHash,
+                videoSize: lookup.fileExtras.videoSize,
+                filename: lookup.fileExtras.filename
             )
             return dedupeOpenSubtitles(subtitles)
         } catch {
@@ -13064,6 +13083,49 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
             return stremioSubtitleDisplayName(lhs) < stremioSubtitleDisplayName(rhs)
         }
+    }
+
+    private func subtitleRequestFileExtras() -> (videoHash: String?, videoSize: Int64?, filename: String?) {
+        let fingerprint = playbackLaunchContext?.streamFingerprint
+
+        let videoHash = fingerprint?.videoHash?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let videoSize = {
+            guard let value = fingerprint?.videoSize, value > 0 else { return nil as Int64? }
+            return value
+        }()
+
+        var filename = fingerprint?.filename?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // A few stream addons omit behaviorHints.filename but put the exact
+        // release filename in their title/description. Reuse it only when it
+        // clearly looks like a media filename; never derive a filename from a
+        // signed playback URL.
+        if filename?.isEmpty != false, let labels = fingerprint?.labels {
+            filename = labels.first(where: { value in
+                let lower = value
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                return lower.contains(".mkv")
+                    || lower.contains(".mp4")
+                    || lower.contains(".avi")
+                    || lower.contains(".webm")
+            })?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if videoHash?.isEmpty == false || videoSize != nil || filename?.isEmpty == false {
+            Logger.shared.log(
+                "[PlayerVC.Subtitles] file-aware lookup hash=\(videoHash?.isEmpty == false) size=\(videoSize != nil) filename=\(filename?.isEmpty == false)",
+                type: "Player"
+            )
+        }
+
+        return (
+            videoHash?.isEmpty == false ? videoHash : nil,
+            videoSize,
+            filename?.isEmpty == false ? filename : nil
+        )
     }
 
     private func stremioSubtitleTitleCandidates() -> [String] {
