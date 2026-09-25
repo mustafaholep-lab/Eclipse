@@ -1347,6 +1347,62 @@ struct StremioSubtitle: Codable, Sendable, Hashable {
     }
 }
 
+enum StremioSubtitleLanguagePolicy {
+    static func matches(_ subtitle: StremioSubtitle, preferredLanguage: String) -> Bool {
+        let preferredTokens = languageTokens(for: preferredLanguage)
+        guard !preferredTokens.isEmpty else { return true }
+
+        let fields = [subtitle.lang, subtitle.name, subtitle.title, subtitle.id]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+        let fieldTokens = Set(fields.split(separator: " ").map(String.init))
+
+        // Short ISO codes such as "tr" and "en" must match a whole token.
+        // Substring matching made unrelated filenames look like language hits.
+        return preferredTokens.contains { fieldTokens.contains($0) }
+    }
+
+    private static func languageTokens(for preferred: String) -> Set<String> {
+        let normalized = preferred
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        guard !normalized.isEmpty else { return [] }
+
+        let aliases: [[String]] = [
+            ["jpn", "ja", "jp", "japanese"],
+            ["eng", "en", "us", "uk", "english"],
+            ["spa", "es", "esp", "spanish", "lat"],
+            ["fre", "fra", "fr", "french"],
+            ["ger", "deu", "de", "german"],
+            ["ita", "it", "italian"],
+            ["por", "pt", "br", "portuguese"],
+            ["rus", "ru", "russian"],
+            ["chi", "zho", "zh", "chinese", "mandarin", "cantonese"],
+            ["kor", "ko", "korean"],
+            ["tur", "tr", "tr-tr", "turkish", "turkce"]
+        ]
+
+        let preferredParts = Set(
+            normalized
+                .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+                .split(separator: " ")
+                .map(String.init)
+        )
+        if let group = aliases.first(where: { values in
+            values.contains(normalized) || !preferredParts.isDisjoint(with: values)
+        }) {
+            return Set(group.flatMap { value in
+                value.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+            })
+        }
+        return preferredParts
+    }
+}
+
 final class StremioFieldTruncationTally: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0

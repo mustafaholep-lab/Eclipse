@@ -3,7 +3,7 @@ name: Build Patched Eclipse IPA
 on:
   push:
     branches:
-      - stremio-playback-fix-v2.2.1
+      - stremio-playback-fix-v6-animesub-subtitles
     paths:
       - "Eclipse/**"
       - "Eclipse.xcodeproj/**"
@@ -54,7 +54,7 @@ jobs:
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
-          ECLIPSE_RELEASE_VERSION = 2.2.1-patched
+          ECLIPSE_RELEASE_VERSION = 6.0.0
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =
           TMDB_API_KEY = ${TMDB_API_KEY}
@@ -119,7 +119,7 @@ jobs:
           set -euo pipefail
           PACKAGE_ROOT="$RUNNER_TEMP/unsigned-ipa"
           OUTPUT_DIR="$GITHUB_WORKSPACE/build"
-          IPA_PATH="$OUTPUT_DIR/Eclipse-2.2.1-StremioFix-unsigned.ipa"
+          IPA_PATH="$OUTPUT_DIR/Eclipse-v6-AnimeSub-unsigned.ipa"
 
           rm -rf "$PACKAGE_ROOT" "$OUTPUT_DIR"
           mkdir -p "$PACKAGE_ROOT/Payload" "$OUTPUT_DIR"
@@ -136,7 +136,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: Eclipse-2.2.1-StremioFix-unsigned
+          name: Eclipse-v6-AnimeSub-unsigned
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
           retention-days: 7

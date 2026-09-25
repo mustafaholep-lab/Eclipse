@@ -494,7 +494,7 @@ final class StremioClient {
         )
     }
 
-    func buildContentIds(tmdbId: Int, imdbId: String?, type: String, season: Int?, episode: Int?, anilistId: Int? = nil, anilistSeason: Int? = nil, anilistEpisode: Int? = nil, kitsuId: Int? = nil, kitsuEpisode: Int? = nil, alternateSeason: Int? = nil, alternateEpisode: Int? = nil, allowParentSeriesIDs: Bool = true, idPrefixes: [String]?, addonName: String) -> [String] {
+    func buildContentIds(tmdbId: Int, imdbId: String?, type: String, season: Int?, episode: Int?, anilistId: Int? = nil, anilistSeason: Int? = nil, anilistEpisode: Int? = nil, kitsuId: Int? = nil, kitsuEpisode: Int? = nil, malId: Int? = nil, malEpisode: Int? = nil, alternateSeason: Int? = nil, alternateEpisode: Int? = nil, allowParentSeriesIDs: Bool = true, idPrefixes: [String]?, addonName: String) -> [String] {
         let prefixes = idPrefixes ?? []
         let normalizedPrefixes = prefixes.map { $0.lowercased() }
         let supportsTMDB = normalizedPrefixes.isEmpty || normalizedPrefixes.contains { $0 == "tmdb" || $0.hasPrefix("tmdb:") }
@@ -502,6 +502,7 @@ final class StremioClient {
         let supportsIMDBNamespace = normalizedPrefixes.contains { $0 == "imdb:" }
         let supportsAniList = normalizedPrefixes.isEmpty || normalizedPrefixes.contains { $0 == "anilist" || $0 == "anilist:" }
         let supportsKitsu = normalizedPrefixes.isEmpty || normalizedPrefixes.contains { $0 == "kitsu" || $0 == "kitsu:" }
+        let supportsMAL = normalizedPrefixes.isEmpty || normalizedPrefixes.contains { $0 == "mal" || $0 == "mal:" }
 
         let normalizedIMDbID = Self.normalizedIMDbID(imdbId)
         Logger.shared.log(
@@ -552,9 +553,8 @@ final class StremioClient {
                 if let animeEpisode = anilistEpisode, animeEpisode > 0 {
                     if let animeSeason = anilistSeason, animeSeason > 0 {
                         candidates.append("anilist:\(anilistId):\(animeSeason):\(animeEpisode)")
-                    } else {
-                        candidates.append("anilist:\(anilistId):\(animeEpisode)")
                     }
+                    candidates.append("anilist:\(anilistId):\(animeEpisode)")
                 }
             } else {
                 candidates.append("anilist:\(anilistId)")
@@ -568,6 +568,17 @@ final class StremioClient {
                 }
             } else {
                 candidates.append("kitsu:\(kitsuId)")
+            }
+        }
+
+        if supportsMAL, let malId, malId > 0 {
+            if type == "series" {
+                if let malEpisode, malEpisode > 0 {
+                    candidates.append("mal:\(malId):1:\(malEpisode)")
+                    candidates.append("mal:\(malId):\(malEpisode)")
+                }
+            } else {
+                candidates.append("mal:\(malId)")
             }
         }
 

@@ -10762,6 +10762,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         case "rus", "ru": return "russian"
         case "chi", "zho", "zh": return "chinese"
         case "kor", "ko": return "korean"
+        case "tur", "tr", "tr-tr": return "turkish"
         default: return ""
         }
     }
@@ -10780,7 +10781,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "por": ["por", "pt", "br", "portuguese"],
             "rus": ["rus", "ru", "russian"],
             "chi": ["chi", "zho", "zh", "chinese", "mandarin", "cantonese"],
-            "kor": ["kor", "ko", "korean"]
+            "kor": ["kor", "ko", "korean"],
+            "tur": ["tur", "tr", "tr-tr", "turkish", "türkçe", "turkce"],
+            "tr": ["tur", "tr", "tr-tr", "turkish", "türkçe", "turkce"],
+            "tr-tr": ["tur", "tr", "tr-tr", "turkish", "türkçe", "turkce"]
         ]
 
         if let tokens = map[lower] {
@@ -12383,18 +12387,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func openSubtitleMatchesPreferredLanguage(_ subtitle: StremioSubtitle, preferredLang: String) -> Bool {
-        let tokens = languageTokens(for: preferredLang)
-        guard !tokens.isEmpty else { return true }
-        let fields = [
-            subtitle.lang,
-            subtitle.name,
-            subtitle.title,
-            subtitle.id
-        ]
-        .compactMap { $0?.lowercased() }
-        .joined(separator: " ")
-
-        return tokens.contains { fields.contains($0) }
+        StremioSubtitleLanguagePolicy.matches(subtitle, preferredLanguage: preferredLang)
     }
 
     private func preferredOpenSubtitle(from subtitles: [StremioSubtitle], preferredLang: String) -> StremioSubtitle? {

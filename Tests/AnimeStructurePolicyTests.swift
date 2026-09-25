@@ -2080,3 +2080,110 @@ final class TrackerImportPerformanceTests: XCTestCase {
         return try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: headers))
     }
 }
+
+final class StremioAnimeSubtitleLookupTests: XCTestCase {
+    func testAnimeSubManifestAdvertisesSubtitleResourceAndPrefixes() throws {
+        let data = Data("""
+        {
+          "id": "org.soluserv.animesub",
+          "name": "AnimeSub+",
+          "types": ["anime", "movie", "series"],
+          "resources": [
+            {"name": "stream", "types": ["anime", "movie", "series"], "idPrefixes": ["anilist:", "kitsu:", "mal:", "tt"]},
+            {"name": "subtitles", "types": ["anime", "movie", "series"], "idPrefixes": ["anilist:", "kitsu:", "mal:", "tt"]}
+          ]
+        }
+        """.utf8)
+        let manifest = try JSONDecoder().decode(StremioManifest.self, from: data)
+
+        XCTAssertTrue(manifest.supportsSubtitles)
+        XCTAssertTrue(manifest.supportsResource("subtitles", type: "series"))
+        XCTAssertTrue(manifest.supportsResource("subtitles", type: "anime"))
+        XCTAssertEqual(manifest.subtitleIdPrefixes, ["anilist:", "kitsu:", "mal:", "tt"])
+    }
+
+    func testAnimeEpisodeCandidatesIncludeShortAniListAndMALIDs() {
+        let ids = StremioClient.shared.buildContentIds(
+            tmdbId: 95479,
+            imdbId: nil,
+            type: "series",
+            season: 1,
+            episode: 2,
+            anilistId: 113415,
+            anilistSeason: 1,
+            anilistEpisode: 2,
+            malId: 40748,
+            malEpisode: 2,
+            idPrefixes: ["anilist:", "kitsu:", "mal:", "tt"],
+            addonName: "AnimeSub+"
+        )
+
+        XCTAssertTrue(ids.contains("anilist:113415:1:2"))
+        XCTAssertTrue(ids.contains("anilist:113415:2"))
+        XCTAssertTrue(ids.contains("mal:40748:1:2"))
+        XCTAssertTrue(ids.contains("mal:40748:2"))
+        XCTAssertFalse(ids.contains("tmdb:95479:1:2"))
+    }
+
+    func testCachedStreamOnlyManifestNeedsSubtitleCapabilityRefresh() throws {
+        let stale = try JSONDecoder().decode(StremioManifest.self, from: Data("""
+        {
+          "id": "org.soluserv.animesub",
+          "name": "AnimeSub+",
+          "types": ["anime", "movie", "series"],
+          "resources": [
+            {"name": "stream", "types": ["anime", "movie", "series"], "idPrefixes": ["mal:"]}
+          ]
+        }
+        """.utf8))
+
+        XCTAssertTrue(StremioAddonManager.manifestNeedsSubtitleCapabilityRefresh(stale, type: "series"))
+    }
+
+    func testCurrentAnimeSubManifestDoesNotNeedSubtitleCapabilityRefresh() throws {
+        let current = try JSONDecoder().decode(StremioManifest.self, from: Data("""
+        {
+          "id": "org.soluserv.animesub",
+          "name": "AnimeSub+",
+          "types": ["anime", "movie", "series"],
+          "resources": [
+            {"name": "stream", "types": ["anime", "movie", "series"], "idPrefixes": ["mal:"]},
+            {"name": "subtitles", "types": ["anime", "movie", "series"], "idPrefixes": ["mal:"]}
+          ]
+        }
+        """.utf8))
+
+        XCTAssertFalse(StremioAddonManager.manifestNeedsSubtitleCapabilityRefresh(current, type: "series"))
+    }
+
+    func testNegativeAniListStorageFallsBackToExactMALID() {
+        let context = EpisodePlaybackContext(
+            localSeasonNumber: 1,
+            localEpisodeNumber: 2,
+            anilistMediaId: -2402,
+            tmdbSeasonNumber: 1,
+            tmdbEpisodeNumber: 2,
+            tmdbEpisodeOffset: 0,
+            animeAbsoluteEpisodeNumber: 2,
+            animeSeasonEpisodeCount: 79,
+            isSpecial: false,
+            titleOnlySearch: false
+        )
+
+        XCTAssertEqual(context.exactMALMediaId, 2402)
+    }
+
+    func testTurkishLanguageMatchingUsesWholeTokens() throws {
+        let turkish = try JSONDecoder().decode(
+            StremioSubtitle.self,
+            from: Data(#"{"id":"one","url":"https://example.com/one.srt","lang":"TUR","name":"Turkish"}"#.utf8)
+        )
+        let unrelated = try JSONDecoder().decode(
+            StremioSubtitle.self,
+            from: Data(#"{"id":"two","url":"https://example.com/two.srt","lang":"ARA","name":"stream release"}"#.utf8)
+        )
+
+        XCTAssertTrue(StremioSubtitleLanguagePolicy.matches(turkish, preferredLanguage: "tr-TR"))
+        XCTAssertFalse(StremioSubtitleLanguagePolicy.matches(unrelated, preferredLanguage: "tr"))
+    }
+}
