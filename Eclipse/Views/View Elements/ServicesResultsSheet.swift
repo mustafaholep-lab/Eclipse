@@ -8821,6 +8821,15 @@ struct ModulesSearchResultsSheet: View {
         }
         let subtitleURLs = allSubtitles.map { $0.url }
         let subtitleNames = allSubtitles.map { $0.name }
+        let streamFingerprint = PlaybackStreamFingerprint(
+            filename: stream.behaviorHints?.filename,
+            infoHash: stream.infoHash,
+            videoSize: stream.behaviorHints?.videoSize,
+            bingeGroup: stream.behaviorHints?.bingeGroup,
+            labels: [stream.name, stream.title, stream.description]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
 
         if downloadMode {
 #if os(tvOS)
@@ -8866,13 +8875,14 @@ struct ModulesSearchResultsSheet: View {
                 headers: stream.proxyHeaders,
                 prefersHeaderProxy: prefersHeaderProxy,
                 streamName: smartPlayerMetadata(for: stream),
+                streamFingerprint: streamFingerprint,
                 autoModeLaunch: autoModeLaunch,
                 retryCount: retryCount
             )
         }
     }
 
-    private func playStremioStreamURL(_ url: String, addon: StremioAddon, subtitles: [String], subtitleNames: [String], headers: [String: String]?, prefersHeaderProxy: Bool = false, streamName: String? = nil, autoModeLaunch: Bool = false, retryCount: Int = 0) {
+    private func playStremioStreamURL(_ url: String, addon: StremioAddon, subtitles: [String], subtitleNames: [String], headers: [String: String]?, prefersHeaderProxy: Bool = false, streamName: String? = nil, streamFingerprint: PlaybackStreamFingerprint? = nil, autoModeLaunch: Bool = false, retryCount: Int = 0) {
         let playbackTraceID = String(UUID().uuidString.prefix(8))
         let playbackTraceCreatedAt = Date()
         let scopeAuthority = ProviderPlaybackScopeAuthority.capture()
@@ -9038,6 +9048,7 @@ struct ModulesSearchResultsSheet: View {
                 subtitleNames: resolvedSubtitleNames,
                 retryCount: retryCount,
                 titleCandidates: stremioCatalogTitleCandidates,
+                streamFingerprint: streamFingerprint,
                 ephemeralProxyOwnership: proxyOwnership
             )
             let resolvedAnimeHint = hasAnimeLookupContext
