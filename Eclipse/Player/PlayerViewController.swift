@@ -11832,8 +11832,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.hideOverlayMenu()
             }
         ]
-        actions.append(contentsOf: openSubtitlesResults.prefix(20).map { subtitle in
-            makeOverlayAction(title: openSubtitleDisplayName(subtitle), imageName: "captions.bubble") { [weak self] in
+        actions.append(contentsOf: openSubtitlesResults.prefix(20).enumerated().map { pair in
+            let index = pair.offset
+            let subtitle = pair.element
+            return makeOverlayAction(
+                title: openSubtitleMenuDisplayName(subtitle, index: index),
+                imageName: index < 3 && animeOpenSubtitleSmartScore(subtitle) >= 12 ? "star.fill" : "captions.bubble"
+            ) { [weak self] in
                 self?.loadOpenSubtitle(subtitle, userSelected: true)
                 self?.hideOverlayMenu()
             }
@@ -12471,10 +12476,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh", forceRefresh: true)
             })
 
-            let subtitleActions: [UIMenuElement] = openSubtitlesResults.prefix(20).map { subtitle in
-                UIAction(
-                    title: openSubtitleDisplayName(subtitle),
-                    image: UIImage(systemName: "captions.bubble")
+            let subtitleActions: [UIMenuElement] = openSubtitlesResults.prefix(20).enumerated().map { pair in
+                let index = pair.offset
+                let subtitle = pair.element
+                return UIAction(
+                    title: openSubtitleMenuDisplayName(subtitle, index: index),
+                    image: UIImage(systemName: index < 3 && animeOpenSubtitleSmartScore(subtitle) >= 12 ? "star.fill" : "captions.bubble")
                 ) { [weak self] _ in
                     self?.loadOpenSubtitle(subtitle, userSelected: true)
                 }
@@ -12721,6 +12728,103 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let bestScore = leadingScores.max() ?? 0
         guard score >= 12, score >= max(12, bestScore - 35) else { return base }
 
+        return index == 0
+            ? "⭐ Best Match — \(base)"
+            : "⭐ Best Match #\(index + 1) — \(base)"
+    }
+
+    private func animeOpenSubtitleCandidateStrings(_ subtitle: StremioSubtitle) -> [String] {
+        var values = [
+            subtitle.name,
+            subtitle.title,
+            subtitle.id
+        ].compactMap { $0 }
+        if let rawURL = subtitle.url,
+           let url = URL(string: rawURL) {
+            let filename = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+            if !filename.isEmpty {
+                values.append(filename)
+            }
+        }
+        return values
+    }
+
+    private func animeOpenSubtitleSmartScore(_ subtitle: StremioSubtitle) -> Int {
+        guard isAnimeContent() else { return 0 }
+        let streamValues = animeStreamFingerprintStrings()
+        guard !streamValues.isEmpty else { return 0 }
+
+        let subtitleValues = animeOpenSubtitleCandidateStrings(subtitle)
+        let streamTokens = animeSubtitleMatchTokens(from: streamValues)
+        let subtitleTokens = animeSubtitleMatchTokens(from: subtitleValues)
+        let titleTokens = animeSubtitleMatchTokens(from: stremioSubtitleTitleCandidates())
+        let sharedReleaseTokens = streamTokens
+            .intersection(subtitleTokens)
+            .subtracting(titleTokens)
+
+        var score = 0
+        for token in sharedReleaseTokens {
+            score += animeSubtitleTechnicalTokens.contains(token) ? 14 : 5
+        }
+
+        let groupOverlap = animeSubtitleReleaseGroupTokens(from: streamValues)
+            .intersection(animeSubtitleReleaseGroupTokens(from: subtitleValues))
+            .subtracting(titleTokens)
+        if !groupOverlap.isEmpty {
+            score += 70 + min(40, groupOverlap.count * 10)
+        }
+
+        let remembered = rememberedAnimeSubtitleTokens()
+        if !remembered.isEmpty {
+            score += min(90, subtitleTokens.intersection(remembered).count * 22)
+        }
+
+        return score
+    }
+
+    private func rememberAnimeOpenSubtitleRelease(_ subtitle: StremioSubtitle) {
+        guard isAnimeContent(),
+              let releaseKey = animeSubtitleMemoryKey(suffix: "release"),
+              let addonKey = animeSubtitleMemoryKey(suffix: "addon") else {
+            return
+        }
+
+        let streamTokens = animeSubtitleMatchTokens(from: animeStreamFingerprintStrings())
+        let subtitleValues = animeOpenSubtitleCandidateStrings(subtitle)
+        let subtitleTokens = animeSubtitleMatchTokens(from: subtitleValues)
+        let titleTokens = animeSubtitleMatchTokens(from: stremioSubtitleTitleCandidates())
+
+        var signature = streamTokens
+            .intersection(subtitleTokens)
+            .subtracting(titleTokens)
+        if signature.isEmpty {
+            signature = animeSubtitleReleaseGroupTokens(from: subtitleValues)
+                .subtracting(titleTokens)
+        }
+        signature = Set(signature.filter { token in
+            animeSubtitleTechnicalTokens.contains(token)
+                || (token.count >= 4 && Int(token) == nil)
+        })
+
+        if !signature.isEmpty {
+            ProfileSettingsStore.active.set(
+                signature.sorted().prefix(10).joined(separator: " "),
+                forKey: releaseKey
+            )
+            ProfileSettingsStore.active.set("opensubtitles-v3", forKey: addonKey)
+            Logger.shared.log(
+                "[PlayerVC.AnimeSubtitles] remembered OpenSubtitles release signature tokens=\(signature.count)",
+                type: "Player"
+            )
+        }
+    }
+
+    private func openSubtitleMenuDisplayName(_ subtitle: StremioSubtitle, index: Int) -> String {
+        let base = openSubtitleDisplayName(subtitle)
+        guard isAnimeContent(), index < 3 else { return base }
+        let score = animeOpenSubtitleSmartScore(subtitle)
+        let bestScore = openSubtitlesResults.prefix(3).map(animeOpenSubtitleSmartScore).max() ?? 0
+        guard score >= 12, score >= max(12, bestScore - 35) else { return base }
         return index == 0
             ? "⭐ Best Match — \(base)"
             : "⭐ Best Match #\(index + 1) — \(base)"
@@ -13061,6 +13165,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             let lhsMatch = openSubtitleMatchesPreferredLanguage(lhs, preferredLang: preferredLang)
             let rhsMatch = openSubtitleMatchesPreferredLanguage(rhs, preferredLang: preferredLang)
             if lhsMatch != rhsMatch { return lhsMatch && !rhsMatch }
+            if isAnimeContent() {
+                let lhsScore = animeOpenSubtitleSmartScore(lhs)
+                let rhsScore = animeOpenSubtitleSmartScore(rhs)
+                if lhsScore != rhsScore { return lhsScore > rhsScore }
+            }
             return openSubtitleDisplayName(lhs) < openSubtitleDisplayName(rhs)
         }
     }
@@ -13178,6 +13287,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 languageTag: subtitle.lang,
                 displayName: displayName
             )
+            rememberAnimeOpenSubtitleRelease(subtitle)
         }
         loadOnlineSubtitle(
             urlString: urlString,
