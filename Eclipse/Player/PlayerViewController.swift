@@ -12567,6 +12567,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             values.append(contentsOf: [
                 fingerprint.filename,
                 fingerprint.bingeGroup,
+                fingerprint.videoHash,
                 fingerprint.infoHash
             ].compactMap { $0 })
             values.append(contentsOf: fingerprint.labels)
@@ -12654,10 +12655,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         if let fingerprint = playbackLaunchContext?.streamFingerprint {
-            if let hash = fingerprint.infoHash?.lowercased(),
+            let candidateText = subtitleValues.joined(separator: " ").lowercased()
+            if let hash = fingerprint.videoHash?.lowercased(),
                hash.count >= 12,
-               subtitleValues.joined(separator: " ").lowercased().contains(hash) {
-                score += 220
+               candidateText.contains(hash) {
+                // Stremio behaviorHints.videoHash is the OpenSubtitles file
+                // hash, so this is the strongest possible external-sub match.
+                score += 260
+            }
+            if let torrentHash = fingerprint.infoHash?.lowercased(),
+               torrentHash.count >= 20,
+               candidateText.contains(torrentHash) {
+                // Torrent hash equality can identify a release, but it is not
+                // the OpenSubtitles file hash and therefore carries less weight.
+                score += 35
             }
             if let size = fingerprint.videoSize, size > 0 {
                 let candidateText = subtitleValues.joined(separator: " ").lowercased()
