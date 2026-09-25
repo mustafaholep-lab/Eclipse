@@ -2935,6 +2935,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var onlineSubtitleLoadedURLs: Set<String> = []
     private var onlineSubtitleLoadedTrackNames: Set<String> = []
     private var onlineSubtitleLoadedRendererTrackIds: Set<Int> = []
+    private var subtitleDelaySeconds: Double = 0
 
     private var isVLCCustomSubtitleOverlayEnabled: Bool {
         return false
@@ -11782,9 +11783,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.hideOverlayMenu()
             }
         ]
-        actions.append(contentsOf: stremioSubtitleResults.prefix(20).map { result in
+        actions.append(contentsOf: stremioSubtitleResults.prefix(20).enumerated().map { pair in
+            let index = pair.offset
+            let result = pair.element
             let selected = isOnlineSubtitleSelected(result.subtitle.url)
-            return makeOverlayAction(title: stremioSubtitleDisplayName(result), imageName: "captions.bubble", isSelected: selected) { [weak self] in
+            return makeOverlayAction(title: stremioSubtitleMenuDisplayName(result, index: index), imageName: index < 3 && animeSubtitleSmartScore(result) >= 12 ? "star.fill" : "captions.bubble", isSelected: selected) { [weak self] in
                 self?.loadStremioSubtitle(result, userSelected: true)
                 self?.hideOverlayMenu()
             }
@@ -12318,10 +12321,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh", forceRefresh: true)
             })
 
-            let subtitleActions: [UIMenuElement] = stremioSubtitleResults.prefix(20).map { result in
-                UIAction(
-                    title: stremioSubtitleDisplayName(result),
-                    image: UIImage(systemName: "captions.bubble"),
+            let subtitleActions: [UIMenuElement] = stremioSubtitleResults.prefix(20).enumerated().map { pair in
+                let index = pair.offset
+                let result = pair.element
+                return UIAction(
+                    title: stremioSubtitleMenuDisplayName(result, index: index),
+                    image: UIImage(systemName: index < 3 && animeSubtitleSmartScore(result) >= 12 ? "star.fill" : "captions.bubble"),
                     state: isOnlineSubtitleSelected(result.subtitle.url) ? .on : .off
                 ) { [weak self] _ in
                     self?.loadStremioSubtitle(result, userSelected: true)
@@ -12386,6 +12391,223 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             return subtitleName
         }
         return "\(addonName) - \(subtitleName)"
+    }
+
+    // Anime releases often have many subtitle files for the same episode but
+    // different encodes/cuts. Rank those results against the exact stream file
+    // selected by the user instead of treating every Turkish subtitle as equal.
+    private func animeSubtitleMatchTokens(from values: [String]) -> Set<String> {
+        let ignored: Set<String> = [
+            "the", "and", "for", "with", "episode", "ep", "season", "series",
+            "subtitle", "subtitles", "sub", "subs", "tur", "tr", "turkish",
+            "eng", "english", "jpn", "japanese"
+        ]
+        let normalized = values
+            .joined(separator: " ")
+            .folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+
+        return Set(
+            normalized
+                .split(separator: " ")
+                .map(String.init)
+                .filter { token in
+                    token.count >= 2 && !ignored.contains(token)
+                }
+        )
+    }
+
+    private var animeSubtitleTechnicalTokens: Set<String> {
+        [
+            "480p", "576p", "720p", "1080p", "1440p", "2160p", "4k",
+            "web", "webdl", "webrip", "bluray", "bdrip", "bdremux", "remux",
+            "hdtv", "dvd", "dvdrip", "x264", "x265", "h264", "h265", "hevc",
+            "av1", "aac", "flac", "opus", "ac3", "eac3", "dts", "10bit",
+            "8bit", "hdr", "sdr", "dual", "multi", "raw", "raws"
+        ]
+    }
+
+    private func animeSubtitleReleaseGroupTokens(from values: [String]) -> Set<String> {
+        let text = values.joined(separator: " ")
+        let nsText = text as NSString
+        guard let regex = try? NSRegularExpression(pattern: #"\[([^\]]{2,48})\]"#) else {
+            return []
+        }
+        var groups = Set<String>()
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        where match.numberOfRanges > 1 && match.range(at: 1).location != NSNotFound {
+            let value = nsText.substring(with: match.range(at: 1))
+            groups.formUnion(animeSubtitleMatchTokens(from: [value]))
+        }
+        return groups
+    }
+
+    private func animeStreamFingerprintStrings() -> [String] {
+        guard isAnimeContent() else { return [] }
+        var values: [String] = []
+        if let fingerprint = playbackLaunchContext?.streamFingerprint {
+            values.append(contentsOf: [
+                fingerprint.filename,
+                fingerprint.bingeGroup,
+                fingerprint.infoHash
+            ].compactMap { $0 })
+            values.append(contentsOf: fingerprint.labels)
+            if let size = fingerprint.videoSize, size > 0 {
+                values.append(String(size))
+                values.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+            }
+        }
+        if let streamName = playbackLaunchContext?.streamName, !streamName.isEmpty {
+            values.append(streamName)
+        }
+        return values
+    }
+
+    private func animeSubtitleCandidateStrings(_ result: StremioAddonManager.AddonSubtitleResult) -> [String] {
+        var values = [
+            result.subtitle.name,
+            result.subtitle.title,
+            result.subtitle.id,
+            result.addon.manifest.name
+        ].compactMap { $0 }
+        if let rawURL = result.subtitle.url,
+           let url = URL(string: rawURL) {
+            let filename = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+            if !filename.isEmpty {
+                values.append(filename)
+            }
+        }
+        return values
+    }
+
+    private func animeSubtitleMemoryKey(suffix: String) -> String? {
+        guard isAnimeContent() else { return nil }
+        let mediaID: String
+        switch mediaInfo {
+        case .movie(let id, _, _, _):
+            mediaID = "movie.\(id)"
+        case .episode(let showId, _, _, _, _, _):
+            mediaID = "series.\(showId)"
+        case .none:
+            return nil
+        }
+        return "animeSmartSubtitle.\(mediaID).\(suffix)"
+    }
+
+    private func rememberedAnimeSubtitleTokens() -> Set<String> {
+        guard let key = animeSubtitleMemoryKey(suffix: "release"),
+              let raw = ProfileSettingsStore.active.string(forKey: key),
+              !raw.isEmpty else {
+            return []
+        }
+        return Set(raw.split(separator: " ").map(String.init))
+    }
+
+    private func animeSubtitleSmartScore(_ result: StremioAddonManager.AddonSubtitleResult) -> Int {
+        guard isAnimeContent() else { return 0 }
+        let streamValues = animeStreamFingerprintStrings()
+        guard !streamValues.isEmpty else { return 0 }
+
+        let subtitleValues = animeSubtitleCandidateStrings(result)
+        let streamTokens = animeSubtitleMatchTokens(from: streamValues)
+        let subtitleTokens = animeSubtitleMatchTokens(from: subtitleValues)
+        let titleTokens = animeSubtitleMatchTokens(from: stremioSubtitleTitleCandidates())
+        let sharedReleaseTokens = streamTokens
+            .intersection(subtitleTokens)
+            .subtracting(titleTokens)
+
+        var score = 0
+        for token in sharedReleaseTokens {
+            score += animeSubtitleTechnicalTokens.contains(token) ? 14 : 5
+        }
+        score = min(score, 100)
+
+        let groupOverlap = animeSubtitleReleaseGroupTokens(from: streamValues)
+            .intersection(animeSubtitleReleaseGroupTokens(from: subtitleValues))
+            .subtracting(titleTokens)
+        if !groupOverlap.isEmpty {
+            score += 70 + min(40, groupOverlap.count * 10)
+        }
+
+        if let fingerprint = playbackLaunchContext?.streamFingerprint {
+            if let hash = fingerprint.infoHash?.lowercased(),
+               hash.count >= 12,
+               subtitleValues.joined(separator: " ").lowercased().contains(hash) {
+                score += 220
+            }
+            if let size = fingerprint.videoSize, size > 0 {
+                let candidateText = subtitleValues.joined(separator: " ").lowercased()
+                let prettySize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file).lowercased()
+                if candidateText.contains(String(size)) || candidateText.contains(prettySize) {
+                    score += 45
+                }
+            }
+        }
+
+        let remembered = rememberedAnimeSubtitleTokens()
+        if !remembered.isEmpty {
+            score += min(90, subtitleTokens.intersection(remembered).count * 22)
+        }
+        if let addonKey = animeSubtitleMemoryKey(suffix: "addon"),
+           let rememberedAddon = ProfileSettingsStore.active.string(forKey: addonKey),
+           rememberedAddon == result.addon.manifest.id {
+            score += 8
+        }
+
+        return score
+    }
+
+    private func rememberAnimeSubtitleRelease(_ result: StremioAddonManager.AddonSubtitleResult) {
+        guard isAnimeContent(),
+              let releaseKey = animeSubtitleMemoryKey(suffix: "release"),
+              let addonKey = animeSubtitleMemoryKey(suffix: "addon") else {
+            return
+        }
+
+        let streamTokens = animeSubtitleMatchTokens(from: animeStreamFingerprintStrings())
+        let subtitleValues = animeSubtitleCandidateStrings(result)
+        let subtitleTokens = animeSubtitleMatchTokens(from: subtitleValues)
+        let titleTokens = animeSubtitleMatchTokens(from: stremioSubtitleTitleCandidates())
+
+        var signature = streamTokens
+            .intersection(subtitleTokens)
+            .subtracting(titleTokens)
+        if signature.isEmpty {
+            signature = animeSubtitleReleaseGroupTokens(from: subtitleValues)
+                .subtracting(titleTokens)
+        }
+        signature = Set(signature.filter { token in
+            animeSubtitleTechnicalTokens.contains(token)
+                || (token.count >= 4 && Int(token) == nil)
+        })
+
+        if !signature.isEmpty {
+            let stored = signature.sorted().prefix(10).joined(separator: " ")
+            ProfileSettingsStore.active.set(stored, forKey: releaseKey)
+            ProfileSettingsStore.active.set(result.addon.manifest.id, forKey: addonKey)
+            Logger.shared.log(
+                "[PlayerVC.AnimeSubtitles] remembered release signature tokens=\(signature.count) addon=\(result.addon.manifest.name)",
+                type: "Player"
+            )
+        }
+    }
+
+    private func stremioSubtitleMenuDisplayName(
+        _ result: StremioAddonManager.AddonSubtitleResult,
+        index: Int
+    ) -> String {
+        let base = stremioSubtitleDisplayName(result)
+        guard isAnimeContent(), index < 3 else { return base }
+
+        let score = animeSubtitleSmartScore(result)
+        let leadingScores = stremioSubtitleResults.prefix(3).map(animeSubtitleSmartScore)
+        let bestScore = leadingScores.max() ?? 0
+        guard score >= 12, score >= max(12, bestScore - 35) else { return base }
+
+        return index == 0
+            ? "⭐ Best Match — \(base)"
+            : "⭐ Best Match #\(index + 1) — \(base)"
     }
 
     private func maybeUseStremioSubtitleFallback(preferredLang: String) -> Bool {
@@ -12720,6 +12942,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             let lhsMatch = openSubtitleMatchesPreferredLanguage(lhs.subtitle, preferredLang: preferredLang)
             let rhsMatch = openSubtitleMatchesPreferredLanguage(rhs.subtitle, preferredLang: preferredLang)
             if lhsMatch != rhsMatch { return lhsMatch && !rhsMatch }
+            if isAnimeContent() {
+                let lhsScore = animeSubtitleSmartScore(lhs)
+                let rhsScore = animeSubtitleSmartScore(rhs)
+                if lhsScore != rhsScore {
+                    return lhsScore > rhsScore
+                }
+            }
             if lhs.addon.sortIndex != rhs.addon.sortIndex {
                 return lhs.addon.sortIndex < rhs.addon.sortIndex
             }
@@ -12798,6 +13027,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 languageTag: result.subtitle.lang,
                 displayName: displayName
             )
+            rememberAnimeSubtitleRelease(result)
         }
         loadOnlineSubtitle(
             urlString: urlString,
