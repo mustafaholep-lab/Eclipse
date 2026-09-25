@@ -1840,7 +1840,7 @@ class StremioAddonManager: ObservableObject {
                       !url.isEmpty else {
                     return false
                 }
-                return seen.insert(url.lowercased()).inserted
+                return seen.insert("\(result.addon.id.uuidString)|\(url.lowercased())").inserted
             }
     }
 
