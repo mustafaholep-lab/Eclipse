@@ -640,10 +640,26 @@ class StremioAddonManager: ObservableObject {
             Logger.shared.log("Stremio: Skipping MAL fallback subtitle lookup without exact TMDB coordinates", type: "Stremio")
             return []
         }
-        let active = activeSubtitleAddons.filter { addon in
-            addon.manifest.supportsResource("subtitles", type: type)
-        }
-        Logger.shared.log("Stremio: Fetching subtitles from \(active.count) active addon(s)", type: "Stremio")
+        let isAnimeRequest = anilistId != nil || playbackContext?.hasAnimeMediaId == true
+        let active = activeSubtitleAddons
+            .filter { addon in
+                addon.manifest.supportsResource("subtitles", type: type)
+            }
+            .sorted { lhs, rhs in
+                guard isAnimeRequest else {
+                    if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+                    return lhs.manifest.name.localizedCaseInsensitiveCompare(rhs.manifest.name) == .orderedAscending
+                }
+                let lhsAnimeSub = lhs.manifest.id.lowercased() == "org.soluserv.animesub"
+                let rhsAnimeSub = rhs.manifest.id.lowercased() == "org.soluserv.animesub"
+                if lhsAnimeSub != rhsAnimeSub { return lhsAnimeSub && !rhsAnimeSub }
+                if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+                return lhs.manifest.name.localizedCaseInsensitiveCompare(rhs.manifest.name) == .orderedAscending
+            }
+        Logger.shared.log(
+            "Stremio: Fetching subtitles from \(active.count) active addon(s) anime=\(isAnimeRequest) animeSubPlus=\(active.contains { $0.manifest.id.lowercased() == "org.soluserv.animesub" })",
+            type: "Stremio"
+        )
         guard !active.isEmpty else { return [] }
 
         let client = StremioClient.shared
