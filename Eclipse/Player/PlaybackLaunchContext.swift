@@ -108,6 +108,26 @@ enum PlaybackSourceKind: String {
     case nuvio
 }
 
+/// Runtime-only metadata about the exact file selected for playback. This is
+/// deliberately kept out of persistent provider references: signed URLs and
+/// torrent/debrid identifiers must not become durable app state. Anime subtitle
+/// matching uses this fingerprint to prefer subtitles made for the same release.
+struct PlaybackStreamFingerprint {
+    let filename: String?
+    let infoHash: String?
+    let videoSize: Int64?
+    let bingeGroup: String?
+    let labels: [String]
+
+    var isEmpty: Bool {
+        filename?.isEmpty != false
+            && infoHash?.isEmpty != false
+            && (videoSize ?? 0) <= 0
+            && bingeGroup?.isEmpty != false
+            && labels.isEmpty
+    }
+}
+
 struct PlaybackLaunchContext {
 
     let traceID: String
@@ -130,6 +150,7 @@ struct PlaybackLaunchContext {
     let headersDroppedBySanitizer: [String]?
     let retryCount: Int
     let titleCandidates: [String]
+    let streamFingerprint: PlaybackStreamFingerprint?
 
     let serviceContentHref: String?
 
@@ -157,6 +178,7 @@ struct PlaybackLaunchContext {
         headersDroppedBySanitizer: [String]? = nil,
         retryCount: Int,
         titleCandidates: [String] = [],
+        streamFingerprint: PlaybackStreamFingerprint? = nil,
         serviceContentHref: String? = nil,
         providerContentReference: ProviderContentReference? = nil,
         ephemeralProxyOwnership: PlaybackProxySessionOwnership? = nil
@@ -177,6 +199,7 @@ struct PlaybackLaunchContext {
         self.headersDroppedBySanitizer = headersDroppedBySanitizer
         self.retryCount = retryCount
         self.titleCandidates = titleCandidates
+        self.streamFingerprint = streamFingerprint
         self.serviceContentHref = serviceContentHref
         self.providerContentReference = providerContentReference
         self.ephemeralProxyOwnership = ephemeralProxyOwnership
