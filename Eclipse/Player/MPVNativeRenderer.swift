@@ -99,6 +99,7 @@ protocol PlayerRenderer: AnyObject {
     func prefetchExternalSubtitles(urls: [String], headersByURL: [String: [String: String]], allowsCellularAccess: Bool)
     func isExternalSubtitleSelected(url: String) -> Bool?
     func applySubtitleStyle(_ style: SubtitleStyle)
+    func setSubtitleDelay(_ seconds: Double)
 
     func applyAudioFilterChain(_ chain: String)
 
@@ -132,6 +133,8 @@ extension PlayerRenderer {
     func prefetchExternalSubtitles(urls: [String], headersByURL: [String: [String: String]], allowsCellularAccess: Bool) {}
 
     func isExternalSubtitleSelected(url: String) -> Bool? { nil }
+
+    func setSubtitleDelay(_ seconds: Double) { _ = seconds }
 
     func applyAudioFilterChain(_ chain: String) {}
 
@@ -2651,6 +2654,12 @@ final class MPVNativeRenderer: PlayerRenderer {
         return "Subtitle \(fallbackIndex + 1)"
     }
 
+    func setSubtitleDelay(_ seconds: Double) {
+        let clamped = max(-30.0, min(seconds, 30.0))
+        logMPV("setSubtitleDelay seconds=\(String(format: "%.2f", clamped))")
+        setProperty(name: "sub-delay", value: String(format: "%.3f", clamped))
+    }
+
     func applySubtitleStyle(_ style: SubtitleStyle) {
         lastAppliedSubtitleStyle = style
         logMPV("applySubtitleStyle visible=\(style.isVisible) font=\(String(format: "%.1f", style.fontSize)) stroke=\(String(format: "%.1f", style.strokeWidth)) offset=\(String(format: "%.1f", style.verticalOffset))")
@@ -3868,6 +3877,11 @@ final class MPVGPUPlayerBridge: PlayerRenderer {
 
     func isExternalSubtitleSelected(url: String) -> Bool? {
         gpuRenderer.currentExternalSubtitleURL() == url
+    }
+
+    func setSubtitleDelay(_ seconds: Double) {
+        let clamped = max(-30.0, min(seconds, 30.0))
+        _ = gpuRenderer.command(["set", "sub-delay", String(format: "%.3f", clamped)])
     }
 
     func applySubtitleStyle(_ style: SubtitleStyle) {
@@ -5628,6 +5642,11 @@ final class MPVSampleBufferPiPBridge: PlayerRenderer {
         sampleRenderer.currentExternalSubtitleURL() == url
     }
 
+    func setSubtitleDelay(_ seconds: Double) {
+        let clamped = max(-30.0, min(seconds, 30.0))
+        _ = sampleRenderer.command(["set", "sub-delay", String(format: "%.3f", clamped)])
+    }
+
     func applySubtitleStyle(_ style: SubtitleStyle) {
         lastAppliedSubtitleStyle = style
         sampleRenderer.applySubtitleStyle(
@@ -6048,6 +6067,7 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
     private var loadGeneration = 0
     private var currentLoadStartedAt: Date?
     private var lastAppliedSubtitleStyle: SubtitleStyle = .default
+    private var lastSubtitleDelay: Double = 0
     private var lastSubtitleViewportSize: CGSize = .zero
     private var lastTrackSummary = ""
     private var lastProgressLogBucket = -1
@@ -6536,6 +6556,19 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
         }
     }
 
+    func setSubtitleDelay(_ seconds: Double) {
+        let clamped = max(-30.0, min(seconds, 30.0))
+        lastSubtitleDelay = clamped
+        if let fallbackRenderer {
+            fallbackRenderer.setSubtitleDelay(clamped)
+            return
+        }
+        setProperty(name: "sub-delay", value: String(format: "%.3f", clamped))
+        if isUsingPiPBridge || isPreparingPiPBridge {
+            pipBridge.setSubtitleDelay(clamped)
+        }
+    }
+
     func applySubtitleStyle(_ style: SubtitleStyle) {
         if let fallbackRenderer {
             fallbackRenderer.applySubtitleStyle(style)
@@ -6591,6 +6624,7 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
             pipBridge.load(url: currentURL, with: currentPreset, headers: currentHeaders)
             pipBridge.setSpeed(getSpeed())
             pipBridge.applySubtitleStyle(lastAppliedSubtitleStyle)
+            pipBridge.setSubtitleDelay(lastSubtitleDelay)
             for request in loadedExternalSubtitleRequests {
                 pipBridge.loadExternalSubtitles(urls: request.urls, names: request.names, enforce: request.enforce)
             }
@@ -6602,6 +6636,7 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
             pipBridge.prepareInitialSeek(to: cachedPosition)
             pipBridge.setSpeed(getSpeed())
             pipBridge.applySubtitleStyle(lastAppliedSubtitleStyle)
+            pipBridge.setSubtitleDelay(lastSubtitleDelay)
             logMPV("PiP hybrid GPU sample-buffer bridge reuse gen=\(loadGeneration) pos=\(String(format: "%.2f", cachedPosition)) primed=\(pipBridge.isPictureInPicturePrimed())")
         }
 
