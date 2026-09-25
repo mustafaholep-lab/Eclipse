@@ -376,6 +376,11 @@ struct ServicesView: View {
         } label: {
             Label("Add Stremio Addon", systemImage: "play.circle")
         }
+        Button {
+            addOrConfigureAnimeSubPlus()
+        } label: {
+            Label("AnimeSub+ Setup", systemImage: "sparkles.tv")
+        }
 #if os(iOS) && !targetEnvironment(macCatalyst)
         if PlatformCapabilities.current.supportsSkyStreamPlugins {
             Button {
@@ -1307,6 +1312,20 @@ struct ServicesView: View {
         reloadAutoModeSelectionFromDefaults()
     }
 #endif
+
+    private func addOrConfigureAnimeSubPlus() {
+        guard isAdministrable else { return }
+
+        if let installed = stremioManager.addons.first(where: {
+            $0.manifest.id.lowercased() == "org.soluserv.animesub"
+        }) {
+            pendingConfigureAddon = installed
+            return
+        }
+
+        stremioURL = "https://animesub.duckdns.org/manifest.json"
+        addStremioAddon()
+    }
 
     private func addStremioAddon() {
         guard isAdministrable,
