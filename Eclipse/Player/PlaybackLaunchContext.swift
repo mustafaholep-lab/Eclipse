@@ -114,6 +114,10 @@ enum PlaybackSourceKind: String {
 /// matching uses this fingerprint to prefer subtitles made for the same release.
 struct PlaybackStreamFingerprint {
     let filename: String?
+    /// OpenSubtitles file hash from behaviorHints.videoHash.
+    let videoHash: String?
+    /// Torrent hash, useful for release memory/ranking but never sent as the
+    /// OpenSubtitles videoHash extra.
     let infoHash: String?
     let videoSize: Int64?
     let bingeGroup: String?
@@ -121,6 +125,7 @@ struct PlaybackStreamFingerprint {
 
     var isEmpty: Bool {
         filename?.isEmpty != false
+            && videoHash?.isEmpty != false
             && infoHash?.isEmpty != false
             && (videoSize ?? 0) <= 0
             && bingeGroup?.isEmpty != false
