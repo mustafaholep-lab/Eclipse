@@ -2080,3 +2080,48 @@ final class TrackerImportPerformanceTests: XCTestCase {
         return try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: headers))
     }
 }
+
+final class StremioAnimeSubtitleLookupTests: XCTestCase {
+    func testAnimeSubManifestAdvertisesSubtitleResourceAndPrefixes() throws {
+        let data = Data("""
+        {
+          "id": "org.soluserv.animesub",
+          "name": "AnimeSub+",
+          "types": ["anime", "movie", "series"],
+          "resources": [
+            {"name": "stream", "types": ["anime", "movie", "series"], "idPrefixes": ["anilist:", "kitsu:", "mal:", "tt"]},
+            {"name": "subtitles", "types": ["anime", "movie", "series"], "idPrefixes": ["anilist:", "kitsu:", "mal:", "tt"]}
+          ]
+        }
+        """.utf8)
+        let manifest = try JSONDecoder().decode(StremioManifest.self, from: data)
+
+        XCTAssertTrue(manifest.supportsSubtitles)
+        XCTAssertTrue(manifest.supportsResource("subtitles", type: "series"))
+        XCTAssertTrue(manifest.supportsResource("subtitles", type: "anime"))
+        XCTAssertEqual(manifest.subtitleIdPrefixes, ["anilist:", "kitsu:", "mal:", "tt"])
+    }
+
+    func testAnimeEpisodeCandidatesIncludeShortAniListAndMALIDs() {
+        let ids = StremioClient.shared.buildContentIds(
+            tmdbId: 95479,
+            imdbId: nil,
+            type: "series",
+            season: 1,
+            episode: 2,
+            anilistId: 113415,
+            anilistSeason: 1,
+            anilistEpisode: 2,
+            malId: 40748,
+            malEpisode: 2,
+            idPrefixes: ["anilist:", "kitsu:", "mal:", "tt"],
+            addonName: "AnimeSub+"
+        )
+
+        XCTAssertTrue(ids.contains("anilist:113415:1:2"))
+        XCTAssertTrue(ids.contains("anilist:113415:2"))
+        XCTAssertTrue(ids.contains("mal:40748:1:2"))
+        XCTAssertTrue(ids.contains("mal:40748:2"))
+        XCTAssertFalse(ids.contains("tmdb:95479:1:2"))
+    }
+}
