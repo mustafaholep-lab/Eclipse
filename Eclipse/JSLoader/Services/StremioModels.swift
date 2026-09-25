@@ -1145,10 +1145,14 @@ struct StremioStreamBehaviorHints: Codable, Hashable {
     let bingeGroup: String?
     let proxyHeaders: StremioProxyHeaders?
     let filename: String?
+    /// OpenSubtitles file hash supplied by the stream addon. This is distinct
+    /// from a torrent infoHash and is safe to forward to subtitle addons as the
+    /// Stremio protocol's videoHash extra.
+    let videoHash: String?
     let videoSize: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case notWebReady, bingeGroup, proxyHeaders, filename, videoSize
+        case notWebReady, bingeGroup, proxyHeaders, filename, videoHash, videoSize
     }
 
     init(from decoder: Decoder) throws {
@@ -1174,6 +1178,10 @@ struct StremioStreamBehaviorHints: Codable, Hashable {
         filename = StremioDecodedFieldBoundary.optionalString(
             try? container.decodeIfPresent(String.self, forKey: .filename),
             maximumUTF8Bytes: 1_024
+        )
+        videoHash = StremioDecodedFieldBoundary.optionalString(
+            try? container.decodeIfPresent(String.self, forKey: .videoHash),
+            maximumUTF8Bytes: 256
         )
         if let size = try? container.decodeIfPresent(Int64.self, forKey: .videoSize) {
             videoSize = size
