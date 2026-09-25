@@ -8823,6 +8823,7 @@ struct ModulesSearchResultsSheet: View {
         let subtitleNames = allSubtitles.map { $0.name }
         let streamFingerprint = PlaybackStreamFingerprint(
             filename: stream.behaviorHints?.filename,
+            videoHash: stream.behaviorHints?.videoHash,
             infoHash: stream.infoHash,
             videoSize: stream.behaviorHints?.videoSize,
             bingeGroup: stream.behaviorHints?.bingeGroup,
