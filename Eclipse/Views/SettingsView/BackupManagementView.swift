@@ -14,7 +14,11 @@ struct BackupDocument: FileDocument {
 
     static var readableContentTypes: [UTType] { [.json] }
     static var writableContentTypes: [UTType] { [.json] }
-    static var importableContentTypes: [UTType] { [.json, .plainText, .text, .data] }
+    // Files received through AirDrop, messaging apps, or third-party providers can
+    // retain a generic/dynamic UTI even when their filename ends in `.json`.
+    // Accept selectable files here and validate the actual backup payload after
+    // selection so legitimate Eclipse backups do not appear disabled in Files.
+    static var importableContentTypes: [UTType] { [.item] }
 
     init(data: Data) {
         self.data = data
@@ -46,7 +50,6 @@ struct BackupManagementView: View {
     @State private var selectedBackupIsTemporary = false
     @State private var backupFileToExport: Data? = nil
     @State private var backupFileName = ""
-    @State private var importContentTypes: [UTType] = [.json]
     #if !os(tvOS)
     @State private var pendingImportMode: ImportMode = .direct
     #endif
@@ -163,7 +166,7 @@ struct BackupManagementView: View {
         #if !os(tvOS)
         .fileImporter(
             isPresented: $showDocumentPicker,
-            allowedContentTypes: importContentTypes,
+            allowedContentTypes: BackupDocument.importableContentTypes,
             allowsMultipleSelection: false
         ) { result in
             handleImportResult(result, mode: pendingImportMode)
@@ -261,7 +264,6 @@ struct BackupManagementView: View {
     private func startImport(mode: ImportMode) {
         guard isAdministrable, !isProcessing else { return }
         pendingImportMode = mode
-        importContentTypes = mode == .direct ? [.json] : BackupDocument.importableContentTypes
         showDocumentPicker = true
     }
 
@@ -508,3 +510,4 @@ private extension View {
         }
     }
 }
+
