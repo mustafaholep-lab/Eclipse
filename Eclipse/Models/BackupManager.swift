@@ -7902,8260 +7902,2558 @@ enum ReaderExtensionAidokuMigration {
                 codingPath: container.codingPath + [CodingKeys.packageURL]
             )
             isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
-            let decodedOrder = try container.decodeIfPresent(Int.self, forKey: .order) ?? 0
-            guard (0...10_000).contains(decodedOrder) else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .order,
-                    in: container,
-                    debugDescription: "Legacy Reader source order is invalid."
-                )
-            }
-            order = decodedOrder
-            let decodedDate = try container.decodeIfPresent(Date.self, forKey: .lastUpdated)
-            guard decodedDate.map(BackupAidokuLegacyWirePolicy.isSafeDate) ?? true else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .lastUpdated,
-                    in: container,
-                    debugDescription: "Legacy Reader source update date is invalid."
-                )
-            }
-            lastUpdated = decodedDate
-            if let decodedDigest = try container.decodeIfPresent(String.self, forKey: .packageDigest) {
-                guard BackupAidokuLegacyWirePolicy.isSafeDigest(decodedDigest) else {
-                    throw DecodingError.dataCorruptedError(
-                        forKey: .packageDigest,
-                        in: container,
-                        debugDescription: "Legacy Reader source package digest is invalid."
-                    )
-                }
-                packageDigest = decodedDigest.lowercased()
-            } else {
-                packageDigest = nil
-            }
-        }
-
-        var backupRecord: BackupAidokuInstalledSource {
-            BackupAidokuInstalledSource(
-                id: id,
-                name: name,
-                version: version,
-                languages: languages,
-                iconPath: nil,
-                externalIconURL: externalIconURL,
-                contentRatingRawValue: contentRatingRawValue,
-                sourceListURL: sourceListURL,
-                packageURL: packageURL,
-                isEnabled: isEnabled,
-                order: order,
-                lastUpdated: lastUpdated,
-                lastError: nil,
-                packageDigest: packageDigest,
-                payloadArchiveData: nil
-            )
-        }
-    }
-
-    private struct BoundedPersistedAidokuSources: Decodable {
-        let values: [PersistedAidokuSource]
-
-        init(from decoder: Decoder) throws {
-            var container = try decoder.unkeyedContainer()
-            if let count = container.count,
-               count > BackupAidokuLegacyWirePolicy.maximumInstalledSources {
-                throw DecodingError.dataCorruptedError(
-                    in: container,
-                    debugDescription: "Legacy Reader installed-source list is too large."
-                )
-            }
-            var result: [PersistedAidokuSource] = []
-            var seen = Set<String>()
-            while !container.isAtEnd {
-                guard result.count < BackupAidokuLegacyWirePolicy.maximumInstalledSources else {
-                    throw DecodingError.dataCorruptedError(
-                        in: container,
-                        debugDescription: "Legacy Reader installed-source list is too large."
-                    )
-                }
-                let source = try container.decode(PersistedAidokuSource.self)
-                guard seen.insert(source.id).inserted else {
-                    throw DecodingError.dataCorruptedError(
-                        in: container,
-                        debugDescription: "Legacy Reader installed-source identities must be unique."
-                    )
-                }
-                result.append(source)
-            }
-            values = result
-        }
-    }
-
-    /// Returns false whenever a Reader migration or metadata store cannot be verified.
-    /// Callers must stay inert rather than normalizing an unreadable store into an empty
-    /// one. The reconnect preflight gates only destructive legacy-artifact cleanup, never
-    /// runtime availability.
-    @discardableResult
-    static func runAllKnownProfilesIfNeeded() -> Bool {
-        let recoveredInterruptedReconnect: Bool
-        do {
-            recoveredInterruptedReconnect = try ReaderExtensionLegacyReconnectManager
-                .recoverInterruptedReconnectIfNeeded()
-        } catch {
-            ReaderExtensionLegacyReconnectManager.markRecoveryQuarantined(error)
-            return false
-        }
-        if recoveredInterruptedReconnect {
-            NotificationCenter.default.post(
-                name: .readerExtensionLegacyRoutesDidReconnect,
-                object: nil
-            )
-        }
-        let profileManager = ProfileManager.shared
-        var stores: [(label: String, store: UserDefaults)] = [
-            ("shared", UserDefaults.standard)
-        ]
-        if profileManager.rosterStoreIsReadable {
-            stores.append(contentsOf: profileManager.profiles.compactMap { profile in
-                guard profile.id != ProfileManager.defaultProfileID else { return nil }
-                return (profile.id.uuidString, ProfileSettingsStore.shared.store(for: profile.id))
-            })
-        }
-
-        var allStoresVerified = profileManager.rosterStoreIsReadable
-        for entry in stores {
-            do {
-                try migrateStoreIfNeeded(entry.store)
-                try validateRuntimeState(in: entry.store)
-            } catch {
-                allStoresVerified = false
-                markQuarantined(entry.store, label: entry.label, error: error)
-                Logger.shared.log(
-                    "Reader Extensions: quarantined unreadable legacy metadata for profile scope \(entry.label) (\(error.localizedDescription)); old packages remain inert and cleanup will retry after repair",
-                    type: "Storage"
-                )
-            }
-        }
-
-        guard allStoresVerified,
-              stores.allSatisfy({ $0.store.bool(forKey: completionKey) }),
-              stores.allSatisfy({ $0.store.object(forKey: quarantineKey) == nil }) else {
-            return false
-        }
-        if ReaderExtensionLegacyReconnectManager.preflightStoresForCleanup() {
-            removeLegacyArtifactsIfSafe()
-        }
-        return true
-    }
-
-    /// Validates current Reader Extension metadata even after the one-shot legacy marker
-    /// has been set. This prevents a later corrupt value from being treated as an empty
-    /// repository/source/preference collection by a live manager.
-    static func validateRuntimeState(in store: UserDefaults) throws {
-        _ = try ReaderExtensionPersistence.loadRepositories(from: store)
-        let sources = try ReaderExtensionPersistence.loadInstalledSources(from: store)
-        _ = try ReaderExtensionPersistence.applyingPreferenceOverlay(
-            to: sources,
-            from: store
-        )
-    }
-
-    static func legacySources(
-        in store: UserDefaults = ProfileSettingsStore.services
-    ) -> [BackupLegacyAidokuSourceMetadata] {
-        (try? validatedLegacySources(in: store)) ?? []
-    }
-
-    static func validatedLegacySources(
-        in store: UserDefaults = ProfileSettingsStore.services
-    ) throws -> [BackupLegacyAidokuSourceMetadata] {
-        guard let value = store.object(
-            forKey: BackupReaderExtensionState.legacyAidokuSourcesStorageKey
-        ) else {
-            return []
-        }
-        guard let data = value as? Data else {
-            throw MigrationError.unreadableLegacyMetadata
-        }
-        return try validatedLegacySources(data: data)
-    }
-
-    static func validatedLegacySources(
-        data: Data
-    ) throws -> [BackupLegacyAidokuSourceMetadata] {
-        guard !data.isEmpty,
-              data.count <= BackupReaderExtensionState.maximumMetadataBytes else {
-            throw MigrationError.unreadableLegacyMetadata
-        }
-        do {
-            return try BackupReaderExtensionState.decodeLegacySources(from: data)
-        } catch {
-            throw MigrationError.unsafeLegacyMetadata
-        }
-    }
-
-    static func removeReconnectedLegacySource(
-        id: String,
-        in store: UserDefaults = ProfileSettingsStore.services
-    ) throws {
-        let remaining = try validatedLegacySources(in: store).filter { $0.id != id }
-        if remaining.isEmpty {
-            store.removeObject(forKey: BackupReaderExtensionState.legacyAidokuSourcesStorageKey)
-        } else {
-            let encoded = try JSONEncoder().encode(remaining)
-            guard encoded.count <= BackupReaderExtensionState.maximumMetadataBytes else {
-                throw MigrationError.unsafeLegacyMetadata
-            }
-            store.set(encoded, forKey: BackupReaderExtensionState.legacyAidokuSourcesStorageKey)
-        }
-    }
-
-    static func legacyStableKey(sourceID: String, itemKey: String) -> String {
-        "aidoku:\(sourceID):\(itemKey)"
-    }
-
-    /// The composed key, or nil when the legacy identifiers make one that
-    /// `MangaContentRoute`'s decoder would reject. Writing a rejected key is
-    /// not a cosmetic problem: the decode throws, and the library store is
-    /// quarantined wholesale on the next load.
-    static func persistableLegacyStableKey(sourceID: String, itemKey: String) -> String? {
-        let composed = legacyStableKey(sourceID: sourceID, itemKey: itemKey)
-        guard composed == composed.trimmingCharacters(in: .whitespacesAndNewlines),
-              composed.utf8.count <= 32 * 1_024,
-              !composed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
-        else {
-            return nil
-        }
-        return composed
-    }
-
-    static func hasQuarantinedMetadata(
-        in store: UserDefaults = ProfileSettingsStore.services
-    ) -> Bool {
-        store.object(forKey: quarantineKey) != nil
-    }
-
-    static func migrateStoreIfNeeded(_ store: UserDefaults) throws {
-        let containsLegacyState = legacyKeys.contains { store.object(forKey: $0) != nil }
-        if store.bool(forKey: completionKey), !containsLegacyState { return }
-
-        let previousValues = transactionKeys.map { ($0, store.object(forKey: $0)) }
-        do {
-            guard let legacyState = try legacyState(in: store) else {
-                store.set(true, forKey: completionKey)
-                store.removeObject(forKey: quarantineKey)
-                return
-            }
-
-            let migratedLegacySources = legacyState.installedSources.compactMap(
-                BackupLegacyAidokuSourceMetadata.init
-            )
-            guard migratedLegacySources.count == legacyState.installedSources.count else {
-                throw MigrationError.unsafeLegacyMetadata
-            }
-
-            let existingSnapshot = try ReaderExtensionPersistence.backupSnapshot(from: store)
-            let existingLegacySources = try validatedLegacySources(in: store)
-            var seenLegacySourceIDs = Set<String>()
-            let mergedLegacySources = (existingLegacySources + migratedLegacySources).filter {
-                seenLegacySourceIDs.insert($0.id).inserted
-            }
-            let hasExplicitReaderExtensionState = !existingSnapshot.repositories.isEmpty
-                || !existingSnapshot.installedSources.isEmpty
-                || store.object(forKey: ReaderExtensionPersistence.showMatureSourcesKey) != nil
-                || store.object(forKey: ReaderExtensionPersistence.autoUpdateSourcesKey) != nil
-            let mergedSnapshot = ReaderExtensionBackupSnapshot(
-                repositories: existingSnapshot.repositories,
-                installedSources: existingSnapshot.installedSources,
-                showMatureSources: hasExplicitReaderExtensionState
-                    ? existingSnapshot.showMatureSources
-                    : legacyState.showMatureSources,
-                autoUpdateSources: hasExplicitReaderExtensionState
-                    ? existingSnapshot.autoUpdateSources
-                    : legacyState.autoUpdateSources,
-                lastAutoUpdate: existingSnapshot.lastAutoUpdate ?? legacyState.lastAutoUpdate
-            )
-            let portableState = try BackupReaderExtensionState(
-                snapshot: mergedSnapshot,
-                legacyAidokuSources: mergedLegacySources
-            )
-            try portableState.restore(to: store)
-
-            legacyKeys.forEach(store.removeObject(forKey:))
-            store.set(true, forKey: completionKey)
-            store.removeObject(forKey: quarantineKey)
-
-            let persistedLegacyIDs = Set(
-                try validatedLegacySources(in: store).map(\.id)
-            )
-            guard legacyKeys.allSatisfy({ store.object(forKey: $0) == nil }),
-                  store.bool(forKey: completionKey),
-                  persistedLegacyIDs.isSuperset(
-                    of: Set(migratedLegacySources.map(\.id))
-                  ) else {
-                throw MigrationError.verificationFailed
-            }
-        } catch {
-            for (key, value) in previousValues {
-                if let value {
-                    store.set(value, forKey: key)
-                } else {
-                    store.removeObject(forKey: key)
-                }
-            }
-            throw error
-        }
-    }
-
-    private static func legacyState(in store: UserDefaults) throws -> BackupAidokuState? {
-        guard legacyKeys.contains(where: { store.object(forKey: $0) != nil }) else {
-            return nil
-        }
-        let installedSources: [BackupAidokuInstalledSource]
-        if let data = store.data(forKey: "kanzenAidokuInstalledSources") {
-            guard data.count <= BackupReaderExtensionState.maximumMetadataBytes,
-                  let decoded = try? JSONDecoder().decode(
-                      BoundedPersistedAidokuSources.self,
-                      from: data
-                  ) else {
-                throw MigrationError.unreadableLegacyMetadata
-            }
-            installedSources = decoded.values.map(\.backupRecord)
-        } else {
-            installedSources = []
-        }
-        return BackupAidokuState(
-            sourceLists: [],
-            installedSources: installedSources,
-            showMatureSources: store.bool(forKey: "kanzenAidokuShowMatureSources"),
-            autoUpdateSources: store.object(forKey: "kanzenAidokuAutoUpdateSources") == nil
-                ? true
-                : store.bool(forKey: "kanzenAidokuAutoUpdateSources"),
-            lastAutoUpdate: store.object(forKey: "kanzenAidokuLastAutoUpdate") as? Date,
-            sharedPayloads: nil
-        )
-    }
-
-    private static func markQuarantined(
-        _ store: UserDefaults,
-        label: String,
-        error: Error
-    ) {
-        store.set(
-            [
-                "failedAt": Date().timeIntervalSince1970,
-                "profileScope": String(label.prefix(64)),
-                "reason": String(reflecting: type(of: error)),
-                "detail": String(error.localizedDescription.prefix(256))
-            ] as [String: Any],
-            forKey: quarantineKey
-        )
-        store.removeObject(forKey: completionKey)
-    }
-
-    private static func removeLegacyArtifactsIfSafe() {
-        let fileManager = FileManager.default
-        let applicationSupport = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0].standardizedFileURL
-        let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .standardizedFileURL
-        let targets = [
-            applicationSupport.appendingPathComponent("KanzenAidoku", isDirectory: true),
-            caches.appendingPathComponent("ReaderAidokuZipCache", isDirectory: true),
-            caches.appendingPathComponent("KanzenAidoku", isDirectory: true)
-        ]
-        let allowedNames = Set(["KanzenAidoku", "ReaderAidokuZipCache"])
-        var removedCount = 0
-        for target in targets {
-            let standardized = target.standardizedFileURL
-            let values = try? standardized.resourceValues(forKeys: [
-                .isDirectoryKey,
-                .isSymbolicLinkKey
-            ])
-            guard allowedNames.contains(standardized.lastPathComponent),
-                  standardized.deletingLastPathComponent() == applicationSupport
-                    || standardized.deletingLastPathComponent() == caches,
-                  fileManager.fileExists(atPath: standardized.path),
-                  values?.isDirectory == true,
-                  values?.isSymbolicLink != true else {
-                continue
-            }
-            do {
-                try fileManager.removeItem(at: standardized)
-                removedCount += 1
-            } catch {
-                Logger.shared.log(
-                    "Reader Extensions: legacy Reader artifact cleanup will retry (\(standardized.lastPathComponent))",
-                    type: "Storage"
-                )
-            }
-        }
-        let temporaryRoot = fileManager.temporaryDirectory.standardizedFileURL
-        let legacyTemporaryPrefix = "kanzen-aidoku-"
-        let temporaryCandidates = ((try? fileManager.contentsOfDirectory(
-            at: temporaryRoot,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: [.skipsHiddenFiles]
-        )) ?? [])
-            .filter { url in
-                let name = url.lastPathComponent
-                guard name.hasPrefix(legacyTemporaryPrefix) else { return false }
-                let suffix = String(name.dropFirst(legacyTemporaryPrefix.count))
-                return UUID(uuidString: suffix) != nil
-            }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .prefix(256)
-        for candidate in temporaryCandidates {
-            let standardized = candidate.standardizedFileURL
-            let values = try? standardized.resourceValues(forKeys: [
-                .isDirectoryKey,
-                .isSymbolicLinkKey
-            ])
-            guard standardized.deletingLastPathComponent() == temporaryRoot,
-                  values?.isDirectory == true,
-                  values?.isSymbolicLink != true else { continue }
-            do {
-                try fileManager.removeItem(at: standardized)
-                removedCount += 1
-            } catch {
-                Logger.shared.log(
-                    "Reader Extensions: legacy Reader temporary-package cleanup will retry",
-                    type: "Storage"
-                )
-            }
-        }
-        if removedCount > 0 {
-            Logger.shared.log(
-                "Reader Extensions: removed \(removedCount) verified legacy package/cache location(s)",
-                type: "Storage"
-            )
-        }
-    }
-}
-#endif
-
-struct ExperimentalCloudSnapshotFootprint: Codable, Equatable {
-    static let maximumDomainRecordCount = 10_000_000
-
-    let libraryItems: Int
-    let movieProgress: Int
-    let episodeProgress: Int
-    let mangaLibraryItems: Int
-    let mangaReadingProgress: Int
-    let userRatings: Int
-    let services: Int
-    let stremioAddons: Int
-    let skyStreamSources: Int
-    let kanzenModules: Int
-    let aidokuSources: Int
-    let contentDigest: String?
-    let contentDigestExcludingCloudKitMediaState: String?
-
-    init(snapshot: BackupData, encodedData: Data) {
-        libraryItems = Self.boundedSum(snapshot.collections.map { $0.items.count })
-        movieProgress = Self.boundedCount(snapshot.progressData.movieProgress.count)
-        episodeProgress = Self.boundedCount(snapshot.progressData.episodeProgress.count)
-        mangaLibraryItems = Self.boundedSum(snapshot.mangaCollections.map { $0.items.count })
-        mangaReadingProgress = Self.boundedCount(snapshot.mangaReadingProgress.count)
-        userRatings = Self.boundedCount(snapshot.userRatings.count)
-        services = Self.boundedCount(snapshot.services.count)
-        stremioAddons = Self.boundedCount(snapshot.stremioAddons?.count ?? 0)
-        skyStreamSources = Self.boundedSum([
-            snapshot.skyStream?.repositories.count ?? 0,
-            snapshot.skyStream?.plugins.count ?? 0
-        ])
-        kanzenModules = Self.boundedCount(snapshot.kanzenModules.count)
-        // Keep the encoded field name for cloud-schema compatibility while counting the
-        // replacement Reader Extensions domain (including unresolved legacy reconnect rows).
-        aidokuSources = Self.boundedCount(
-            snapshot.readerExtensionsState?.sourceCountForCompatibility
-                ?? snapshot.aidokuState?.installedSources.count
-                ?? 0
-        )
-        let digests = Self.stableContentDigests(for: encodedData)
-        contentDigest = digests.full
-        contentDigestExcludingCloudKitMediaState = digests.excludingCloudKitMediaState
-    }
-
-    var meaningfulRecordCount: Int {
-        Self.safeSum(counts)
-    }
-
-    func isSuspiciousReduction(from previous: Self) -> Bool {
-        zip(previous.counts, counts).contains { oldCount, newCount in
-            guard newCount < oldCount else { return false }
-            if newCount == 0 { return true }
-            let removed = oldCount - newCount
-            let majorityThreshold = oldCount / 2 + oldCount % 2
-            return removed >= 3 && removed >= majorityThreshold
-        }
-    }
-
-    func hasMeaningfullyMoreData(than other: Self) -> Bool {
-        other.isSuspiciousReduction(from: self)
-    }
-
-    func hasAnyMoreData(than other: Self) -> Bool {
-        zip(counts, other.counts).contains { currentCount, otherCount in
-            currentCount > otherCount
-        }
-    }
-
-    func hasDifferentContent(than other: Self) -> Bool {
-        if let contentDigest, let otherDigest = other.contentDigest {
-            return contentDigest != otherDigest
-        }
-        return counts != other.counts
-    }
-
-    func excludingCloudKitMediaState() -> Self {
-        Self(
-            libraryItems: 0,
-            movieProgress: 0,
-            episodeProgress: 0,
-            mangaLibraryItems: mangaLibraryItems,
-            mangaReadingProgress: mangaReadingProgress,
-            userRatings: 0,
-            services: services,
-            stremioAddons: stremioAddons,
-            skyStreamSources: skyStreamSources,
-            kanzenModules: kanzenModules,
-            aidokuSources: aidokuSources,
-            contentDigest: contentDigestExcludingCloudKitMediaState,
-            contentDigestExcludingCloudKitMediaState: contentDigestExcludingCloudKitMediaState
-        )
-    }
-
-    init(
-        libraryItems: Int,
-        movieProgress: Int,
-        episodeProgress: Int,
-        mangaLibraryItems: Int,
-        mangaReadingProgress: Int,
-        userRatings: Int,
-        services: Int,
-        stremioAddons: Int,
-        skyStreamSources: Int,
-        kanzenModules: Int,
-        aidokuSources: Int,
-        contentDigest: String?,
-        contentDigestExcludingCloudKitMediaState: String?
-    ) {
-        self.libraryItems = Self.boundedCount(libraryItems)
-        self.movieProgress = Self.boundedCount(movieProgress)
-        self.episodeProgress = Self.boundedCount(episodeProgress)
-        self.mangaLibraryItems = Self.boundedCount(mangaLibraryItems)
-        self.mangaReadingProgress = Self.boundedCount(mangaReadingProgress)
-        self.userRatings = Self.boundedCount(userRatings)
-        self.services = Self.boundedCount(services)
-        self.stremioAddons = Self.boundedCount(stremioAddons)
-        self.skyStreamSources = Self.boundedCount(skyStreamSources)
-        self.kanzenModules = Self.boundedCount(kanzenModules)
-        self.aidokuSources = Self.boundedCount(aidokuSources)
-        self.contentDigest = contentDigest
-        self.contentDigestExcludingCloudKitMediaState = contentDigestExcludingCloudKitMediaState
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case libraryItems, movieProgress, episodeProgress, mangaLibraryItems
-        case mangaReadingProgress, userRatings, services, stremioAddons
-        case skyStreamSources, kanzenModules, aidokuSources, contentDigest
-        case contentDigestExcludingCloudKitMediaState
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        libraryItems = try Self.decodeCount(from: container, forKey: .libraryItems)
-        movieProgress = try Self.decodeCount(from: container, forKey: .movieProgress)
-        episodeProgress = try Self.decodeCount(from: container, forKey: .episodeProgress)
-        mangaLibraryItems = try Self.decodeCount(from: container, forKey: .mangaLibraryItems)
-        mangaReadingProgress = try Self.decodeCount(from: container, forKey: .mangaReadingProgress)
-        userRatings = try Self.decodeCount(from: container, forKey: .userRatings)
-        services = try Self.decodeCount(from: container, forKey: .services)
-        stremioAddons = try Self.decodeCount(from: container, forKey: .stremioAddons)
-        skyStreamSources = try Self.decodeCount(from: container, forKey: .skyStreamSources)
-        kanzenModules = try Self.decodeCount(from: container, forKey: .kanzenModules)
-        aidokuSources = try Self.decodeCount(from: container, forKey: .aidokuSources)
-        contentDigest = try container.decodeIfPresent(String.self, forKey: .contentDigest)
-        contentDigestExcludingCloudKitMediaState = try container.decodeIfPresent(
-            String.self,
-            forKey: .contentDigestExcludingCloudKitMediaState
-        )
-    }
-
-    private var counts: [Int] {
-        [
-            libraryItems,
-            movieProgress,
-            episodeProgress,
-            mangaLibraryItems,
-            mangaReadingProgress,
-            userRatings,
-            services,
-            stremioAddons,
-            skyStreamSources,
-            kanzenModules,
-            aidokuSources
-        ]
-    }
-
-    private static func decodeCount(
-        from container: KeyedDecodingContainer<CodingKeys>,
-        forKey key: CodingKeys
-    ) throws -> Int {
-        let value = try container.decodeIfPresent(Int.self, forKey: key) ?? 0
-        guard (0...maximumDomainRecordCount).contains(value) else {
-            throw DecodingError.dataCorruptedError(
-                forKey: key,
-                in: container,
-                debugDescription: "Snapshot footprint count is negative or exceeds its bound."
-            )
-        }
-        return value
-    }
-
-    private static func boundedCount(_ value: Int) -> Int {
-        min(max(0, value), maximumDomainRecordCount)
-    }
-
-    private static func boundedSum(_ values: [Int]) -> Int {
-        min(safeSum(values), maximumDomainRecordCount)
-    }
-
-    private static func safeSum(_ values: [Int]) -> Int {
-        values.reduce(into: 0) { total, value in
-            let nonnegative = max(0, value)
-            let (sum, overflow) = total.addingReportingOverflow(nonnegative)
-            total = overflow ? Int.max : sum
-        }
-    }
-
-    private static func stableContentDigests(
-        for data: Data
-    ) -> (full: String?, excludingCloudKitMediaState: String?) {
-#if canImport(CryptoKit)
-        guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return (nil, nil)
-        }
-
-        object.removeValue(forKey: "createdDate")
-        object.removeValue(forKey: "version")
-        [
-            "githubReleaseUpdateAvailable",
-            "githubReleaseLatestVersion",
-            "githubReleaseURL",
-            "githubReleaseShowAlertPending",
-            "githubReleaseLastPromptedVersion",
-            "localNotificationSubscriptions",
-            "localNotificationEpisodeReminders"
-        ].forEach { object.removeValue(forKey: $0) }
-        if var skyStream = object["skyStream"] as? [String: Any] {
-            skyStream.removeValue(forKey: "createdAt")
-            object["skyStream"] = skyStream
-        }
-        object = scrubTransientCloudMetadata(object) as? [String: Any] ?? object
-        guard let normalizedData = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return (nil, nil)
-        }
-        let full = SHA256.hash(data: normalizedData)
-            .map { String(format: "%02x", $0) }
-            .joined()
-#if DEBUG
-        if ProcessInfo.processInfo.environment["ECLIPSE_DEBUG_DIGEST_DUMP"] == "1",
-           let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            let stamp = Int(Date().timeIntervalSince1970 * 1000)
-            try? normalizedData.write(
-                to: documents.appendingPathComponent("digest-dump-\(stamp)-\(String(full.prefix(8))).json")
-            )
-        }
-#endif
-        var excludingMediaState = object
-        [
-            "collections",
-            "progressData",
-            "userRatings",
-            "userRatingNotes",
-            "catalogs",
-            "mediaStateSettings"
-        ].forEach { excludingMediaState.removeValue(forKey: $0) }
-        if let profiles = excludingMediaState["profiles"] as? [[String: Any]] {
-            let canonicalProfileKeys: Set<String> = [
-
-                "name", "avatarSymbol", "avatarColorHex", "avatarPhotoData",
-                "isKidsProfile", "createdAt", "pinHash", "pinChangedAt",
-                "kidsFlagChangedAt",
-
-                "collections", "progressData", "catalogs", "userRatings",
-                "userRatingNotes", "progressWasCaptured",
-                "ratingsWereCaptured", "collectionsWereCaptured",
-                "catalogsWereCaptured"
-            ]
-            excludingMediaState["profiles"] = profiles.map { profile in
-                var sourceAndReaderOnly = profile.filter {
-                    !canonicalProfileKeys.contains($0.key)
-                }
-                if var settings = sourceAndReaderOnly["settings"] as? [String: Any] {
-                    for key in Array(settings.keys)
-                    where MediaStateSettingRegistry.scope(for: key) != nil {
-                        settings.removeValue(forKey: key)
-                    }
-                    sourceAndReaderOnly["settings"] = settings
-                }
-                return sourceAndReaderOnly
-            }
-        }
-        guard let mediaIndependentData = try? JSONSerialization.data(
-            withJSONObject: excludingMediaState,
-            options: [.sortedKeys]
-        ) else {
-            return (full, nil)
-        }
-        let excluding = SHA256.hash(data: mediaIndependentData)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return (full, excluding)
-#else
-        return (nil, nil)
-#endif
-    }
-
-    private static func scrubTransientCloudMetadata(_ value: Any) -> Any {
-        let transientKeys: Set<String> = [
-            "createdAt", "lastRefresh", "lastRefreshedAt", "lastError", "lastUpdated",
-            "installedAt", "updatedAt", "pinnedAt", "evaluatedAt",
-            "lastAutoUpdate", "detectedAt", "lastSourceRefresh", "sourceRefreshError"
-        ]
-        let embeddedJSONBlobKeys: Set<String> = ["metadataJSON"]
-        let unorderedStringSetKeys: Set<String> = [
-            "runtimeCapabilities", "secretPreferenceKeys", "declaredDomains", "userApprovedDomains"
-        ]
-        if let dictionary = value as? [String: Any] {
-            return dictionary.reduce(into: [String: Any]()) { result, entry in
-                guard !transientKeys.contains(entry.key) else { return }
-                if embeddedJSONBlobKeys.contains(entry.key),
-                   let normalized = normalizedEmbeddedJSONBlobForDigest(entry.value) {
-                    result[entry.key] = normalized
-                    return
-                }
-                if unorderedStringSetKeys.contains(entry.key),
-                   let strings = entry.value as? [String] {
-                    result[entry.key] = strings.sorted()
-                    return
-                }
-                result[entry.key] = scrubTransientCloudMetadata(entry.value)
-            }
-        }
-        if let array = value as? [Any] {
-            return array.map(scrubTransientCloudMetadata)
-        }
-        return value
-    }
-
-    private static func normalizedEmbeddedJSONBlobForDigest(_ value: Any) -> String? {
-        guard let base64 = value as? String,
-              let data = Data(base64Encoded: base64),
-              let decoded = try? JSONSerialization.jsonObject(with: data) else {
-            return nil
-        }
-        let scrubbed = scrubTransientCloudMetadata(decoded)
-        guard JSONSerialization.isValidJSONObject(scrubbed),
-              let canonical = try? JSONSerialization.data(
-                  withJSONObject: scrubbed,
-                  options: [.sortedKeys]
-              ) else {
-            return nil
-        }
-        return String(decoding: canonical, as: UTF8.self)
-    }
-}
-
-struct ExperimentalCloudSnapshot: @unchecked Sendable {
-    let data: Data
-    let footprint: ExperimentalCloudSnapshotFootprint
-}
-
-struct ExperimentalCloudRestoreResult: Sendable {
-    let authoritativeTrackerProfileIDs: Set<UUID>
-}
-
-#if !os(tvOS)
-enum ReaderExtensionRestoreReloadPolicy {
-    static func restoreSurvives(_ error: Error) -> Bool {
-        guard let readerError = error as? ReaderExtensionError else { return false }
-        return readerError == .runtimeUnavailable
-    }
-}
-#endif
-
-enum ExperimentalCloudBackupDomainReadiness {
-    case ready
-    case loading
-    case unavailable
-}
-
-enum ManualBackupRestoreScope: Sendable {
-    case thisDeviceOnly
-    case replaceEverywhere
-
-    var keepsChangesOnThisDevice: Bool {
-        switch self {
-        case .thisDeviceOnly:
-            return true
-        case .replaceEverywhere:
-            return false
-        }
-    }
-}
-
-enum BackupReaderUpscaleModelRestorePolicy {
-    static func modelNameToApply(
-        incoming: String,
-        preservesDeviceLocalSelection: Bool
-    ) -> String? {
-        preservesDeviceLocalSelection ? nil : incoming
-    }
-}
-
-enum ExperimentalCloudSnapshotPreparation: @unchecked Sendable {
-    case ready(ExperimentalCloudSnapshot)
-    case deferredWhileSourcesLoad
-    case sourcesUnavailable
-    case failed
-
-    var snapshot: ExperimentalCloudSnapshot? {
-        guard case let .ready(snapshot) = self else { return nil }
-        return snapshot
-    }
-}
-
-struct ExperimentalCloudRestoreBoundaryContext: Codable, Equatable, Sendable {
-    let providerRawValue: String
-    let generation: Int
-    let pendingIdentity: String?
-    let outgoingProfileIDs: [UUID]
-    let restoredTrackerProfileIDs: [UUID]
-
-    init(
-        providerRawValue: String,
-        generation: Int,
-        pendingIdentity: String?,
-        outgoingProfileIDs: [UUID],
-        restoredTrackerProfileIDs: [UUID] = []
-    ) {
-        self.providerRawValue = providerRawValue
-        self.generation = generation
-        self.pendingIdentity = pendingIdentity
-        self.outgoingProfileIDs = outgoingProfileIDs
-        self.restoredTrackerProfileIDs = restoredTrackerProfileIDs
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case providerRawValue
-        case generation
-        case pendingIdentity
-        case outgoingProfileIDs
-        case restoredTrackerProfileIDs
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        providerRawValue = try container.decode(String.self, forKey: .providerRawValue)
-        generation = try container.decode(Int.self, forKey: .generation)
-        pendingIdentity = try container.decodeIfPresent(String.self, forKey: .pendingIdentity)
-        outgoingProfileIDs = try container.decode([UUID].self, forKey: .outgoingProfileIDs)
-        restoredTrackerProfileIDs = try container.decodeIfPresent(
-            [UUID].self,
-            forKey: .restoredTrackerProfileIDs
-        ) ?? []
-    }
-}
-
-enum ExperimentalCloudTrackerAccountBoundaryPolicy {
-    static func profileIDsToClear(
-        outgoingProfileIDs: Set<UUID>,
-        restoredTrackerProfileIDs: Set<UUID>
-    ) -> Set<UUID> {
-        outgoingProfileIDs.subtracting(restoredTrackerProfileIDs)
-    }
-}
-
-enum ExperimentalCloudRestoreRecoveryKind: String, Codable, Sendable {
-    case ordinaryCloudRestore
-    case accountBoundary
-}
-
-enum ExperimentalCloudRestoreTransactionState: String, Codable, Sendable {
-
-    case preparing
-    case prepared
-
-    case keepLocalWriteAuthorized
-
-    case commitAuthorized
-
-    case completed
-}
-
-struct ExperimentalCloudRestoreRecoveryManifest: Codable, Sendable {
-    let schemaVersion: Int
-    let transactionID: UUID
-    var state: ExperimentalCloudRestoreTransactionState
-    let recoveryKind: ExperimentalCloudRestoreRecoveryKind
-    var accountBoundaryContext: ExperimentalCloudRestoreBoundaryContext?
-    let hasCanonicalArchiveRecovery: Bool
-    let hasMediaStateRecoveryTransaction: Bool
-    let keepLocalTransportPayloadByteCount: Int?
-    let keepLocalTransportPayloadSHA256: String?
-
-    init(
-        transactionID: UUID,
-        state: ExperimentalCloudRestoreTransactionState,
-        accountBoundaryContext: ExperimentalCloudRestoreBoundaryContext?,
-        hasCanonicalArchiveRecovery: Bool,
-        hasMediaStateRecoveryTransaction: Bool,
-        keepLocalTransportPayload: Data? = nil
-    ) {
-        schemaVersion = 2
-        self.transactionID = transactionID
-        self.state = state
-        recoveryKind = accountBoundaryContext == nil
-            ? .ordinaryCloudRestore
-            : .accountBoundary
-        self.accountBoundaryContext = accountBoundaryContext
-        self.hasCanonicalArchiveRecovery = hasCanonicalArchiveRecovery
-        self.hasMediaStateRecoveryTransaction = hasMediaStateRecoveryTransaction
-        keepLocalTransportPayloadByteCount = keepLocalTransportPayload?.count
-#if canImport(CryptoKit)
-        keepLocalTransportPayloadSHA256 = keepLocalTransportPayload.map {
-            SHA256.hash(data: $0)
-                .map { String(format: "%02x", $0) }
-                .joined()
-        }
-#else
-        keepLocalTransportPayloadSHA256 = keepLocalTransportPayload == nil ? nil : ""
-#endif
-    }
-
-    var hasKeepLocalTransportPayload: Bool {
-        keepLocalTransportPayloadByteCount != nil
-            && keepLocalTransportPayloadSHA256 != nil
-    }
-
-    func validatesKeepLocalTransportPayload(_ payload: Data) -> Bool {
-        guard let expectedByteCount = keepLocalTransportPayloadByteCount,
-              let expectedDigest = keepLocalTransportPayloadSHA256,
-              payload.count == expectedByteCount else {
-            return false
-        }
-#if canImport(CryptoKit)
-        let digest = SHA256.hash(data: payload)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return digest == expectedDigest
-#else
-        return expectedDigest.isEmpty
-#endif
-    }
-}
-
-struct ExperimentalCloudKeepLocalReplay: @unchecked Sendable {
-    let transactionID: UUID
-    let context: ExperimentalCloudRestoreBoundaryContext
-    let snapshot: ExperimentalCloudSnapshot
-}
-
-enum ExperimentalCloudTrackerCleanupAuthority: Sendable {
-    case none
-    case authorized(ExperimentalCloudRestoreBoundaryContext)
-    case blocked
-}
-
-struct ExperimentalCloudRestoreRecoveryOwnership: Codable, Sendable {
-    let schemaVersion: Int
-    let transactionID: UUID
-    let recoveryKind: ExperimentalCloudRestoreRecoveryKind
-    let payloadByteCount: Int
-    let payloadSHA256: String
-
-    init(
-        transactionID: UUID,
-        recoveryKind: ExperimentalCloudRestoreRecoveryKind,
-        payload: Data
-    ) {
-        schemaVersion = 1
-        self.transactionID = transactionID
-        self.recoveryKind = recoveryKind
-        payloadByteCount = payload.count
-#if canImport(CryptoKit)
-        payloadSHA256 = SHA256.hash(data: payload)
-            .map { String(format: "%02x", $0) }
-            .joined()
-#else
-        payloadSHA256 = ""
-#endif
-    }
-
-    func validates(
-        transactionID expectedTransactionID: UUID,
-        recoveryKind expectedRecoveryKind: ExperimentalCloudRestoreRecoveryKind,
-        payload: Data
-    ) -> Bool {
-        guard schemaVersion == 1,
-              transactionID == expectedTransactionID,
-              recoveryKind == expectedRecoveryKind,
-              payloadByteCount == payload.count else {
-            return false
-        }
-#if canImport(CryptoKit)
-        let digest = SHA256.hash(data: payload)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return payloadSHA256 == digest
-#else
-        return payloadSHA256.isEmpty
-#endif
-    }
-}
-
-extension Notification.Name {
-    static let experimentalCloudRestoreRecoveryDidComplete = Notification.Name(
-        "experimentalCloudRestoreRecoveryDidComplete"
-    )
-}
-
-struct BackupCollection: Codable {
-    private static let maximumItemCount = 100_000
-
-    let id: UUID
-    let name: String
-    let items: [LibraryItem]
-    let description: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case id, name, items, description
-    }
-
-    /// Consume each array element through its own decoder so one hostile media
-    /// identity cannot make a present collection (or neighboring valid items)
-    /// disappear. The collection's `items` key remains required: missing/null
-    /// still fails the collection decode and therefore cannot acquire empty
-    /// replacement authority.
-    private struct LossyLibraryItems: Decodable {
-        let values: [LibraryItem]
-
-        init(from decoder: Decoder) throws {
-            var container = try decoder.unkeyedContainer()
-            if let count = container.count,
-               count > BackupCollection.maximumItemCount {
-                throw DecodingError.dataCorruptedError(
-                    in: container,
-                    debugDescription: "Backup collection contains too many items."
-                )
-            }
-            var decoded: [LibraryItem] = []
-            decoded.reserveCapacity(
-                min(container.count ?? 0, BackupCollection.maximumItemCount)
-            )
-            var consumedCount = 0
-            while !container.isAtEnd {
-                guard consumedCount < BackupCollection.maximumItemCount else {
-                    throw DecodingError.dataCorruptedError(
-                        in: container,
-                        debugDescription: "Backup collection contains too many items."
-                    )
-                }
-                let candidate = try container.decode(LossyLibraryItem.self)
-                consumedCount += 1
-                if let value = candidate.value {
-                    decoded.append(value)
-                }
-            }
-            values = decoded
-        }
-    }
-
-    private struct LossyLibraryItem: Decodable {
-        let value: LibraryItem?
-
-        init(from decoder: Decoder) throws {
-            value = try? LibraryItem(from: decoder)
-        }
-    }
-
-    init(id: UUID, name: String, items: [LibraryItem], description: String?) {
-        self.id = id
-        self.name = name
-        self.items = Self.sanitizedItems(items)
-        self.description = description
-    }
-
-    init(from collection: LibraryCollection) {
-        self.init(
-            id: collection.id,
-            name: collection.name,
-            items: collection.items,
-            description: collection.description
-        )
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(
-            id: try container.decode(UUID.self, forKey: .id),
-            name: try container.decode(String.self, forKey: .name),
-            items: try container.decode(LossyLibraryItems.self, forKey: .items).values,
-            description: try container.decodeIfPresent(String.self, forKey: .description)
-        )
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(name, forKey: .name)
-        try container.encode(Self.sanitizedItems(items), forKey: .items)
-        try container.encodeIfPresent(description, forKey: .description)
-    }
-
-    var sanitizedForPersistence: BackupCollection {
-        BackupCollection(id: id, name: name, items: items, description: description)
-    }
-
-    func toLibraryCollection() -> LibraryCollection {
-        LibraryCollection(
-            id: id,
-            name: name,
-            items: Self.sanitizedItems(items),
-            description: description
-        )
-    }
-
-    private static func sanitizedItems(_ items: [LibraryItem]) -> [LibraryItem] {
-        Array(items.compactMap { item -> LibraryItem? in
-            guard let result = item.searchResult.sanitizedForPersistence else { return nil }
-            return LibraryItem(searchResult: result, dateAdded: item.dateAdded)
-        }.prefix(maximumItemCount))
-    }
-}
-
-class BackupManager {
-    static let shared = BackupManager()
-
-    static func topLevelDomainIsAuthoritative(
-        payloadWasDecoded: Bool,
-        profileCaptureFlag: Bool?
-    ) -> Bool {
-        payloadWasDecoded && (profileCaptureFlag ?? true)
-    }
-
-    private let manualBackupFailureLock = NSLock()
-    private var manualBackupFailureReason: String?
-    private let manualRestoreResultLock = NSLock()
-    private var manualRestoreFailureReason: String?
-    private var manualRestoreImportedRecordCount = 0
-
-    var lastManualBackupFailureReason: String? {
-        manualBackupFailureLock.lock()
-        defer { manualBackupFailureLock.unlock() }
-        return manualBackupFailureReason
-    }
-
-    var lastManualRestoreFailureReason: String? {
-        manualRestoreResultLock.lock()
-        defer { manualRestoreResultLock.unlock() }
-        return manualRestoreFailureReason
-    }
-
-    var lastManualRestoreImportedRecordCount: Int {
-        manualRestoreResultLock.lock()
-        defer { manualRestoreResultLock.unlock() }
-        return manualRestoreImportedRecordCount
-    }
-
-    private func recordManualRestoreResult(failureReason: String?, importedRecordCount: Int = 0) {
-        manualRestoreResultLock.lock()
-        defer { manualRestoreResultLock.unlock() }
-        manualRestoreFailureReason = failureReason
-        manualRestoreImportedRecordCount = importedRecordCount
-    }
-
-    private func recordManualBackupFailureReason(_ reason: String?) {
-        manualBackupFailureLock.lock()
-        defer { manualBackupFailureLock.unlock() }
-        manualBackupFailureReason = reason
-    }
-
-    private enum BackupCreationError: LocalizedError {
-        case sharedSourcePayloadBudgetExceeded(Int)
-        case activeProfileChanged
-        case profileRosterUnreadable
-        case activeProfileCompatibilityDomainsUnreadable([String])
-        case privateCloudConfigurationIncomplete
-
-        var errorDescription: String? {
-            switch self {
-            case .sharedSourcePayloadBudgetExceeded(let count):
-                return "Backup needs \(count) additional inactive-profile source payload(s). Remove unused packages or reduce their size before exporting."
-            case .activeProfileChanged:
-                return "The active profile or profile roster changed while the backup was being captured. Try exporting again."
-            case .profileRosterUnreadable:
-                return "The saved profile roster could not be read, so Eclipse refused to export an authoritative fallback roster. Restore a valid backup or edit the profile roster, then try again."
-            case .activeProfileCompatibilityDomainsUnreadable(let domains):
-                return "The active profile's \(domains.joined(separator: ", ")) data could not be read. Eclipse refused to create a backup whose legacy compatibility copy could erase healthy data when restored by an older version."
-            case .privateCloudConfigurationIncomplete:
-                return "A private cloud configuration domain could not be captured completely, so Eclipse left the existing cloud snapshot unchanged."
-            }
-        }
-    }
-
-    private enum BackupRestoreError: LocalizedError {
-        case activeProfileChanged
-        case invalidDocument
-        case missingBackupPayload
-        case unsupportedVersion(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .activeProfileChanged:
-                return "The active profile or profile roster changed while the restore was starting. Try importing again."
-            case .invalidDocument:
-                return "This file is not a valid Eclipse backup JSON document."
-            case .missingBackupPayload:
-                return "This backup is incomplete: it does not contain settings, profiles, collections, or watch history."
-            case .unsupportedVersion(let version):
-                return "This backup uses format version \(version), which this Eclipse version cannot read. Update Eclipse and try again."
-            }
-        }
-    }
-
-    private struct ManualRestorePreflight {
-        let watchRecordCount: Int
-        let preferredActiveProfileID: UUID?
-    }
-
-    private struct ActiveProfileScopeToken: Equatable {
-        let profileID: UUID
-        let servicesGeneration: Int
-        let rosterGeneration: UInt64
-    }
-
-    private struct BackupApplicationResult {
-        let authoritativeTrackerProfileIDs: Set<UUID>
-    }
-
-    private struct ScopedBackupApplicationResult {
-        let scope: ActiveProfileScopeToken
-        let authoritativeTrackerProfileIDs: Set<UUID>
-    }
-
-    private struct PrivateConfigurationRestoreResult {
-        let wasRestored: Bool
-        let authoritativeTrackerProfileIDs: Set<UUID>
-    }
-
-    private struct ShareServicesRestoreTransaction {
-        let previousValue: Bool
-        let requestedValue: Bool
-        let activeProfileID: UUID
-        let targetUsesSharedDefaults: Bool
-        let targetStoreSnapshot: ServiceStoreScope.StoreFileSnapshot?
-        let targetSettingsBeforeTransition: [String: Data]
-
-        var didSwitch: Bool { previousValue != requestedValue }
-    }
-
-    private struct ShareServicesRestoreStart {
-        let transaction: ShareServicesRestoreTransaction
-        let scope: ActiveProfileScopeToken
-    }
-
-    private struct BackupCaptureContext {
-        let scope: ActiveProfileScopeToken
-        let profiles: [Profile]
-    }
-
-    static let maximumManualBackupFileBytes = 128 * 1_024 * 1_024
-
-    private static let maximumExperimentalCloudSnapshotBytes = 50_000_000
-
-    private static let maximumSharedSourcePayloadBytes = 32 * 1_024 * 1_024
-
-    private static let maximumSkyStreamScriptBytes = 10 * 1_024 * 1_024
-    private static let maximumSkyStreamArchiveBytes = 20 * 1_024 * 1_024
-
-
-    private let fileManager = FileManager.default
-    private let dateFormatter = ISO8601DateFormatter()
-
-    private var opaqueSkyStreamStorageRootURL: URL? {
-        guard let root = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first else { return nil }
-        return root
-            .appendingPathComponent("Eclipse", isDirectory: true)
-            .appendingPathComponent("SkyStream", isDirectory: true)
-    }
-
-    private var manualOpaqueSkyStreamSnapshotURL: URL? {
-        opaqueSkyStreamStorageRootURL?.appendingPathComponent(
-            SkyStreamOpaqueStorageLayout.manualBackupFilename,
-            isDirectory: false
-        )
-    }
-
-    private var cloudOpaqueSkyStreamSnapshotURL: URL? {
-        opaqueSkyStreamStorageRootURL?.appendingPathComponent(
-            SkyStreamOpaqueStorageLayout.experimentalCloudBackupFilename,
-            isDirectory: false
-        )
-    }
-
-    private var legacyOpaqueSkyStreamSnapshotURL: URL? {
-        opaqueSkyStreamStorageRootURL?.appendingPathComponent(
-            SkyStreamOpaqueStorageLayout.legacySharedFilename,
-            isDirectory: false
-        )
-    }
-
-    private func loadOpaqueSkyStreamSnapshot(preferringSafeCloud: Bool) -> SkyStreamBackupSnapshot? {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let manualCandidates = [manualOpaqueSkyStreamSnapshotURL, legacyOpaqueSkyStreamSnapshotURL]
-            .compactMap { $0 }
-            .map { ($0, Self.maximumManualBackupFileBytes, false) }
-        let cloudCandidates = [cloudOpaqueSkyStreamSnapshotURL]
-            .compactMap { $0 }
-            .map { ($0, Self.maximumExperimentalCloudSnapshotBytes, true) }
-        let candidates = preferringSafeCloud
-            ? cloudCandidates + manualCandidates
-            : manualCandidates + cloudCandidates
-        for (url, maximumBytes, requiresSafeCloudFlag) in candidates {
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-                  values.isRegularFile == true,
-                  (values.fileSize ?? 0) <= maximumBytes,
-                  let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
-                  data.count <= maximumBytes,
-                  let snapshot = try? decoder.decode(SkyStreamBackupSnapshot.self, from: data),
-                  !requiresSafeCloudFlag || snapshot.isSafeCloudSnapshot else {
-                continue
-            }
-            return snapshot
-        }
-        return nil
-    }
-
-    private func persistOpaqueSkyStreamSnapshot(_ snapshot: SkyStreamBackupSnapshot) throws {
-        let canonicalSnapshot: SkyStreamBackupSnapshot
-        let maximumBytes: Int
-        let url: URL
-        if snapshot.isSafeCloudSnapshot {
-            guard let sanitized = BackupData.skyStreamSnapshotForExperimentalCloudSync(snapshot),
-                  let cloudURL = cloudOpaqueSkyStreamSnapshotURL else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-            canonicalSnapshot = sanitized
-            maximumBytes = Self.maximumExperimentalCloudSnapshotBytes
-            url = cloudURL
-        } else {
-            guard let manualURL = manualOpaqueSkyStreamSnapshotURL else {
-                throw CocoaError(.fileNoSuchFile)
-            }
-            canonicalSnapshot = snapshot
-            maximumBytes = Self.maximumManualBackupFileBytes
-            url = manualURL
-        }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(canonicalSnapshot)
-        guard data.count <= maximumBytes else {
-            throw CocoaError(.fileWriteOutOfSpace)
-        }
-        try fileManager.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
-        )
-        try data.write(to: url, options: .atomic)
-        for filename in SkyStreamOpaqueStorageLayout.filenamesInvalidatedAfterWrite(
-            isSafeCloudSnapshot: snapshot.isSafeCloudSnapshot
-        ) {
-            let staleURL = url.deletingLastPathComponent().appendingPathComponent(filename)
-            if fileManager.fileExists(atPath: staleURL.path) {
-                try fileManager.removeItem(at: staleURL)
-            }
-        }
-    }
-
-    private func clearAdoptedOpaqueSkyStreamSnapshot(isSafeCloudSnapshot: Bool) {
-        let candidates: [URL?]
-        if isSafeCloudSnapshot {
-            candidates = [cloudOpaqueSkyStreamSnapshotURL]
-        } else {
-            candidates = [
-                manualOpaqueSkyStreamSnapshotURL,
-                legacyOpaqueSkyStreamSnapshotURL,
-                cloudOpaqueSkyStreamSnapshotURL
-            ]
-        }
-        for url in candidates.compactMap({ $0 }) where fileManager.fileExists(atPath: url.path) {
-            do {
-                try fileManager.removeItem(at: url)
-            } catch {
-                Logger.shared.log(
-                    "Failed to clear adopted opaque SkyStream snapshot errorType=\(String(reflecting: type(of: error)))",
-                    type: "Error"
-                )
-            }
-        }
-    }
-
-    private func performOnMainThread(_ work: () -> Void) {
-        if Thread.isMainThread {
-            work()
-        } else {
-            DispatchQueue.main.sync(execute: work)
-        }
-    }
-
-    private func activeProfileScopeToken() -> ActiveProfileScopeToken {
-        var token = ActiveProfileScopeToken(
-            profileID: ProfileManager.defaultProfileID,
-            servicesGeneration: -1,
-            rosterGeneration: 0
-        )
-        performOnMainThread {
-            token = ActiveProfileScopeToken(
-                profileID: ProfileManager.shared.activeProfileID,
-                servicesGeneration: ServiceStoreScope.generation,
-                rosterGeneration: ProfileManager.shared.rosterGeneration
-            )
-        }
-        return token
-    }
-
-    private func backupCaptureContext() -> BackupCaptureContext? {
-        var context: BackupCaptureContext?
-        performOnMainThread {
-            let manager = ProfileManager.shared
-            guard let profiles = manager.profilesForMediaStateSync else { return }
-            context = BackupCaptureContext(
-                scope: ActiveProfileScopeToken(
-                    profileID: manager.activeProfileID,
-                    servicesGeneration: ServiceStoreScope.generation,
-                    rosterGeneration: manager.rosterGeneration
-                ),
-                profiles: profiles
-            )
-        }
-        return context
-    }
-
-    private func activeProfileScopeIsCurrent(
-        _ token: ActiveProfileScopeToken,
-        includingRoster: Bool = true
-    ) -> Bool {
-        var isCurrent = false
-        performOnMainThread {
-            isCurrent = ProfileManager.shared.activeProfileID == token.profileID
-                && ServiceStoreScope.isCurrent(token.servicesGeneration)
-                && (!includingRoster
-                    || ProfileManager.shared.rosterGeneration == token.rosterGeneration)
-        }
-        return isCurrent
-    }
-
-    private static func parseUserRatings(_ ratings: [String: Any]) -> [String: Double] {
-        Dictionary(uniqueKeysWithValues: ratings.compactMap { key, value -> (String, Double)? in
-            let numericValue: Double?
-            if let number = value as? NSNumber {
-                numericValue = number.doubleValue
-            } else if let value = value as? Double {
-                numericValue = value
-            } else if let value = value as? Int {
-                numericValue = Double(value)
-            } else {
-                numericValue = nil
-            }
-
-            guard let numericValue else { return nil }
-            let finiteValue = numericValue.isFinite ? numericValue : 0.5
-            let halfStepValue = (finiteValue * 2).rounded() / 2
-            return (key, max(0.5, min(10, halfStepValue)))
-        })
-    }
-
-    static func trackerStateWithoutCredentials(_ state: TrackerState) -> TrackerState {
-        var sanitized = state
-        sanitized.accounts = state.accounts.map { account in
-            var metadataOnly = account
-            metadataOnly.accessToken = ""
-            metadataOnly.refreshToken = nil
-            metadataOnly.expiresAt = nil
-            return metadataOnly
-        }
-        return sanitized
-    }
-
-    private struct LegacyCloudMediaStateAuthority {
-        let profileID: UUID
-        let settings: MediaStateLegacyRestoreSettingSnapshot
-
-        let collections: [LibraryCollection]?
-        let progress: ProgressData?
-        let ratings: (values: [String: Double], notes: [String: String])?
-        let catalogs: [Catalog]?
-    }
-
-    private func captureLegacyCloudMediaStateAuthority() -> LegacyCloudMediaStateAuthority {
-        let defaults = UserDefaults.standard
-        let persistentDomain: [String: Any]
-        if let bundleIdentifier = Bundle.main.bundleIdentifier {
-            persistentDomain = defaults.persistentDomain(forName: bundleIdentifier) ?? [:]
-        } else {
-
-            persistentDomain = defaults.dictionaryRepresentation()
-        }
-
-        var collections: [LibraryCollection]?
-        var progress: ProgressData?
-        var ratings: (values: [String: Double], notes: [String: String])?
-        var catalogs: [Catalog]?
-        performOnMainThread {
-
-            let profileManager = ProfileManager.shared
-            guard profileManager.rosterStoreIsReadable else { return }
-            let owner = profileManager.activeProfileID
-            collections = LibraryManager.shared.collections(forProfile: owner)
-            progress = ProgressManager.shared.progressData(forProfile: owner)
-            if let pair = UserRatingManager.shared.ratingsAndNotes(forProfile: owner) {
-                ratings = (values: pair.ratings, notes: pair.notes)
-            }
-            catalogs = CatalogManager.shared.catalogsForBackup(forProfile: owner)
-        }
-
-        return LegacyCloudMediaStateAuthority(
-            profileID: ProfileManager.shared.activeProfileID,
-            settings: MediaStateLegacyRestoreSettingSnapshot(persistentDomain: persistentDomain),
-            collections: collections,
-            progress: progress,
-            ratings: ratings,
-            catalogs: catalogs
-        )
-    }
-
-    private func restoreLegacyCloudMediaStateAuthority(_ authority: LegacyCloudMediaStateAuthority) {
-        performOnMainThread {
-            let defaults = UserDefaults.standard
-            authority.settings.restore(to: defaults)
-
-            if let collections = authority.collections {
-                LibraryManager.shared.replaceCollectionsForMediaState(collections)
-            }
-            if let progress = authority.progress {
-                ProgressManager.shared.replaceProgressDataForRestore(
-                    progress,
-                    expectedProfileID: authority.profileID
-                )
-            }
-            if let ratings = authority.ratings {
-                UserRatingManager.shared.restoreRatingsAndNotes(
-                    ratings: ratings.values,
-                    notes: ratings.notes
-                )
-            }
-
-            if let catalogs = authority.catalogs {
-                let catalogManager = CatalogManager.shared
-                catalogManager.setPerformanceModeEnabled(
-                    defaults.bool(forKey: PerformanceModeSettings.enabledKey)
-                )
-                catalogManager.catalogs = catalogs
-                catalogManager.saveCatalogs()
-            }
-
-            HomeCatalogLayoutStore.shared.reloadFromStorage()
-            Task { @MainActor in
-                EclipseTheme.shared.reloadMediaAppearanceFromDefaults()
-            }
-        }
-    }
-
-    func createBackup() -> URL? {
-        recordManualBackupFailureReason(nil)
-        guard isSkyStreamBackupDomainReady() else {
-            Logger.shared.log(
-                "Backup deferred because the SkyStream plugin manager is still loading; no partial backup was written",
-                type: "Info"
-            )
-            recordManualBackupFailureReason(
-                "Sources are still loading. Wait a moment and try again."
-            )
-            return nil
-        }
-        do {
-            let backupData = try gatherBackupData()
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-
-            let jsonData = try encoder.encode(backupData)
-            guard jsonData.count <= Self.maximumManualBackupFileBytes else {
-                Logger.shared.log(
-                    "Backup was not written because the encoded document exceeded the 128 MB safety limit",
-                    type: "Error"
-                )
-                recordManualBackupFailureReason(
-                    "The backup exceeded the 128 MB safety limit. Remove large source packages and try again."
-                )
-                return nil
-            }
-
-            let timestamp = Date()
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-            let filename = "Eclipse_Backup_\(formatter.string(from: timestamp)).json"
-
-            let documentsDir = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let backupURL = documentsDir.appendingPathComponent(filename)
-
-            try jsonData.write(to: backupURL, options: .atomic)
-            Logger.shared.log("Backup created at: \(backupURL.path)", type: "Info")
-
-            return backupURL
-        } catch {
-            Logger.shared.log("Failed to create backup: \(error.localizedDescription)", type: "Error")
-            recordManualBackupFailureReason(error.localizedDescription)
-            return nil
-        }
-    }
-
-    func createExperimentalCloudSnapshotData() async -> Data? {
-        await createExperimentalCloudSnapshot()?.data
-    }
-
-    @MainActor
-    func createAccountBoundaryRecoverySnapshot() -> ExperimentalCloudSnapshot? {
-        prepareAccountBoundaryRecoverySnapshot().snapshot
-    }
-
-    @MainActor
-    func prepareAccountBoundaryRecoverySnapshot() -> ExperimentalCloudSnapshotPreparation {
-        switch skyStreamBackupDomainReadiness() {
-        case .ready:
-            break
-        case .loading:
-            Logger.shared.log(
-                "Account-boundary recovery snapshot deferred while SkyStream state is loading",
-                type: "CloudSync"
-            )
-            return .deferredWhileSourcesLoad
-        case .unavailable:
-            Logger.shared.log(
-                "Account-boundary recovery snapshot refused because SkyStream state failed to load",
-                type: "CloudSync"
-            )
-            return .sourcesUnavailable
-        }
-        do {
-            let snapshot = try gatherBackupData(
-                useSafeCloudSkyStreamSnapshot: true,
-                includePrivateCloudRecoveryPayloads: true
-            )
-            guard snapshot.privateCloudConfigurationWasCapturedCompletely else {
-                throw BackupCreationError.privateCloudConfigurationIncomplete
-            }
-
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(snapshot)
-            guard data.count <= Self.maximumManualBackupFileBytes else {
-                throw BoundedURLSessionError.responseTooLarge(
-                    maximumBytes: Self.maximumManualBackupFileBytes
-                )
-            }
-            return .ready(
-                ExperimentalCloudSnapshot(
-                    data: data,
-                    footprint: ExperimentalCloudSnapshotFootprint(
-                        snapshot: snapshot,
-                        encodedData: data
-                    )
-                )
-            )
-        } catch {
-            Logger.shared.log(
-                "Failed to create protected account-boundary recovery snapshot: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return .failed
-        }
-    }
-
-    var backupDomainReadiness: ExperimentalCloudBackupDomainReadiness {
-        skyStreamBackupDomainReadiness()
-    }
-
-    var isBackupDomainReadyForSnapshots: Bool {
-        isSkyStreamBackupDomainReady()
-    }
-
-    func createExperimentalCloudSnapshot() async -> ExperimentalCloudSnapshot? {
-        await prepareExperimentalCloudSnapshot().snapshot
-    }
-
-    func prepareExperimentalCloudSnapshot() async -> ExperimentalCloudSnapshotPreparation {
-        switch skyStreamBackupDomainReadiness() {
-        case .ready:
-            break
-        case .loading:
-            Logger.shared.log(
-                "Experimental cloud snapshot deferred while SkyStream state is loading",
-                type: "CloudSync"
-            )
-            return .deferredWhileSourcesLoad
-        case .unavailable:
-            Logger.shared.log(
-                "Experimental cloud snapshot refused because SkyStream state failed to load",
-                type: "CloudSync"
-            )
-            return .sourcesUnavailable
-        }
-        do {
-            let snapshot = try gatherBackupData(useSafeCloudSkyStreamSnapshot: true)
-                .redactedForExperimentalCloudSync(stripSkyStreamArchives: true)
-            guard snapshot.privateCloudConfigurationWasCapturedCompletely else {
-                throw BackupCreationError.privateCloudConfigurationIncomplete
-            }
-            return .ready(try await Task.detached(priority: .utility) {
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                encoder.outputFormatting = [.sortedKeys]
-                var boundedSnapshot = snapshot
-                var data = try encoder.encode(boundedSnapshot)
-
-                if data.count > Self.maximumExperimentalCloudSnapshotBytes,
-                   var skyStream = boundedSnapshot.skyStream {
-                    let archiveIndexes = skyStream.plugins.indices
-                        .filter { skyStream.plugins[$0].archivePayload != nil }
-                        .sorted {
-                            (skyStream.plugins[$0].archivePayload?.count ?? 0)
-                                > (skyStream.plugins[$1].archivePayload?.count ?? 0)
-                        }
-                    for index in archiveIndexes {
-                        skyStream.plugins[index].archivePayload = nil
-                        skyStream.plugins[index].payloadWasRedacted = true
-                        boundedSnapshot.skyStream = skyStream
-                        data = try encoder.encode(boundedSnapshot)
-                        if data.count <= Self.maximumExperimentalCloudSnapshotBytes { break }
-                    }
-                }
-
-                guard data.count <= Self.maximumExperimentalCloudSnapshotBytes else {
-                    throw BoundedURLSessionError.responseTooLarge(
-                        maximumBytes: Self.maximumExperimentalCloudSnapshotBytes
-                    )
-                }
-                return ExperimentalCloudSnapshot(
-                    data: data,
-                    footprint: ExperimentalCloudSnapshotFootprint(
-                        snapshot: boundedSnapshot,
-                        encodedData: data
-                    )
-                )
-            }.value)
-        } catch {
-            Logger.shared.log("Failed to create experimental iCloud snapshot: \(error.localizedDescription)", type: "iCloud")
-            return .failed
-        }
-    }
-
-    func experimentalCloudSnapshotFootprint(from data: Data) -> ExperimentalCloudSnapshotFootprint? {
-        do {
-            guard Self.experimentalCloudSnapshotSchemaIsSupported(data) else {
-                Logger.shared.log("Cloud snapshot uses a newer unsupported schema", type: "CloudSync")
-                return nil
-            }
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let snapshot = try decoder.decode(BackupData.self, from: data).redactedForExperimentalCloudSync()
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.sortedKeys]
-            let canonicalData = try encoder.encode(snapshot)
-            return ExperimentalCloudSnapshotFootprint(snapshot: snapshot, encodedData: canonicalData)
-        } catch {
-            Logger.shared.log("Failed to inspect experimental cloud snapshot: \(error.localizedDescription)", type: "CloudSync")
-            return nil
-        }
-    }
-
-    func restoreExperimentalCloudSnapshot(
-        from data: Data,
-        preserveMediaStateForCloudKit: Bool = true
-    ) async -> ExperimentalCloudRestoreResult? {
-        var shareServicesTransaction: ShareServicesRestoreTransaction?
-        do {
-            guard Self.experimentalCloudSnapshotSchemaIsSupported(data) else {
-                Logger.shared.log("Refused to restore a newer unsupported cloud schema", type: "CloudSync")
-                return nil
-            }
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            var snapshot = try decoder.decode(BackupData.self, from: data).redactedForExperimentalCloudSync()
-            snapshot.removeReaderDomainsWithoutCompletePrivateCloudAuthority()
-            let intendedScope = activeProfileScopeToken()
-            let restoreStart = try await beginShareServicesRestoreTransaction(
-                for: snapshot,
-                expectedScope: intendedScope
-            )
-            let transaction = restoreStart.transaction
-            shareServicesTransaction = transaction
-            let restoreScope = restoreStart.scope
-            snapshot.progressData = Self.mergingDeviceLocalProviderReferences(
-                into: snapshot.progressData,
-                current: ProgressManager.shared.getProgressData()
-            )
-            let ownsTopLevelSources = appliesTopLevelSourceData(
-                snapshot,
-                activeProfileID: restoreScope.profileID
-            )
-            guard await restoreSkyStreamSnapshotAndWaitIfSupported(
-                ownsTopLevelSources ? snapshot.skyStream : nil,
-                expectedScope: restoreScope
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(transaction)
-                return nil
-            }
-            guard await restoreNuvioSnapshotIfSupported(
-                ownsTopLevelSources ? snapshot.nuvioPlugins : nil,
-                expectedScope: restoreScope,
-                preservingDeviceLocalCloudState: true
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(transaction)
-                return nil
-            }
-            guard let postApply = await applyBackupDataIfScopeIsCurrent(
-                snapshot,
-                refreshCloudSources: true,
-                preservingLegacyCloudMediaState: preserveMediaStateForCloudKit,
-                preservingDeviceLocalReaderModelSelection: true,
-                expectedScope: restoreScope
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(transaction)
-                return nil
-            }
-            let postApplyScope = postApply.scope
-
-            await SkyStreamPluginManager.shared.captureSourceDefaultsState(
-                expectedScopeGeneration: postApplyScope.servicesGeneration
-            )
-
-            await repairActiveProfileSkyStreamStateIfNeeded(
-                snapshot,
-                expectedScope: postApplyScope
-            )
-            guard await reloadSourceManagersAfterRestore(
-                expectedScope: postApplyScope,
-                toleratesInertReaderRuntime: true
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(transaction)
-                return nil
-            }
-            completeShareServicesRestoreTransaction(transaction)
-            return ExperimentalCloudRestoreResult(
-                authoritativeTrackerProfileIDs: postApply.authoritativeTrackerProfileIDs
-            )
-        } catch {
-            if let shareServicesTransaction {
-                await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-            }
-            Logger.shared.log("Failed to restore experimental iCloud snapshot: \(error.localizedDescription)", type: "iCloud")
-            return nil
-        }
-    }
-
-    private static func experimentalCloudSnapshotSchemaIsSupported(_ data: Data) -> Bool {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = object["version"] as? String else {
-            return true
-        }
-        return compareSchemaVersion(version, to: BackupData.currentCloudSchemaVersion) != .orderedDescending
-    }
-
-    private static func compareSchemaVersion(_ lhs: String, to rhs: String) -> ComparisonResult {
-        let left = lhs.split(separator: ".").map { Int($0) ?? 0 }
-        let right = rhs.split(separator: ".").map { Int($0) ?? 0 }
-        for index in 0..<max(left.count, right.count) {
-            let leftValue = index < left.count ? left[index] : 0
-            let rightValue = index < right.count ? right[index] : 0
-            if leftValue < rightValue { return .orderedAscending }
-            if leftValue > rightValue { return .orderedDescending }
-        }
-        return .orderedSame
-    }
-
-    private static func mergingDeviceLocalProviderReferences(
-        into incoming: ProgressData,
-        current: ProgressData
-    ) -> ProgressData {
-        let currentMovies = Dictionary(
-            current.movieProgress.map { ($0.id, $0) },
-            uniquingKeysWith: { existing, candidate in
-                candidate.lastUpdated >= existing.lastUpdated ? candidate : existing
-            }
-        )
-        let currentEpisodes = Dictionary(
-            current.episodeProgress.map { ($0.id, $0) },
-            uniquingKeysWith: { existing, candidate in
-                candidate.lastUpdated >= existing.lastUpdated ? candidate : existing
-            }
-        )
-
-        var merged = incoming
-        merged.movieProgress = incoming.movieProgress.map { entry in
-            guard let local = currentMovies[entry.id] else { return entry }
-            var result = entry
-            result.lastHref = local.lastHref
-            result.lastContentReference = local.lastContentReference
-            result.lastServiceId = local.lastServiceId ?? entry.lastServiceId
-            result.lastSourceId = local.lastSourceId ?? entry.lastSourceId
-            return result
-        }
-        merged.episodeProgress = incoming.episodeProgress.map { entry in
-            guard let local = currentEpisodes[entry.id] else { return entry }
-            var result = entry
-            result.lastHref = local.lastHref
-            result.lastContentReference = local.lastContentReference
-            result.lastServiceId = local.lastServiceId ?? entry.lastServiceId
-            result.lastSourceId = local.lastSourceId ?? entry.lastSourceId
-            return result
-        }
-        return merged
-    }
-
-    private static let experimentalCloudRestorePendingKey = "experimentalCloudRestorePendingV1"
-    private static let experimentalCloudRestoreRecoveryPrefix = "CloudSyncRestoreRecovery."
-    private static let experimentalCloudRestoreRecoverySuffix = ".json"
-    private static let experimentalCloudRestoreOwnershipSuffix = ".owner.json"
-    private static let experimentalCloudRestoreTransportSuffix = ".transport.json"
-    private static let legacyExperimentalCloudRestoreRecoveryFilename = "CloudSyncRestoreRecovery.json"
-    private static let maximumExperimentalCloudRestoreManifestBytes = 64 * 1_024
-    private static let maximumExperimentalCloudRestoreOwnershipBytes = 16 * 1_024
-    private static let maximumExperimentalCloudRestoreIdentityBytes = 4 * 1_024
-
-    private enum ExperimentalCloudRestoreManifestLoadResult {
-        case missing
-        case unavailable(String)
-        case invalid(String)
-        case loaded(ExperimentalCloudRestoreRecoveryManifest)
-    }
-
-    private enum LegacyExperimentalCloudRestoreLoadResult {
-        case missing
-        case unavailable(String)
-        case invalid(String)
-        case loaded(Data)
-    }
-
-    private enum AuthorizedAccountBoundaryReplayDisposition {
-        case adoptPending(CloudSyncProvider)
-        case alreadyAdopted(CloudSyncProvider)
-        case supersededConnection(CloudSyncProvider)
-        case unavailable
-        case invalid
-    }
-
-    private var activeExperimentalCloudRestoreTransactionID: UUID?
-    private var experimentalCloudRestoreRecoveryTask: Task<Void, Never>?
-
-    private static var experimentalCloudRestoreDirectoryURL: URL? {
-        guard let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first else { return nil }
-        let directory = applicationSupport.appendingPathComponent("Eclipse", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private static var legacyExperimentalCloudRestoreRecoveryURL: URL? {
-        experimentalCloudRestoreDirectoryURL?.appendingPathComponent(
-            legacyExperimentalCloudRestoreRecoveryFilename
-        )
-    }
-
-    private static func experimentalCloudRestoreRecoveryURL(transactionID: UUID) -> URL? {
-        experimentalCloudRestoreDirectoryURL?.appendingPathComponent(
-            "\(experimentalCloudRestoreRecoveryPrefix)\(transactionID.uuidString)\(experimentalCloudRestoreRecoverySuffix)"
-        )
-    }
-
-    private static func experimentalCloudRestoreOwnershipURL(transactionID: UUID) -> URL? {
-        experimentalCloudRestoreDirectoryURL?.appendingPathComponent(
-            "\(experimentalCloudRestoreRecoveryPrefix)\(transactionID.uuidString)\(experimentalCloudRestoreOwnershipSuffix)"
-        )
-    }
-
-    private static func experimentalCloudRestoreTransportURL(transactionID: UUID) -> URL? {
-        experimentalCloudRestoreDirectoryURL?.appendingPathComponent(
-            "\(experimentalCloudRestoreRecoveryPrefix)\(transactionID.uuidString)\(experimentalCloudRestoreTransportSuffix)"
-        )
-    }
-
-    private static var experimentalCloudRestoreManifestURL: URL? {
-        experimentalCloudRestoreDirectoryURL?
-            .appendingPathComponent("CloudSyncRestoreRecovery.manifest.json")
-    }
-
-    private static func isValidExperimentalCloudRestoreBoundaryContext(
-        _ context: ExperimentalCloudRestoreBoundaryContext
-    ) -> Bool {
-        guard let provider = CloudSyncProvider(rawValue: context.providerRawValue),
-              provider.requiresAccountConnection,
-              context.generation >= 0,
-              (context.pendingIdentity?.utf8.count ?? 0)
-                <= maximumExperimentalCloudRestoreIdentityBytes,
-              context.outgoingProfileIDs.count <= ProfileManager.maximumProfiles,
-              Set(context.outgoingProfileIDs).count
-                == context.outgoingProfileIDs.count,
-              context.restoredTrackerProfileIDs.count <= ProfileManager.maximumProfiles,
-              Set(context.restoredTrackerProfileIDs).count
-                == context.restoredTrackerProfileIDs.count else {
-            return false
-        }
-        return true
-    }
-
-    private static func experimentalCloudRestoreBoundaryAuthorityMatches(
-        _ prepared: ExperimentalCloudRestoreBoundaryContext,
-        _ committing: ExperimentalCloudRestoreBoundaryContext
-    ) -> Bool {
-        prepared.providerRawValue == committing.providerRawValue
-            && prepared.generation == committing.generation
-            && prepared.pendingIdentity == committing.pendingIdentity
-            && prepared.outgoingProfileIDs == committing.outgoingProfileIDs
-    }
-
-    private static func boundedExperimentalCloudRestoreData(
-        at url: URL,
-        maximumBytes: Int
-    ) throws -> Data {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey])
-        guard values.isRegularFile == true else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { handle.closeFile() }
-        let data = handle.readData(ofLength: maximumBytes + 1)
-        guard data.count <= maximumBytes else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        return data
-    }
-
-    private static func loadExperimentalCloudRestoreManifest()
-        -> ExperimentalCloudRestoreManifestLoadResult {
-        guard let url = experimentalCloudRestoreManifestURL else {
-            return .unavailable("Application Support is unavailable")
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return .missing
-        }
-        let data: Data
-        do {
-            data = try boundedExperimentalCloudRestoreData(
-                at: url,
-                maximumBytes: maximumExperimentalCloudRestoreManifestBytes
-            )
-        } catch {
-            return .unavailable(String(reflecting: type(of: error)))
-        }
-        let manifest: ExperimentalCloudRestoreRecoveryManifest
-        do {
-            manifest = try JSONDecoder().decode(
-                ExperimentalCloudRestoreRecoveryManifest.self,
-                from: data
-            )
-        } catch {
-            return .invalid("manifest decode failed")
-        }
-        guard manifest.schemaVersion == 2 else {
-            return .invalid("unsupported manifest schema")
-        }
-        switch (manifest.recoveryKind, manifest.accountBoundaryContext) {
-        case (.ordinaryCloudRestore, nil):
-            guard !manifest.hasCanonicalArchiveRecovery else {
-                return .invalid("ordinary recovery claimed a canonical sidecar")
-            }
-        case (.accountBoundary, .some(let context)):
-            guard isValidExperimentalCloudRestoreBoundaryContext(context) else {
-                return .invalid("account-boundary context is invalid")
-            }
-        case (.ordinaryCloudRestore, .some), (.accountBoundary, nil):
-            return .invalid("manifest kind and context disagree")
-        }
-        guard !manifest.hasCanonicalArchiveRecovery
-                || manifest.hasMediaStateRecoveryTransaction else {
-            return .invalid("canonical recovery is missing its media-state transaction")
-        }
-        if manifest.recoveryKind == .accountBoundary,
-           manifest.hasCanonicalArchiveRecovery != manifest.hasMediaStateRecoveryTransaction {
-            return .invalid("account-boundary media-state flags disagree")
-        }
-        if manifest.state == .commitAuthorized,
-           manifest.recoveryKind != .accountBoundary {
-            return .invalid("ordinary recovery cannot authorize an account-boundary commit")
-        }
-        let hasKeepLocalByteCount = manifest.keepLocalTransportPayloadByteCount != nil
-        let hasKeepLocalDigest = manifest.keepLocalTransportPayloadSHA256 != nil
-        guard hasKeepLocalByteCount == hasKeepLocalDigest else {
-            return .invalid("keep-local payload ownership is incomplete")
-        }
-        if let byteCount = manifest.keepLocalTransportPayloadByteCount {
-            guard manifest.recoveryKind == .accountBoundary,
-                  byteCount > 0,
-                  byteCount <= maximumExperimentalCloudSnapshotBytes,
-                  let digest = manifest.keepLocalTransportPayloadSHA256,
-                  digest.utf8.count <= 128,
-                  manifest.accountBoundaryContext?.outgoingProfileIDs.isEmpty == true else {
-                return .invalid("keep-local payload ownership is invalid")
-            }
-        }
-        if manifest.state == .keepLocalWriteAuthorized,
-           !manifest.hasKeepLocalTransportPayload {
-            return .invalid("authorized keep-local recovery has no transport payload")
-        }
-        return .loaded(manifest)
-    }
-
-    private static func authorizedReplayDisposition(
-        for context: ExperimentalCloudRestoreBoundaryContext
-    ) -> AuthorizedAccountBoundaryReplayDisposition {
-        guard let provider = CloudSyncProvider(rawValue: context.providerRawValue),
-              provider.requiresAccountConnection else {
-            return .invalid
-        }
-        let defaults = UserDefaults.standard
-        let currentGeneration = defaults.integer(forKey: provider.accountGenerationKey)
-        if currentGeneration > context.generation {
-            return .supersededConnection(provider)
-        }
-        guard currentGeneration == context.generation else {
-            return .invalid
-        }
-
-        let boundaryIsPending = defaults.bool(forKey: provider.accountBoundaryPendingKey)
-        let parkedIdentity = defaults.string(forKey: provider.pendingAccountIdentityKey)
-        let currentIdentity = defaults.string(forKey: provider.accountIdentityKey)
-        let identityIsUnresolved = defaults.bool(forKey: provider.accountIdentityUnresolvedKey)
-        let isFullyAdopted: Bool
-        if let pendingIdentity = context.pendingIdentity {
-            isFullyAdopted = !boundaryIsPending
-                && parkedIdentity == nil
-                && currentIdentity == pendingIdentity
-                && !identityIsUnresolved
-        } else {
-            isFullyAdopted = !boundaryIsPending
-                && parkedIdentity == nil
-                && identityIsUnresolved
-        }
-        if isFullyAdopted {
-            return .alreadyAdopted(provider)
-        }
-
-        let hasMatchingPendingEvidence: Bool
-        if let pendingIdentity = context.pendingIdentity {
-            hasMatchingPendingEvidence = parkedIdentity == pendingIdentity
-                || currentIdentity == pendingIdentity
-        } else {
-            hasMatchingPendingEvidence = boundaryIsPending || identityIsUnresolved
-        }
-        guard (parkedIdentity == nil || parkedIdentity == context.pendingIdentity),
-              hasMatchingPendingEvidence else {
-            return .invalid
-        }
-
-        guard UIApplication.shared.isProtectedDataAvailable else {
-            return .unavailable
-        }
-        guard CloudSyncTokenStore.hasToken(for: provider) else {
-            return .invalid
-        }
-        return .adoptPending(provider)
-    }
-
-    static func accountBoundaryTrackerCleanupAuthority()
-        -> ExperimentalCloudTrackerCleanupAuthority {
-        switch loadExperimentalCloudRestoreManifest() {
-        case .missing:
-
-            return UserDefaults.standard.bool(
-                forKey: experimentalCloudRestorePendingKey
-            ) ? .blocked : .none
-        case .unavailable, .invalid:
-
-            return .blocked
-        case .loaded(let manifest):
-            switch manifest.state {
-            case .preparing, .completed:
-                return .none
-            case .prepared:
-
-                return manifest.hasKeepLocalTransportPayload ? .none : .blocked
-            case .keepLocalWriteAuthorized:
-                return .none
-            case .commitAuthorized:
-                break
-            }
-            guard let context = manifest.accountBoundaryContext else {
-                return .blocked
-            }
-
-            return .authorized(context)
-        }
-    }
-
-    private static func loadLegacyExperimentalCloudRestoreSnapshot()
-        -> LegacyExperimentalCloudRestoreLoadResult {
-        guard let url = legacyExperimentalCloudRestoreRecoveryURL else {
-            return .unavailable("Application Support is unavailable")
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return .missing
-        }
-        do {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true else {
-                return .invalid("legacy recovery is not a regular file")
-            }
-            if let fileSize = values.fileSize,
-               fileSize > maximumExperimentalCloudSnapshotBytes {
-                return .invalid("legacy recovery exceeds the cloud snapshot limit")
-            }
-            let data = try boundedExperimentalCloudRestoreData(
-                at: url,
-                maximumBytes: maximumExperimentalCloudSnapshotBytes
-            )
-            guard experimentalCloudSnapshotSchemaIsSupported(data) else {
-                return .invalid("legacy recovery uses an unsupported schema")
-            }
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let decoded = try decoder.decode(BackupData.self, from: data)
-
-            let safeSnapshot = decoded.redactedForExperimentalCloudSync()
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.sortedKeys]
-            let safeData = try encoder.encode(safeSnapshot)
-            guard safeData.count <= maximumExperimentalCloudSnapshotBytes else {
-                return .invalid("sanitized legacy recovery exceeds the cloud snapshot limit")
-            }
-            return .loaded(safeData)
-        } catch let error as CocoaError where error.code == .fileReadNoPermission {
-            return .unavailable("protected data is unavailable")
-        } catch {
-            return .invalid("legacy recovery validation failed")
-        }
-    }
-
-    private static func writeExperimentalCloudRestoreManifest(
-        _ manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) throws {
-        guard let url = experimentalCloudRestoreManifestURL else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        let data = try JSONEncoder().encode(manifest)
-        guard data.count <= maximumExperimentalCloudRestoreManifestBytes else {
-            throw CocoaError(.fileWriteOutOfSpace)
-        }
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
-    }
-
-    private static func boundExperimentalCloudRestoreSnapshot(
-        for manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) -> (url: URL, data: Data)? {
-        guard let url = experimentalCloudRestoreRecoveryURL(
-                transactionID: manifest.transactionID
-              ),
-              let ownershipURL = experimentalCloudRestoreOwnershipURL(
-                transactionID: manifest.transactionID
-              ),
-              let data = try? boundedExperimentalCloudRestoreData(
-                at: url,
-
-                maximumBytes: maximumManualBackupFileBytes
-              ),
-              let ownershipData = try? boundedExperimentalCloudRestoreData(
-                at: ownershipURL,
-                maximumBytes: maximumExperimentalCloudRestoreOwnershipBytes
-              ),
-              let ownership = try? JSONDecoder().decode(
-                ExperimentalCloudRestoreRecoveryOwnership.self,
-                from: ownershipData
-              ),
-              ownership.validates(
-                transactionID: manifest.transactionID,
-                recoveryKind: manifest.recoveryKind,
-                payload: data
-              ) else {
-            return nil
-        }
-        return (url, data)
-    }
-
-    private static func normalizedKeepLocalTransportPayload(from data: Data) throws -> Data {
-        guard !data.isEmpty,
-              data.count <= maximumManualBackupFileBytes,
-              experimentalCloudSnapshotSchemaIsSupported(data) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let decoded = try decoder.decode(BackupData.self, from: data)
-        let safeSnapshot = decoded.redactedForExperimentalCloudSync(
-            stripSkyStreamArchives: true
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let safeData = try encoder.encode(safeSnapshot)
-        guard !safeData.isEmpty,
-              safeData.count <= maximumExperimentalCloudSnapshotBytes else {
-            throw BoundedURLSessionError.responseTooLarge(
-                maximumBytes: maximumExperimentalCloudSnapshotBytes
-            )
-        }
-        return safeData
-    }
-
-    private static func boundKeepLocalTransportPayload(
-        for manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) -> Data? {
-        guard manifest.hasKeepLocalTransportPayload,
-              let url = experimentalCloudRestoreTransportURL(
-                transactionID: manifest.transactionID
-              ),
-              let data = try? boundedExperimentalCloudRestoreData(
-                at: url,
-                maximumBytes: maximumExperimentalCloudSnapshotBytes
-              ),
-              manifest.validatesKeepLocalTransportPayload(data),
-              experimentalCloudSnapshotSchemaIsSupported(data) else {
-            return nil
-        }
-        return data
-    }
-
-    @MainActor
-    func authorizedExperimentalCloudKeepLocalReplay()
-        -> ExperimentalCloudKeepLocalReplay? {
-        guard case .loaded(let manifest) = Self.loadExperimentalCloudRestoreManifest(),
-              manifest.state == .keepLocalWriteAuthorized,
-              activeExperimentalCloudRestoreTransactionID == manifest.transactionID,
-              let context = manifest.accountBoundaryContext,
-              let data = Self.boundKeepLocalTransportPayload(for: manifest),
-              let footprint = experimentalCloudSnapshotFootprint(from: data) else {
-            return nil
-        }
-        return ExperimentalCloudKeepLocalReplay(
-            transactionID: manifest.transactionID,
-            context: context,
-            snapshot: ExperimentalCloudSnapshot(data: data, footprint: footprint)
-        )
-    }
-
-    @MainActor
-    func rebindAuthorizedExperimentalCloudKeepLocalReplay(
-        providerRawValue: String,
-        generation: Int,
-        verifiedPendingIdentity: String
-    ) -> ExperimentalCloudKeepLocalReplay? {
-        guard !verifiedPendingIdentity.isEmpty,
-              verifiedPendingIdentity.utf8.count
-                <= Self.maximumExperimentalCloudRestoreIdentityBytes,
-              case .loaded(var manifest) = Self.loadExperimentalCloudRestoreManifest(),
-              manifest.state == .keepLocalWriteAuthorized,
-              activeExperimentalCloudRestoreTransactionID == manifest.transactionID,
-              let previousContext = manifest.accountBoundaryContext,
-              previousContext.providerRawValue == providerRawValue,
-              previousContext.pendingIdentity == verifiedPendingIdentity,
-              previousContext.outgoingProfileIDs.isEmpty,
-              generation >= previousContext.generation,
-              let provider = CloudSyncProvider(rawValue: providerRawValue),
-              provider.requiresAccountConnection,
-              Self.boundKeepLocalTransportPayload(for: manifest) != nil else {
-            return nil
-        }
-
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: provider.accountBoundaryPendingKey),
-              defaults.integer(forKey: provider.accountGenerationKey) == generation,
-              defaults.string(forKey: provider.pendingAccountIdentityKey)
-                == verifiedPendingIdentity,
-              CloudSyncTokenStore.hasToken(for: provider),
-              defaults.synchronize() else {
-            return nil
-        }
-
-        let reboundContext = ExperimentalCloudRestoreBoundaryContext(
-            providerRawValue: providerRawValue,
-            generation: generation,
-            pendingIdentity: verifiedPendingIdentity,
-            outgoingProfileIDs: []
-        )
-        guard Self.isValidExperimentalCloudRestoreBoundaryContext(reboundContext) else {
-            return nil
-        }
-        if manifest.accountBoundaryContext != reboundContext {
-            manifest.accountBoundaryContext = reboundContext
-            do {
-                try Self.writeExperimentalCloudRestoreManifest(manifest)
-            } catch {
-                Logger.shared.log(
-                    "Could not rebind keep-local recovery to the verified account connection: \(error.localizedDescription)",
-                    type: "CloudSync"
-                )
-                return nil
-            }
-        }
-        return authorizedExperimentalCloudKeepLocalReplay()
-    }
-
-    private static func boundExperimentalCloudRestoreOwnershipIsValidForCleanup(
-        _ manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) -> Bool {
-        guard let recoveryURL = experimentalCloudRestoreRecoveryURL(
-                transactionID: manifest.transactionID
-              ),
-              let ownershipURL = experimentalCloudRestoreOwnershipURL(
-                transactionID: manifest.transactionID
-              ) else {
-            return false
-        }
-        let fileManager = FileManager.default
-        let snapshotExists = fileManager.fileExists(atPath: recoveryURL.path)
-        let ownershipExists = fileManager.fileExists(atPath: ownershipURL.path)
-        if snapshotExists,
-           boundExperimentalCloudRestoreSnapshot(for: manifest) == nil {
-            return false
-        }
-        if manifest.hasKeepLocalTransportPayload,
-           let transportURL = experimentalCloudRestoreTransportURL(
-                transactionID: manifest.transactionID
-           ),
-           fileManager.fileExists(atPath: transportURL.path),
-           boundKeepLocalTransportPayload(for: manifest) == nil {
-            return false
-        }
-        if snapshotExists {
-            return true
-        }
-        guard ownershipExists else { return true }
-        guard let ownershipData = try? boundedExperimentalCloudRestoreData(
-                at: ownershipURL,
-                maximumBytes: maximumExperimentalCloudRestoreOwnershipBytes
-              ),
-              let ownership = try? JSONDecoder().decode(
-                ExperimentalCloudRestoreRecoveryOwnership.self,
-                from: ownershipData
-              ) else {
-            return false
-        }
-        return ownership.schemaVersion == 1
-            && ownership.transactionID == manifest.transactionID
-            && ownership.recoveryKind == manifest.recoveryKind
-    }
-
-    @MainActor
-    func prepareExperimentalCloudRestoreRecovery(
-        using snapshot: ExperimentalCloudSnapshot,
-        accountBoundaryContext: ExperimentalCloudRestoreBoundaryContext? = nil,
-        keepLocalTransportSnapshot: ExperimentalCloudSnapshot? = nil
-    ) -> Bool {
-        guard experimentalCloudRestoreRecoveryTask == nil,
-              activeExperimentalCloudRestoreTransactionID == nil else {
-            Logger.shared.log(
-                "Refused to overwrite an unfinished cloud restore transaction",
-                type: "CloudSync"
-            )
-            return false
-        }
-
-        switch Self.loadExperimentalCloudRestoreManifest() {
-        case .loaded(let manifest) where manifest.state == .completed:
-            activeExperimentalCloudRestoreTransactionID = manifest.transactionID
-            guard durablyClearExperimentalCloudRestorePendingMirror(),
-                  cleanupExperimentalCloudRestoreArtifacts(for: manifest) else {
-                return false
-            }
-        case .missing:
-            guard !UserDefaults.standard.bool(forKey: Self.experimentalCloudRestorePendingKey),
-                  cleanupOrphanedExperimentalCloudRestoreArtifacts() else {
-                Logger.shared.log(
-                    "Refused to replace a cloud restore whose manifest is missing",
-                    type: "CloudSync"
-                )
-                return false
-            }
-        case .loaded, .unavailable, .invalid:
-            Logger.shared.log(
-                "Refused to overwrite an unfinished or unreadable cloud restore transaction",
-                type: "CloudSync"
-            )
-            return false
-        }
-
-        let keepLocalTransportPayload: Data?
-        do {
-            keepLocalTransportPayload = try keepLocalTransportSnapshot.map {
-                try Self.normalizedKeepLocalTransportPayload(from: $0.data)
-            }
-        } catch {
-            Logger.shared.log(
-                "Refused an invalid keep-local transport recovery payload: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-
-        let transactionID = UUID()
-        guard let url = Self.experimentalCloudRestoreRecoveryURL(transactionID: transactionID),
-              let ownershipURL = Self.experimentalCloudRestoreOwnershipURL(
-                transactionID: transactionID
-              ),
-              keepLocalTransportPayload == nil
-                || Self.experimentalCloudRestoreTransportURL(transactionID: transactionID) != nil else {
-            return false
-        }
-        let recoveryKind: ExperimentalCloudRestoreRecoveryKind = accountBoundaryContext == nil
-            ? .ordinaryCloudRestore
-            : .accountBoundary
-        guard snapshot.data.count <= Self.maximumManualBackupFileBytes,
-              accountBoundaryContext.map(Self.isValidExperimentalCloudRestoreBoundaryContext)
-                ?? true,
-              keepLocalTransportPayload == nil
-                || (accountBoundaryContext?.outgoingProfileIDs.isEmpty == true) else {
-            Logger.shared.log(
-                "Refused an oversized or invalid cloud restore recovery point",
-                type: "CloudSync"
-            )
-            return false
-        }
-
-        var intendsCanonicalArchiveRecovery = false
-        var intendsMediaStateRecovery = false
-#if os(iOS)
-        if #available(iOS 17.0, *) {
-            intendsMediaStateRecovery = true
-            intendsCanonicalArchiveRecovery = accountBoundaryContext != nil
-        }
-#else
-        guard accountBoundaryContext == nil else {
-            return false
-        }
-#endif
-        var manifest = ExperimentalCloudRestoreRecoveryManifest(
-            transactionID: transactionID,
-            state: .preparing,
-            accountBoundaryContext: accountBoundaryContext,
-            hasCanonicalArchiveRecovery: intendsCanonicalArchiveRecovery,
-            hasMediaStateRecoveryTransaction: intendsMediaStateRecovery,
-            keepLocalTransportPayload: keepLocalTransportPayload
-        )
-        activeExperimentalCloudRestoreTransactionID = transactionID
-        var manifestWasPersisted = false
-        var mediaStateRecoveryWasAttempted = false
-        do {
-            try snapshot.data.write(to: url, options: [.atomic, .completeFileProtection])
-            let ownership = ExperimentalCloudRestoreRecoveryOwnership(
-                transactionID: transactionID,
-                recoveryKind: recoveryKind,
-                payload: snapshot.data
-            )
-            let ownershipData = try JSONEncoder().encode(ownership)
-            try ownershipData.write(
-                to: ownershipURL,
-                options: [.atomic, .completeFileProtection]
-            )
-            if let keepLocalTransportPayload,
-               let transportURL = Self.experimentalCloudRestoreTransportURL(
-                    transactionID: transactionID
-               ) {
-                try keepLocalTransportPayload.write(
-                    to: transportURL,
-                    options: [.atomic, .completeFileProtection]
-                )
-            }
-
-            try Self.writeExperimentalCloudRestoreManifest(manifest)
-            manifestWasPersisted = true
-            UserDefaults.standard.set(true, forKey: Self.experimentalCloudRestorePendingKey)
-            guard UserDefaults.standard.synchronize() else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-#if os(iOS)
-            if #available(iOS 17.0, *) {
-                mediaStateRecoveryWasAttempted = true
-                if accountBoundaryContext != nil {
-                    guard MediaStateSyncManager.shared
-                        .prepareRemoteAccountBoundaryArchiveRecovery(transactionID: transactionID) else {
-                        throw CocoaError(.fileWriteUnknown)
-                    }
-                } else {
-                    guard MediaStateSyncManager.shared
-                        .suspendMediaStateSyncForPreparedRecovery(transactionID: transactionID) else {
-                        throw CocoaError(.fileWriteUnknown)
-                    }
-                }
-            }
-#endif
-            manifest.state = .prepared
-            try Self.writeExperimentalCloudRestoreManifest(manifest)
-            return true
-        } catch {
-
-            var mediaStateReleaseSucceeded = !intendsMediaStateRecovery
-#if os(iOS)
-            if mediaStateRecoveryWasAttempted, #available(iOS 17.0, *) {
-                if intendsCanonicalArchiveRecovery {
-                    mediaStateReleaseSucceeded = MediaStateSyncManager.shared
-                        .completeRemoteAccountBoundaryArchiveRecovery(
-                        transactionID: transactionID
-                    )
-                } else {
-                    mediaStateReleaseSucceeded = MediaStateSyncManager.shared
-                        .completeMediaStateSyncPreparedRecovery(transactionID: transactionID)
-                }
-            }
-#endif
-            if manifestWasPersisted {
-
-                _ = discardPreparingExperimentalCloudRestore(
-                    manifest,
-                    mediaStateReleaseAlreadySucceeded: mediaStateReleaseSucceeded
-                )
-            } else {
-                try? FileManager.default.removeItem(at: url)
-                try? FileManager.default.removeItem(at: ownershipURL)
-                if let transportURL = Self.experimentalCloudRestoreTransportURL(
-                    transactionID: transactionID
-                ) {
-                    try? FileManager.default.removeItem(at: transportURL)
-                }
-                activeExperimentalCloudRestoreTransactionID = nil
-            }
-            Logger.shared.log(
-                "Could not persist cloud restore recovery snapshot: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-    }
-
-    @MainActor
-    private func discardPreparingExperimentalCloudRestore(
-        _ manifest: ExperimentalCloudRestoreRecoveryManifest,
-        mediaStateReleaseAlreadySucceeded: Bool = false
-    ) -> Bool {
-        guard case .loaded(var current) = Self.loadExperimentalCloudRestoreManifest(),
-              current.transactionID == manifest.transactionID,
-              current.state == .preparing,
-              activeExperimentalCloudRestoreTransactionID == current.transactionID else {
-            return false
-        }
-        if current.hasMediaStateRecoveryTransaction,
-           !mediaStateReleaseAlreadySucceeded,
-           !releaseMediaStateRecoveryTransaction(for: current) {
-            return false
-        }
-        guard durablyClearExperimentalCloudRestorePendingMirror() else {
-            return false
-        }
-        current.state = .completed
-        do {
-            try Self.writeExperimentalCloudRestoreManifest(current)
-        } catch {
-            Logger.shared.log(
-                "Could not abandon an incomplete cloud restore preparation: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-        return cleanupExperimentalCloudRestoreArtifacts(for: current)
-    }
-
-    @MainActor
-    func authorizeExperimentalCloudKeepLocalWrite(
-        context: ExperimentalCloudRestoreBoundaryContext
-    ) -> Bool {
-        guard case .loaded(var manifest) = Self.loadExperimentalCloudRestoreManifest(),
-              manifest.state == .prepared,
-              manifest.accountBoundaryContext == context,
-              manifest.hasKeepLocalTransportPayload,
-              Self.boundKeepLocalTransportPayload(for: manifest) != nil,
-              activeExperimentalCloudRestoreTransactionID == manifest.transactionID else {
-            return false
-        }
-        manifest.state = .keepLocalWriteAuthorized
-        do {
-            try Self.writeExperimentalCloudRestoreManifest(manifest)
-            return true
-        } catch {
-            Logger.shared.log(
-                "Could not authorize keep-local provider replay: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-    }
-
-    @MainActor
-    func authorizeExperimentalCloudRestoreCommit(
-        context: ExperimentalCloudRestoreBoundaryContext
-    ) -> Bool {
-        guard case .loaded(var manifest) = Self.loadExperimentalCloudRestoreManifest(),
-              manifest.state == .prepared || manifest.state == .keepLocalWriteAuthorized,
-              let preparedContext = manifest.accountBoundaryContext,
-              Self.experimentalCloudRestoreBoundaryAuthorityMatches(
-                preparedContext,
-                context
-              ),
-              Self.isValidExperimentalCloudRestoreBoundaryContext(context),
-              activeExperimentalCloudRestoreTransactionID == manifest.transactionID else {
-            return false
-        }
-        if manifest.state == .keepLocalWriteAuthorized {
-            guard let provider = CloudSyncProvider(rawValue: context.providerRawValue),
-                  UserDefaults.standard.bool(
-                    forKey: provider.accountBoundaryPendingKey
-                  ),
-                  UserDefaults.standard.integer(
-                    forKey: provider.accountGenerationKey
-                  ) == context.generation,
-                  UserDefaults.standard.string(
-                    forKey: provider.pendingAccountIdentityKey
-                  ) == context.pendingIdentity else {
-                return false
-            }
-        }
-        manifest.accountBoundaryContext = context
-        manifest.state = .commitAuthorized
-        do {
-            try Self.writeExperimentalCloudRestoreManifest(manifest)
-            return true
-        } catch {
-            Logger.shared.log(
-                "Could not authorize the account-boundary recovery commit: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-    }
-
-    @MainActor
-    @discardableResult
-    func completeExperimentalCloudRestoreRecovery() -> Bool {
-        guard case .loaded(var manifest) = Self.loadExperimentalCloudRestoreManifest(),
-              activeExperimentalCloudRestoreTransactionID == manifest.transactionID,
-              manifest.state != .preparing,
-              manifest.state != .keepLocalWriteAuthorized else {
-            return false
-        }
-        if manifest.state == .commitAuthorized {
-#if os(iOS)
-            guard let context = manifest.accountBoundaryContext,
-                  completeAuthorizedAccountBoundary(context) else {
-                Logger.shared.log(
-                    "Authorized account-boundary recovery remains pending",
-                    type: "CloudSync"
-                )
-                return false
-            }
-#else
-            return false
-#endif
-        }
-        guard durablyClearExperimentalCloudRestorePendingMirror() else {
-            return false
-        }
-        if manifest.state != .completed {
-            manifest.state = .completed
-            do {
-                try Self.writeExperimentalCloudRestoreManifest(manifest)
-            } catch {
-                Logger.shared.log(
-                    "Could not mark cloud restore recovery complete: \(error.localizedDescription)",
-                    type: "CloudSync"
-                )
-                return false
-            }
-        }
-        return cleanupExperimentalCloudRestoreArtifacts(for: manifest)
-    }
-
-    @MainActor
-    func recoverInterruptedExperimentalCloudRestoreIfNeeded() {
-        guard experimentalCloudRestoreRecoveryTask == nil else { return }
-        let defaults = UserDefaults.standard
-        switch Self.loadExperimentalCloudRestoreManifest() {
-        case .missing:
-            if defaults.bool(forKey: Self.experimentalCloudRestorePendingKey) {
-                switch Self.loadLegacyExperimentalCloudRestoreSnapshot() {
-                case .loaded(let safeCloudData):
-                    recoverLegacyExperimentalCloudRestore(safeCloudData)
-                case .unavailable(let reason):
-                    Logger.shared.log(
-                        "Legacy cloud restore recovery is waiting for protected data (\(reason))",
-                        type: "CloudSync"
-                    )
-                case .invalid(let reason):
-                    Logger.shared.log(
-                        "Legacy cloud restore recovery is blocked by an invalid snapshot (\(reason))",
-                        type: "CloudSync"
-                    )
-                case .missing:
-                    Logger.shared.log(
-                        "Cloud restore recovery is blocked because both its manifest and legacy snapshot are missing",
-                        type: "CloudSync"
-                    )
-                }
-                return
-            }
-            if cleanupOrphanedExperimentalCloudRestoreArtifacts() {
-                resumeSyncAfterExperimentalCloudRestoreRecovery()
-            }
-        case .unavailable(let reason):
-            Logger.shared.log(
-                "Cloud restore recovery is waiting for protected data (\(reason))",
-                type: "CloudSync"
-            )
-        case .invalid(let reason):
-            Logger.shared.log(
-                "Cloud restore recovery is blocked by an invalid manifest (\(reason))",
-                type: "CloudSync"
-            )
-        case .loaded(let manifest):
-            if let activeExperimentalCloudRestoreTransactionID,
-               activeExperimentalCloudRestoreTransactionID != manifest.transactionID {
-                Logger.shared.log(
-                    "Cloud restore recovery refused a mismatched active transaction",
-                    type: "CloudSync"
-                )
-                return
-            }
-            activeExperimentalCloudRestoreTransactionID = manifest.transactionID
-            switch manifest.state {
-            case .preparing:
-
-                if discardPreparingExperimentalCloudRestore(manifest) {
-                    Logger.shared.log(
-                        "Discarded an interrupted cloud restore preparation",
-                        type: "CloudSync"
-                    )
-                }
-            case .completed:
-                guard durablyClearExperimentalCloudRestorePendingMirror() else { return }
-                _ = cleanupExperimentalCloudRestoreArtifacts(for: manifest)
-            case .commitAuthorized:
-
-                if completeExperimentalCloudRestoreRecovery() {
-                    Logger.shared.log(
-                        "Finalized an interrupted committed account-boundary restore",
-                        type: "CloudSync"
-                    )
-                }
-            case .keepLocalWriteAuthorized:
-
-                Logger.shared.log(
-                    "Authorized keep-local cloud recovery is waiting for provider replay",
-                    type: "CloudSync"
-                )
-            case .prepared:
-                recoverPreparedExperimentalCloudRestore(manifest)
-            }
-        }
-    }
-
-    @MainActor
-    private func recoverLegacyExperimentalCloudRestore(_ safeCloudData: Data) {
-        guard experimentalCloudRestoreRecoveryTask == nil else { return }
-        experimentalCloudRestoreRecoveryTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.experimentalCloudRestoreRecoveryTask = nil }
-            guard await self.restoreExperimentalCloudSnapshot(
-                from: safeCloudData,
-                preserveMediaStateForCloudKit: false
-            ) != nil else {
-                Logger.shared.log(
-                    "Legacy cloud restore recovery remains pending",
-                    type: "CloudSync"
-                )
-                return
-            }
-
-            guard self.durablyClearExperimentalCloudRestorePendingMirror() else {
-                Logger.shared.log(
-                    "Legacy cloud restore recovery could not durably commit",
-                    type: "CloudSync"
-                )
-                return
-            }
-            guard self.cleanupOrphanedExperimentalCloudRestoreArtifacts() else {
-                Logger.shared.log(
-                    "Legacy cloud restore completed but its stale artifact could not be removed",
-                    type: "CloudSync"
-                )
-                return
-            }
-            self.resumeSyncAfterExperimentalCloudRestoreRecovery()
-            Logger.shared.log(
-                "Recovered local state from the released cloud restore format",
-                type: "CloudSync"
-            )
-        }
-    }
-
-    @MainActor
-    private func recoverPreparedExperimentalCloudRestore(
-        _ manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) {
-        guard Self.boundExperimentalCloudRestoreSnapshot(for: manifest) != nil else {
-            Logger.shared.log(
-                "Prepared cloud restore recovery snapshot ownership is missing or invalid",
-                type: "CloudSync"
-            )
-            return
-        }
-        experimentalCloudRestoreRecoveryTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.experimentalCloudRestoreRecoveryTask = nil }
-            let restored = await self.restorePreparedExperimentalCloudRestore(manifest)
-            if restored, self.completeExperimentalCloudRestoreRecovery() {
-                Logger.shared.log(
-                    "Recovered local state after an interrupted cloud restore",
-                    type: "CloudSync"
-                )
-            } else {
-                Logger.shared.log(
-                    "Interrupted cloud restore recovery remains pending",
-                    type: "CloudSync"
-                )
-            }
-        }
-    }
-
-    @MainActor
-    private func restorePreparedExperimentalCloudRestore(
-        _ manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) async -> Bool {
-        guard let boundSnapshot = Self.boundExperimentalCloudRestoreSnapshot(
-            for: manifest
-        ) else {
-            return false
-        }
-        switch manifest.recoveryKind {
-        case .accountBoundary:
-            guard let context = manifest.accountBoundaryContext else { return false }
-            let protectedProfileIDs = Set(context.outgoingProfileIDs)
-            TrackerManager.shared.beginTentativeAccountBoundaryCredentialPreservation(
-                profileIDs: protectedProfileIDs
-            )
-            let restoredLocalState = await restoreBackup(from: boundSnapshot.url)
-            guard restoredLocalState else { return false }
-            guard manifest.hasCanonicalArchiveRecovery else {
-
-                TrackerManager.shared.endTentativeAccountBoundaryCredentialPreservation(
-                    profileIDs: protectedProfileIDs
-                )
-                return true
-            }
-#if os(iOS)
-            if #available(iOS 17.0, *) {
-                let restoredCanonicalArchive = MediaStateSyncManager.shared
-                    .restoreRemoteAccountBoundaryArchiveRecovery(
-                        transactionID: manifest.transactionID
-                    )
-                if restoredCanonicalArchive {
-                    TrackerManager.shared.endTentativeAccountBoundaryCredentialPreservation(
-                        profileIDs: protectedProfileIDs
-                    )
-                }
-                return restoredCanonicalArchive
-            }
-#endif
-            return false
-        case .ordinaryCloudRestore:
-            return await restoreBackup(from: boundSnapshot.url)
-        }
-    }
-
-    @MainActor
-    func rollbackPreparedExperimentalCloudRestoreRecovery() async -> Bool {
-        guard case .loaded(let manifest) = Self.loadExperimentalCloudRestoreManifest(),
-              activeExperimentalCloudRestoreTransactionID == manifest.transactionID else {
-            return false
-        }
-        if manifest.state == .commitAuthorized {
-            return completeExperimentalCloudRestoreRecovery()
-        }
-        guard manifest.state == .prepared,
-              Self.boundExperimentalCloudRestoreSnapshot(for: manifest) != nil else {
-            return false
-        }
-        let restored = await restorePreparedExperimentalCloudRestore(manifest)
-        guard restored else { return false }
-        return completeExperimentalCloudRestoreRecovery()
-    }
-
-#if os(iOS)
-    @MainActor
-    private func completeAuthorizedAccountBoundary(
-        _ context: ExperimentalCloudRestoreBoundaryContext
-    ) -> Bool {
-        let disposition = Self.authorizedReplayDisposition(for: context)
-        let identityPersisted: Bool
-        switch disposition {
-        case .adoptPending(let provider):
-            let defaults = UserDefaults.standard
-            if let pendingIdentity = context.pendingIdentity {
-                defaults.set(pendingIdentity, forKey: provider.accountIdentityKey)
-                defaults.removeObject(forKey: provider.accountIdentityUnresolvedKey)
-            } else {
-                defaults.removeObject(forKey: provider.accountIdentityKey)
-                defaults.set(true, forKey: provider.accountIdentityUnresolvedKey)
-            }
-            defaults.removeObject(forKey: provider.pendingAccountIdentityKey)
-            defaults.removeObject(forKey: provider.accountBoundaryPendingKey)
-            identityPersisted = defaults.synchronize()
-        case .alreadyAdopted:
-            identityPersisted = UserDefaults.standard.synchronize()
-        case .supersededConnection:
-
-            identityPersisted = true
-        case .unavailable, .invalid:
-            return false
-        }
-        guard identityPersisted else { return false }
-
-        let profileIDs = Set(context.outgoingProfileIDs)
-        let cleanupProfileIDs = ExperimentalCloudTrackerAccountBoundaryPolicy.profileIDsToClear(
-            outgoingProfileIDs: profileIDs,
-            restoredTrackerProfileIDs: Set(context.restoredTrackerProfileIDs)
-        )
-        TrackerManager.shared.endTentativeAccountBoundaryCredentialPreservation(
-            profileIDs: profileIDs
-        )
-        var trackerCleanupIsDurablyProtected = true
-        for profileID in cleanupProfileIDs {
-            trackerCleanupIsDurablyProtected = TrackerManager.shared
-                .clearStoreForConfirmedAccountBoundary(profileID: profileID)
-                && trackerCleanupIsDurablyProtected
-        }
-        guard trackerCleanupIsDurablyProtected else { return false }
-        if #available(iOS 17.0, *) {
-            return MediaStateSyncManager.shared.finalizeMediaStateRemoteAccountBoundary()
-        }
-        return true
-    }
-#endif
-
-    @MainActor
-    private func durablyClearExperimentalCloudRestorePendingMirror() -> Bool {
-        UserDefaults.standard.set(false, forKey: Self.experimentalCloudRestorePendingKey)
-        guard UserDefaults.standard.synchronize() else {
-            Logger.shared.log(
-                "Could not durably clear the cloud restore pending mirror",
-                type: "CloudSync"
-            )
-            return false
-        }
-        return true
-    }
-
-    @MainActor
-    private func releaseMediaStateRecoveryTransaction(
-        for manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) -> Bool {
-        guard manifest.hasMediaStateRecoveryTransaction else { return true }
-#if os(iOS)
-        if #available(iOS 17.0, *) {
-            if manifest.hasCanonicalArchiveRecovery {
-                return MediaStateSyncManager.shared
-                    .completeRemoteAccountBoundaryArchiveRecovery(
-                        transactionID: manifest.transactionID
-                    )
-            }
-            return MediaStateSyncManager.shared
-                .completeMediaStateSyncPreparedRecovery(
-                    transactionID: manifest.transactionID
-                )
-        }
-#endif
-        return false
-    }
-
-    @MainActor
-    private func cleanupExperimentalCloudRestoreArtifacts(
-        for manifest: ExperimentalCloudRestoreRecoveryManifest
-    ) -> Bool {
-        guard case .loaded(let current) = Self.loadExperimentalCloudRestoreManifest(),
-              current.transactionID == manifest.transactionID,
-              current.state == .completed,
-              Self.boundExperimentalCloudRestoreOwnershipIsValidForCleanup(manifest) else {
-            return false
-        }
-        let fileManager = FileManager.default
-        for url in [
-            Self.experimentalCloudRestoreRecoveryURL(transactionID: manifest.transactionID),
-            Self.experimentalCloudRestoreOwnershipURL(transactionID: manifest.transactionID),
-            Self.experimentalCloudRestoreTransportURL(transactionID: manifest.transactionID)
-        ].compactMap({ $0 }) where fileManager.fileExists(atPath: url.path) {
-            do {
-                try fileManager.removeItem(at: url)
-            } catch {
-                Logger.shared.log(
-                    "Could not remove protected cloud restore recovery artifact: \(error.localizedDescription)",
-                    type: "CloudSync"
-                )
-                return false
-            }
-        }
-        if manifest.hasMediaStateRecoveryTransaction,
-           !releaseMediaStateRecoveryTransaction(for: manifest) {
-            Logger.shared.log(
-                "Could not complete the bound media-state recovery transaction",
-                type: "CloudSync"
-            )
-            return false
-        }
-        guard let manifestURL = Self.experimentalCloudRestoreManifestURL else { return false }
-        do {
-            if fileManager.fileExists(atPath: manifestURL.path) {
-                try fileManager.removeItem(at: manifestURL)
-            }
-        } catch {
-            Logger.shared.log(
-                "Could not remove completed cloud restore manifest: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-        activeExperimentalCloudRestoreTransactionID = nil
-        resumeSyncAfterExperimentalCloudRestoreRecovery()
-        return true
-    }
-
-    @MainActor
-    private func cleanupOrphanedExperimentalCloudRestoreArtifacts() -> Bool {
-        guard case .missing = Self.loadExperimentalCloudRestoreManifest(),
-              !UserDefaults.standard.bool(forKey: Self.experimentalCloudRestorePendingKey) else {
-            return false
-        }
-        let fileManager = FileManager.default
-        var succeeded = true
-        guard let directory = Self.experimentalCloudRestoreDirectoryURL else {
-            return false
-        }
-        let urls: [URL]
-        do {
-            urls = try fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil
-            )
-        } catch {
-            Logger.shared.log(
-                "Could not enumerate orphaned cloud restore recovery artifacts: \(error.localizedDescription)",
-                type: "CloudSync"
-            )
-            return false
-        }
-        for url in urls {
-            let name = url.lastPathComponent
-            let isLegacy = name == Self.legacyExperimentalCloudRestoreRecoveryFilename
-            let isBoundRecovery = name.hasPrefix(Self.experimentalCloudRestoreRecoveryPrefix)
-                && name.hasSuffix(Self.experimentalCloudRestoreRecoverySuffix)
-                && name != "CloudSyncRestoreRecovery.manifest.json"
-            guard isLegacy || isBoundRecovery else { continue }
-            do {
-                try fileManager.removeItem(at: url)
-            } catch {
-                succeeded = false
-                Logger.shared.log(
-                    "Could not remove orphaned cloud restore recovery artifact: \(error.localizedDescription)",
-                    type: "CloudSync"
-                )
-            }
-        }
-#if os(iOS)
-        if #available(iOS 17.0, *),
-           !MediaStateSyncManager.shared.completeRemoteAccountBoundaryArchiveRecovery(
-                transactionID: nil
-           ) {
-            succeeded = false
-        }
-#endif
-        return succeeded
-    }
-
-    @MainActor
-    private func resumeSyncAfterExperimentalCloudRestoreRecovery() {
-        if #available(iOS 17.0, tvOS 17.0, *) {
-            MediaStateSyncBootstrap.resumeAfterAccountBoundaryRecovery()
-        }
-        NotificationCenter.default.post(
-            name: .experimentalCloudRestoreRecoveryDidComplete,
-            object: nil
-        )
-    }
-
-private struct ScopedSettingsDefaults {
-
-    var appliesProfileScopedWrites = true
-
-    var appliesServicesScopedWrites = true
-
-    var decodedTopLevelSettingKeys: Set<String>? = nil
-
-    var allTopLevelSettingsWereCaptured = true
-
-    private func store(_ key: String) -> UserDefaults {
-        ProfileSettingsStore.store(for: key)
-    }
-
-    private func canWrite(_ key: String) -> Bool {
-        if let decodedTopLevelSettingKeys,
-           !BackupData.topLevelSettingIsAuthoritative(
-                storageKey: key,
-                decodedWireKeys: decodedTopLevelSettingKeys,
-                allSettingsWereCaptured: allTopLevelSettingsWereCaptured
-           ) {
-            return false
-        }
-        switch EclipseSettingsRegistry.scope(for: key) {
-        case .profile: return appliesProfileScopedWrites
-        case .services: return appliesServicesScopedWrites
-        case .device: return true
-        }
-    }
-
-    func set(_ value: Any?, forKey key: String) {
-        guard canWrite(key) else { return }
-        store(key).set(value, forKey: key)
-    }
-    func removeObject(forKey key: String) {
-        guard canWrite(key) else { return }
-        store(key).removeObject(forKey: key)
-    }
-    func object(forKey key: String) -> Any? { store(key).object(forKey: key) }
-    func string(forKey key: String) -> String? { store(key).string(forKey: key) }
-    func bool(forKey key: String) -> Bool { store(key).bool(forKey: key) }
-    func integer(forKey key: String) -> Int { store(key).integer(forKey: key) }
-    func double(forKey key: String) -> Double { store(key).double(forKey: key) }
-    func data(forKey key: String) -> Data? { store(key).data(forKey: key) }
-    func stringArray(forKey key: String) -> [String]? { store(key).stringArray(forKey: key) }
-
-    func dictionaryRepresentation() -> [String: Any] {
-        ProfileSettingsStore.active.dictionaryRepresentation()
-    }
-}
-
-    private func gatherBackupData(
-        useSafeCloudSkyStreamSnapshot: Bool = false,
-        includePrivateCloudRecoveryPayloads: Bool = false
-    ) throws -> BackupData {
-
-        guard let captureContext = backupCaptureContext() else {
-            Logger.shared.log(
-                "BackupManager: refused to export an unreadable profile roster",
-                type: "Error"
-            )
-            throw BackupCreationError.profileRosterUnreadable
-        }
-        let capturedScope = captureContext.scope
-        let activeProfileID = capturedScope.profileID
-        let userDefaults = ScopedSettingsDefaults()
-
-        var accentColorData: Data?
-        if let colorData = userDefaults.data(forKey: "accentColor") {
-            accentColorData = colorData
-        }
-        let settingsGradientColor = userDefaults.data(forKey: "eclipseThemeGradientColor")
-        let readerAccentColor = userDefaults.data(forKey: "readerAccentColor")
-        let readerSettingsGradientColor = userDefaults.data(forKey: "readerThemeGradientColor")
-
-        let selectedAppearance = BackupData.sanitizedAppearance(userDefaults.string(forKey: "selectedAppearance"))
-        let readerSelectedAppearance = BackupData.sanitizedAppearance(userDefaults.string(forKey: "readerSelectedAppearance") ?? selectedAppearance)
-        let readerGlobalAppearanceEnabled = userDefaults.object(forKey: "readerGlobalAppearanceEnabled") == nil ? true : userDefaults.bool(forKey: "readerGlobalAppearanceEnabled")
-        let enableSubtitlesByDefault = userDefaults.bool(forKey: "enableSubtitlesByDefault")
-        let defaultSubtitleLanguage = userDefaults.string(forKey: "defaultSubtitleLanguage") ?? "eng"
-        let playerSubtitleAppearanceEnabled: Bool
-        if userDefaults.object(forKey: "playerSubtitleAppearanceEnabled") == nil {
-            playerSubtitleAppearanceEnabled = userDefaults.object(forKey: "enableVLCSubtitleEditMenu") as? Bool ?? true
-        } else {
-            playerSubtitleAppearanceEnabled = userDefaults.bool(forKey: "playerSubtitleAppearanceEnabled")
-        }
-
-        let preferredAutoAudioLanguage = userDefaults.string(forKey: "preferredAutoAudioLanguage") ?? "eng"
-        let preferredAnimeAudioLanguage = userDefaults.string(forKey: "preferredAnimeAudioLanguage") ?? "jpn"
-        let inAppPlayer = PlaybackEngine.selected(
-            persistedEngine: userDefaults.string(forKey: PlaybackEngine.defaultsKey),
-            legacyInAppPlayer: userDefaults.object(forKey: "inAppPlayer") as? String,
-            deviceFamily: .current
-        ).rawValue
-        let tmdbLanguage = userDefaults.string(forKey: "tmdbLanguage") ?? "en-US"
-        let showScheduleTab = userDefaults.bool(forKey: "showScheduleTab")
-        let showLocalScheduleTime = userDefaults.bool(forKey: "showLocalScheduleTime")
-        let defaultScheduleMode = ScheduleMode.sanitizedRawValue(userDefaults.string(forKey: "defaultScheduleMode"))
-        let scheduleWindowDays = ScheduleWindow.sanitizedDays(userDefaults.object(forKey: ScheduleWindow.storageKey) as? Int)
-        let localNotificationSubscriptions = BackupData.sanitizedLocalNotificationSubscriptions(
-            userDefaults.string(forKey: "localNotificationSubscriptions")
-        )
-        let localNotificationEpisodeReminders = BackupData.sanitizedLocalNotificationEpisodeReminders(
-            userDefaults.string(forKey: "localNotificationEpisodeReminders")
-        )
-        let localNotificationEpisodeLeadTime = BackupData.sanitizedLocalNotificationEpisodeLeadTime(
-            userDefaults.object(forKey: "localNotificationEpisodeLeadTime") as? Int
-        )
-        let localNotificationSeasonLeadTime = BackupData.sanitizedLocalNotificationSeasonLeadTime(
-            userDefaults.object(forKey: "localNotificationSeasonLeadTime") as? Int
-        )
-        let localNotificationIncludeAnimeSpecials = userDefaults.object(forKey: "localNotificationIncludeAnimeSpecials") as? Bool
-
-        let defaultPlaybackSpeed = BackupData.sanitizedDefaultPlaybackSpeed(
-            userDefaults.double(forKey: "defaultPlaybackSpeed")
-        )
-        let holdSpeedPlayer = BackupData.sanitizedHoldSpeedPlayer(
-            userDefaults.double(forKey: "holdSpeedPlayer")
-        )
-        let externalPlayer = userDefaults.string(forKey: "externalPlayer") ?? "none"
-        let preferDownloadedMedia = userDefaults.bool(forKey: "preferDownloadedMedia")
-        let alwaysLandscape = userDefaults.bool(forKey: "alwaysLandscape")
-        let playerPlaybackLockEnabled = PlayerPlaybackLockSettings.isEnabled()
-        let aniSkipEnabled = userDefaults.object(forKey: "aniSkipEnabled") == nil ? true : userDefaults.bool(forKey: "aniSkipEnabled")
-        let introDBEnabled = userDefaults.object(forKey: "introDBEnabled") == nil ? true : userDefaults.bool(forKey: "introDBEnabled")
-        let introDBAppEnabled = userDefaults.object(forKey: "introDBAppEnabled") == nil ? true : userDefaults.bool(forKey: "introDBAppEnabled")
-        let aniSkipAutoSkip = userDefaults.bool(forKey: "aniSkipAutoSkip")
-        let skip85sEnabled = userDefaults.bool(forKey: "skip85sEnabled")
-        let skip85sAlwaysVisible = userDefaults.bool(forKey: "skip85sAlwaysVisible")
-        let showNextEpisodeButton = userDefaults.object(forKey: "showNextEpisodeButton") == nil ? true : userDefaults.bool(forKey: "showNextEpisodeButton")
-        let showEpisodeBrowserButton = userDefaults.object(forKey: "showEpisodeBrowserButton") == nil
-            ? (userDefaults.object(forKey: "showVLCEpisodeBrowserButton") as? Bool ?? true)
-            : userDefaults.bool(forKey: "showEpisodeBrowserButton")
-        let showPlayerServicesButton = PlayerServicesButtonSettings.isEnabled()
-        let showNextEpisodePosterButton = userDefaults.bool(forKey: "showNextEpisodePosterButton")
-        let nextEpisodeThreshold = BackupData.sanitizedNextEpisodeThreshold(
-            userDefaults.double(forKey: "nextEpisodeThreshold")
-        )
-        let nextEpisodeSkipFillerEnabled = NextEpisodeFillerSettings.isEnabled()
-        let playerBrightnessGestureEnabled = userDefaults.object(forKey: "playerBrightnessGestureEnabled") == nil
-            ? (userDefaults.object(forKey: "vlcBrightnessGestureEnabled") as? Bool ?? false)
-            : userDefaults.bool(forKey: "playerBrightnessGestureEnabled")
-        let playerVolumeGestureEnabled = userDefaults.object(forKey: "playerVolumeGestureEnabled") == nil
-            ? (userDefaults.object(forKey: "vlcVolumeGestureEnabled") as? Bool ?? false)
-            : userDefaults.bool(forKey: "playerVolumeGestureEnabled")
-        let playerTwoFingerTapPlayPauseEnabled: Bool
-        if userDefaults.object(forKey: "playerTwoFingerTapPlayPauseEnabled") == nil {
-            playerTwoFingerTapPlayPauseEnabled = userDefaults.object(forKey: "mpvTwoFingerTapEnabled") as? Bool ?? true
-        } else {
-            playerTwoFingerTapPlayPauseEnabled = userDefaults.bool(forKey: "playerTwoFingerTapPlayPauseEnabled")
-        }
-        let playerCenterTapPlayPauseEnabled = userDefaults.object(forKey: "playerCenterTapPlayPauseEnabled") == nil ? true : userDefaults.bool(forKey: "playerCenterTapPlayPauseEnabled")
-        let playerDoubleTapSeekEnabled = userDefaults.object(forKey: "playerDoubleTapSeekEnabled") == nil
-            ? (userDefaults.object(forKey: "vlcDoubleTapSeekEnabled") as? Bool ?? true)
-            : userDefaults.bool(forKey: "playerDoubleTapSeekEnabled")
-        let savedDoubleTapSeekSeconds = userDefaults.object(forKey: "playerDoubleTapSeekSeconds") == nil
-            ? userDefaults.double(forKey: "vlcDoubleTapSeekSeconds")
-            : userDefaults.double(forKey: "playerDoubleTapSeekSeconds")
-        let playerDoubleTapSeekSeconds = BackupData.sanitizedPlayerDoubleTapSeekSeconds(
-            savedDoubleTapSeekSeconds
-        )
-        let playerOpenSubtitlesEnabled = userDefaults.object(forKey: "playerOpenSubtitlesEnabled") == nil
-            ? (userDefaults.object(forKey: "vlcOpenSubtitlesEnabled") as? Bool ?? false)
-            : userDefaults.bool(forKey: "playerOpenSubtitlesEnabled")
-        let playerOpenSubtitlesAutoFallbackEnabled = userDefaults.object(forKey: "playerOpenSubtitlesAutoFallbackEnabled") == nil
-            ? (userDefaults.object(forKey: "vlcOpenSubtitlesAutoFallbackEnabled") as? Bool ?? true)
-            : userDefaults.bool(forKey: "playerOpenSubtitlesAutoFallbackEnabled")
-        let playerPerformanceOverlayEnabled = false
-        let mpvForegroundFPS = userDefaults.integer(forKey: "mpvForegroundFPS") == 60 ? 60 : 30
-        let mpvRenderBackend = BackupData.sanitizedMPVRenderBackend(userDefaults.string(forKey: "mpvRenderBackend"))
-        let mpvMetalQualityProfile = BackupData.sanitizedMPVMetalQualityProfile(userDefaults.string(forKey: "mpvMetalQualityProfile"))
-        let mpvUpscalingMode = BackupData.sanitizedMPVUpscalingMode(userDefaults.string(forKey: "mpvUpscalingMode"))
-        let mpvNeuralUpscaler = BackupData.sanitizedMPVNeuralUpscaler(userDefaults.string(forKey: "mpvNeuralUpscaler"))
-        let mpvNeuralUpscalerTV = BackupData.sanitizedMPVNeuralUpscaler(userDefaults.string(forKey: "mpvNeuralUpscalerTV"))
-        let mpvPlayerSkin = BackupData.sanitizedMPVPlayerSkin(userDefaults.string(forKey: MPVPlayerSkinSettings.skinKey))
-        let mpvPlayerSkinCustomPrimaryColor = userDefaults.data(forKey: MPVPlayerSkinSettings.customPrimaryColorKey)
-        let mpvPlayerSkinCustomSecondaryColor = userDefaults.data(forKey: MPVPlayerSkinSettings.customSecondaryColorKey)
-        let mpvPlayerSkinAnimationsEnabled = MPVPlayerSkinSettings.animationsEnabled()
-        let mpvPlayerSkinTintControlsOnly = MPVPlayerSkinSettings.tintControlsOnly()
-        let mpvPictureInPictureEnabled = userDefaults.object(forKey: "mpvPictureInPictureEnabled") as? Bool ?? true
-        let mpvAppExitPictureInPictureEnabled = userDefaults.bool(forKey: "mpvAppExitPictureInPictureEnabled")
-        let mpvHDRMode = MPVHDRMode(rawValue: userDefaults.string(forKey: "mpvHDRMode") ?? MPVHDRMode.defaultMode.rawValue)?.rawValue ?? MPVHDRMode.defaultMode.rawValue
-        let mpvSurroundSoundEnabled = userDefaults.object(forKey: "mpvSurroundSoundEnabled") == nil ? true : userDefaults.bool(forKey: "mpvSurroundSoundEnabled")
-        let watchTogetherEnabled = userDefaults.object(forKey: WatchTogetherSettings.enabledKey) == nil
-            ? WatchTogetherSettings.defaultEnabled
-            : userDefaults.bool(forKey: WatchTogetherSettings.enabledKey)
-        let smartInAppPlayerChoosingEnabled = false
-        ExperimentalFeatureState.registerDefaults()
-        let experimentalFeaturesEnabled = userDefaults.bool(forKey: ExperimentalFeatureState.enabledKey)
-        let experimentalFeaturesLastChangedAt = BackupData.sanitizedExperimentalFeaturesLastChangedAt(
-            userDefaults.double(forKey: ExperimentalFeatureState.lastChangedAtKey)
-        )
-        let experimentalMPVPreloadEnabled = userDefaults.bool(forKey: ExperimentalFeatureState.mpvPreloadEnabledKey)
-        let experimentalMPVSmoothTransitionEnabled = userDefaults.bool(forKey: ExperimentalFeatureState.mpvSmoothTransitionEnabledKey)
-        let experimentalMPVPreloadCellularEnabled = userDefaults.bool(forKey: ExperimentalFeatureState.mpvPreloadCellularEnabledKey)
-        let experimentalMPVPreloadWifiLimitMB = ExperimentalFeatureState.resolvedMPVPreloadWifiLimitMB(userDefaults.integer(forKey: ExperimentalFeatureState.mpvPreloadWifiLimitMBKey))
-        let experimentalMPVPreloadCellularLimitMB = ExperimentalFeatureState.resolvedMPVPreloadCellularLimitMB(userDefaults.integer(forKey: ExperimentalFeatureState.mpvPreloadCellularLimitMBKey))
-        let experimentalMPVShowRemainingTime = userDefaults.bool(forKey: ExperimentalFeatureState.mpvShowRemainingTimeKey)
-        let experimentalMPVPreciseProgress = userDefaults.bool(forKey: ExperimentalFeatureState.mpvPreciseProgressKey)
-        let experimentalMPVIgnoreSpecialSubtitleStyles = userDefaults.bool(forKey: ExperimentalFeatureState.mpvIgnoreSpecialSubtitleStylesKey)
-        let experimentalMPVPreloadAutoClear = userDefaults.bool(forKey: ExperimentalFeatureState.mpvPreloadAutoClearKey)
-        let experimentalICloudSyncEnabled = userDefaults.bool(forKey: ExperimentalFeatureState.iCloudSyncEnabledKey)
-
-        let subtitleForegroundColor = userDefaults.data(forKey: "subtitles_foregroundColor")
-        let subtitleStrokeColor = userDefaults.data(forKey: "subtitles_strokeColor")
-        let subtitleStrokeWidth = BackupData.sanitizedSubtitleStrokeWidth(
-            userDefaults.double(forKey: "subtitles_strokeWidth")
-        )
-        let subtitleFontSize = BackupData.sanitizedSubtitleFontSize(
-            userDefaults.double(forKey: "subtitles_fontSize")
-        )
-        let subtitleVerticalOffset: Double
-        if userDefaults.object(forKey: "playerSubtitleOverlayBottomConstant") != nil {
-            subtitleVerticalOffset = BackupData.sanitizedSubtitleVerticalOffset(
-                userDefaults.double(forKey: "playerSubtitleOverlayBottomConstant")
-            )
-        } else if userDefaults.object(forKey: "vlcSubtitleOverlayBottomConstant") != nil {
-            subtitleVerticalOffset = BackupData.sanitizedSubtitleVerticalOffset(
-                userDefaults.double(forKey: "vlcSubtitleOverlayBottomConstant")
-            )
-        } else {
-            subtitleVerticalOffset = -6.0
-        }
-        let subtitlesVisible = userDefaults.bool(forKey: "subtitles_isVisible")
-
-        let showKanzen = userDefaults.bool(forKey: "showKanzen")
-        let hideSplashScreen = userDefaults.bool(forKey: "hideSplashScreen")
-        let modeSwitchAnimationEnabled = ModeSwitchAnimationSettings.isEnabled()
-        let kanzenAutoUpdateModules = ModuleManager.isAutoUpdateEnabled
-        let seasonMenu = MediaDetailPlatformDefaults.usesCompactSeasonMenu()
-        let horizontalEpisodeList = MediaDetailPlatformDefaults.usesHorizontalEpisodes()
-        let mediaDetailTitleArtworkEnabled = MediaDetailTitleArtworkSettings.isEnabled()
-        let mediaDetailAlternatePosterEnabled = MediaDetailAlternatePosterSettings.isEnabled()
-        let mediaDetailSimilarTitlesEnabled = MediaDetailSimilarTitlesSettings.isEnabled()
-        let useClassicScheduleUI = userDefaults.bool(forKey: "useClassicScheduleUI")
-        let heroBannerCatalogId = BackupData.sanitizedNonEmptyString(userDefaults.string(forKey: "heroBannerCatalogId"), defaultValue: "trending")
-        let heroBannerBehavior = BackupData.sanitizedHeroBannerBehavior(userDefaults.string(forKey: "heroBannerBehavior"))
-        let homeCatalogLayoutOverrides = userDefaults.data(forKey: HomeCatalogLayoutStore.storageKey).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        let homeAnimatedBackgroundEnabled = HomeAnimatedBackgroundSettings.isEnabled()
-        let homeAnimatedBackgroundQuality = BackupData.sanitizedHomeAnimatedBackgroundQuality(userDefaults.string(forKey: HomeAnimatedBackgroundQuality.storageKey))
-        let homeAnimatedBackgroundFrameRate = BackupData.sanitizedHomeAnimatedBackgroundFrameRate(userDefaults.string(forKey: HomeAnimatedBackgroundFrameRate.storageKey))
-        let appPerformanceOverlayEnabled = AppPerformanceOverlaySettings.isEnabled()
-        let experimentalMediaDesignPreset = BackupData.sanitizedExperimentalMediaDesignPreset(userDefaults.string(forKey: ExperimentalMediaDesignPreset.storageKey))
-        let experimentalHeroBleedLevel = BackupData.sanitizedExperimentalHeroBleedLevel(userDefaults.string(forKey: ExperimentalHeroBleedLevel.storageKey))
-        let experimentalHomeCardShape = BackupData.sanitizedExperimentalHomeCardShape(userDefaults.string(forKey: ExperimentalHomeCardShape.storageKey))
-        let experimentalMultiGradientPalette = BackupData.sanitizedExperimentalMultiGradientPalette(userDefaults.string(forKey: ExperimentalMultiGradientPalette.storageKey))
-        let experimentalHeroHeightScale = BackupData.sanitizedExperimentalHeroHeightScale(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.heroHeightScaleKey), defaultValue: ExperimentalVisualTuning.defaultHeroHeightScale))
-        let experimentalHeroBleedStrength = BackupData.sanitizedExperimentalHeroBleedStrength(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.heroBleedStrengthKey), defaultValue: ExperimentalVisualTuning.defaultHeroBleedStrength))
-        let experimentalHeroFadeDistanceScale = BackupData.sanitizedExperimentalHeroFadeDistanceScale(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.heroFadeDistanceScaleKey), defaultValue: ExperimentalVisualTuning.defaultHeroFadeDistanceScale))
-        let experimentalSectionSpacingScale = BackupData.sanitizedExperimentalSectionSpacingScale(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.sectionSpacingScaleKey), defaultValue: ExperimentalVisualTuning.defaultSectionSpacingScale))
-        let experimentalCardRadiusScale = BackupData.sanitizedExperimentalCardRadiusScale(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.cardRadiusScaleKey), defaultValue: ExperimentalVisualTuning.defaultCardRadiusScale))
-        let experimentalMediaCardScale = BackupData.sanitizedExperimentalMediaCardScale(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.mediaCardScaleKey), defaultValue: ExperimentalVisualTuning.defaultMediaCardScale))
-        let experimentalGlassStrength = BackupData.sanitizedExperimentalGlassStrength(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.glassStrengthKey), defaultValue: ExperimentalVisualTuning.defaultGlassStrength))
-        let experimentalGradientBaseDarkness = BackupData.sanitizedExperimentalGradientBaseDarkness(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.gradientBaseDarknessKey), defaultValue: ExperimentalVisualTuning.defaultGradientBaseDarkness))
-        let experimentalGradientAccentIntensity = BackupData.sanitizedExperimentalGradientAccentIntensity(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.gradientAccentIntensityKey), defaultValue: ExperimentalVisualTuning.defaultGradientAccentIntensity))
-        let experimentalGradientScrollMotion = BackupData.sanitizedExperimentalGradientScrollMotion(BackupData.optionalDouble(from: userDefaults.object(forKey: ExperimentalVisualTuning.gradientScrollMotionKey), defaultValue: ExperimentalVisualTuning.defaultGradientScrollMotion))
-        let experimentalGradientUseCustomColors = userDefaults.bool(forKey: ExperimentalVisualTuning.gradientUseCustomColorsKey)
-        let experimentalGradientColorA = userDefaults.data(forKey: ExperimentalVisualTuning.gradientColorAKey)
-        let experimentalGradientColorB = userDefaults.data(forKey: ExperimentalVisualTuning.gradientColorBKey)
-        let experimentalGradientColorC = userDefaults.data(forKey: ExperimentalVisualTuning.gradientColorCKey)
-        let atmosphereStyle = BackupData.sanitizedAtmosphereStyle(userDefaults.string(forKey: "atmosphereStyle"))
-        let atmosphereSolidColorSource = BackupData.sanitizedAtmosphereSolidColorSource(userDefaults.string(forKey: "atmosphereSolidColorSource"))
-        let atmosphereSolidColor = userDefaults.data(forKey: "atmosphereSolidColor")
-        let readerAtmosphereStyle = BackupData.sanitizedAtmosphereStyle(userDefaults.string(forKey: "readerAtmosphereStyle") ?? atmosphereStyle)
-        let readerAtmosphereSolidColorSource = BackupData.sanitizedAtmosphereSolidColorSource(userDefaults.string(forKey: "readerAtmosphereSolidColorSource") ?? atmosphereSolidColorSource)
-        let readerAtmosphereSolidColor = userDefaults.data(forKey: "readerAtmosphereSolidColor")
-        let mediaDetailElementOrder = BackupData.sanitizedMediaDetailElementOrder(userDefaults.string(forKey: MediaDetailElement.orderStorageKey))
-        let mediaDetailHiddenElements = MediaDetailElement.rawValue(for: MediaDetailElement.hiddenElements())
-        let readerDetailElementOrder = BackupData.sanitizedReaderDetailElementOrder(userDefaults.string(forKey: ReaderDetailElement.orderStorageKey))
-        let readerDetailHiddenElements = ReaderDetailElement.rawValue(for: ReaderDetailElement.hiddenElements())
-        let mediaColumnsPortrait = userDefaults.object(forKey: "mediaColumnsPortrait") != nil ? userDefaults.integer(forKey: "mediaColumnsPortrait") : 3
-        let mediaColumnsLandscape = userDefaults.object(forKey: "mediaColumnsLandscape") != nil ? userDefaults.integer(forKey: "mediaColumnsLandscape") : 5
-
-        let readingMode = userDefaults.object(forKey: "readingMode") != nil ? userDefaults.integer(forKey: "readingMode") : ReadingMode.WEBTOON.rawValue
-        let kanzenReaderMode = BackupData.sanitizedKanzenReaderMode(userDefaults.string(forKey: "kanzenReaderMode") ?? BackupData.defaultKanzenReaderModeRawValue())
-        let userDefaultsSnapshot = userDefaults.dictionaryRepresentation()
-        let kanzenReaderModeOverrides = BackupData.sanitizedKanzenReaderModeOverrides(
-            userDefaultsSnapshot.reduce(into: [String: String]()) { result, item in
-                guard item.key.hasPrefix("kanzenReaderMode."),
-                      let value = item.value as? String else { return }
-                result[String(item.key.dropFirst("kanzenReaderMode.".count))] = value
-            }
-        )
-        let readerDownsampleImages = userDefaults.object(forKey: "Reader.downsampleImages") == nil ? true : userDefaults.bool(forKey: "Reader.downsampleImages")
-        let readerCropBorders = userDefaults.bool(forKey: "Reader.cropBorders")
-        let readerDisableQuickActions = userDefaults.bool(forKey: "Reader.disableQuickActions")
-        let readerDisableDoubleTap = userDefaults.bool(forKey: "Reader.disableDoubleTap")
-        let readerLiveText = userDefaults.bool(forKey: "Reader.liveText")
-        let readerHideBarsOnSwipe = userDefaults.bool(forKey: "Reader.hideBarsOnSwipe")
-        let readerBackgroundColor = BackupData.sanitizedReaderBackgroundColor(userDefaults.string(forKey: "Reader.backgroundColor"))
-        let readerOrientation = BackupData.sanitizedReaderOrientation(userDefaults.string(forKey: "Reader.orientation"))
-        let readerTapZones = BackupData.sanitizedReaderTapZones(userDefaults.string(forKey: "Reader.tapZones"))
-        let readerInvertTapZones = userDefaults.bool(forKey: "Reader.invertTapZones")
-        let readerAnimatePageTransitions = userDefaults.object(forKey: "Reader.animatePageTransitions") == nil ? true : userDefaults.bool(forKey: "Reader.animatePageTransitions")
-        let readerUpscaleImages = userDefaults.bool(forKey: "Reader.upscaleImages")
-        let readerUpscaleMaxHeight = BackupData.sanitizedReaderUpscaleMaxHeight(BackupData.optionalInt(from: userDefaults.object(forKey: "Reader.upscaleMaxHeight"), defaultValue: 2000))
-        let readerUpscaleModelName = userDefaults.string(forKey: "Reader.upscaleModelName") ?? "None"
-        let readerPagesToPreload = BackupData.sanitizedReaderPagesToPreload(BackupData.optionalInt(from: userDefaults.object(forKey: "Reader.pagesToPreload"), defaultValue: 3))
-        let readerPagedPageLayout = BackupData.sanitizedReaderPagedPageLayout(userDefaults.string(forKey: "Reader.pagedPageLayout"))
-        let readerPagedPageOffset = userDefaults.bool(forKey: "Reader.pagedPageOffset")
-        let readerPagedPageOffsetOverrides = BackupData.sanitizedReaderPagedPageOffsetOverrides(
-            userDefaultsSnapshot.reduce(into: [String: Bool]()) { result, item in
-                guard item.key.hasPrefix("Reader.pagedPageOffset."),
-                      let value = item.value as? Bool else { return }
-                result[String(item.key.dropFirst("Reader.pagedPageOffset.".count))] = value
-            }
-        )
-        let readerSplitWideImages = userDefaults.bool(forKey: "Reader.splitWideImages")
-        let readerReverseSplitOrder = userDefaults.bool(forKey: "Reader.reverseSplitOrder")
-        let readerVerticalInfiniteScroll = userDefaults.object(forKey: "Reader.verticalInfiniteScroll") == nil ? true : userDefaults.bool(forKey: "Reader.verticalInfiniteScroll")
-        let readerPillarbox = userDefaults.bool(forKey: "Reader.pillarbox")
-        let readerPillarboxAmount = BackupData.sanitizedReaderPillarboxAmount(BackupData.optionalDouble(from: userDefaults.object(forKey: "Reader.pillarboxAmount"), defaultValue: 15))
-        let readerPillarboxOrientation = BackupData.sanitizedReaderPillarboxOrientation(userDefaults.string(forKey: "Reader.pillarboxOrientation"))
-        let readerOrientationLockEnabled = userDefaults.bool(forKey: "readerOrientationLockEnabled")
-        let readerOrientationLockMask = BackupData.sanitizedReaderOrientationLockMask(userDefaults.string(forKey: "readerOrientationLockMask"))
-        let readerReadThresholdPercent = BackupData.sanitizedReaderReadThresholdPercent(userDefaults.object(forKey: "readerReadThresholdPercent") as? Double)
-
-        let readerFontSize = BackupData.sanitizedReaderFontSize(
-            userDefaults.double(forKey: "readerFontSize")
-        )
-        let readerFontFamily = userDefaults.string(forKey: "readerFontFamily") ?? "-apple-system"
-        let readerFontWeight = userDefaults.string(forKey: "readerFontWeight") ?? "normal"
-        let readerColorPreset = BackupData.sanitizedReaderColorPreset(userDefaults.integer(forKey: "readerColorPreset"))
-        let readerTextAlignment = userDefaults.string(forKey: "readerTextAlignment") ?? "left"
-        let readerLineSpacing = BackupData.sanitizedReaderLineSpacing(
-            userDefaults.double(forKey: "readerLineSpacing")
-        )
-        let readerMargin = BackupData.sanitizedReaderMargin(
-            userDefaults.object(forKey: "readerMargin") != nil
-                ? userDefaults.double(forKey: "readerMargin")
-                : nil
-        )
-
-        let autoClearCacheEnabled = userDefaults.bool(forKey: "autoClearCacheEnabled")
-        let autoClearCacheThresholdMB = BackupData.sanitizedAutoClearCacheThresholdMB(
-            userDefaults.double(forKey: "autoClearCacheThresholdMB")
-        )
-        let highQualityThreshold = BackupData.sanitizedHighQualityThreshold(
-            userDefaults.object(forKey: "highQualityThreshold") as? Double
-        )
-        let backgroundHLSPipelineEnabled = userDefaults.bool(forKey: "backgroundHLSPipelineEnabled")
-        let readerDownloadsBackgroundEnabled = userDefaults.object(forKey: "readerDownloadsBackgroundEnabled") == nil ? true : userDefaults.bool(forKey: "readerDownloadsBackgroundEnabled")
-        let readerDownloadsWifiOnly = userDefaults.bool(forKey: "readerDownloadsWifiOnly")
-        let readerDownloadsParallelLimit = BackupData.sanitizedReaderDownloadsParallelLimit(BackupData.optionalInt(from: userDefaults.object(forKey: "readerDownloadsParallelLimit"), defaultValue: 2))
-        let autoUpdateServicesEnabled = userDefaults.object(forKey: "autoUpdateServicesEnabled") == nil ? true : userDefaults.bool(forKey: "autoUpdateServicesEnabled")
-        let servicesAutoModeEnabled = AutoModeSettings.isEnabled()
-        let servicesAutoSelectEpisodesEnabled = userDefaults.bool(forKey: "servicesAutoSelectEpisodesEnabled")
-        let servicesAutoModeErrorIntelligenceEnabled = AutoModeErrorIntelligenceSettings.isEnabled()
-        let servicesAutoModeSourceIds = BackupData.sanitizedStringList(userDefaults.stringArray(forKey: "servicesAutoModeSourceIds"))
-        let servicesAutoModeSourceOrderIds = BackupData.sanitizedStringList(userDefaults.stringArray(forKey: "servicesAutoModeSourceOrderIds"))
-        let servicesAutoModeQualityPreference = AutoModeQualityPreference.sanitizedRawValue(userDefaults.string(forKey: AutoModeQualityPreference.storageKey))
-        let servicesResultMinimumSimilarity = ServicesResultRankingSettings.minimumSimilarity()
-        let servicesDropMismatchedResults = ServicesResultRankingSettings.dropsMismatchedResults()
-        let servicesStremioStyleSheetEnabled = ServicesSheetPresentationSettings.usesStremioStyle()
-        let servicesIncludedStreamLanguages = StreamLanguageFilter.includedLanguages()
-        let servicesHiddenStreamLanguages = StreamLanguageFilter.hiddenLanguages()
-        let servicesHideStreamsWithoutLanguageData = StreamLanguageFilter.hidesStreamsWithoutLanguageData()
-        let servicesAssumeOriginalAudio = StreamLanguageFilter.assumesOriginalAudio()
-        let servicesTreatDubbedAnimeAsEnglish = StreamLanguageFilter.treatsDubbedAnimeAsEnglish()
-        let servicesHiddenStreamQualities = StreamLanguageFilter.hiddenQualityHeights()
-        let servicesHideStreamsWithoutDetectedQuality = StreamLanguageFilter.hidesStreamsWithoutDetectedQuality()
-        let servicesExtraRulesSourceIds = StreamLanguageFilter.extraRulesSourceIds()
-        let githubReleaseAutoCheckEnabled = userDefaults.object(forKey: "githubReleaseAutoCheckEnabled") == nil ? true : userDefaults.bool(forKey: "githubReleaseAutoCheckEnabled")
-        let githubReleaseUpdateAvailable = userDefaults.bool(forKey: "githubReleaseUpdateAvailable")
-        let githubReleaseLatestVersion = userDefaults.string(forKey: "githubReleaseLatestVersion") ?? ""
-        let githubReleaseURL = userDefaults.string(forKey: "githubReleaseURL") ?? ""
-        let githubReleaseShowAlertPending = userDefaults.bool(forKey: "githubReleaseShowAlertPending")
-        let githubReleaseLastPromptedVersion = userDefaults.string(forKey: "githubReleaseLastPromptedVersion") ?? ""
-        let filterHorrorContent = userDefaults.bool(forKey: "filterHorror")
-        let selectedSimilarityAlgorithm = BackupData.sanitizedSimilarityAlgorithm(userDefaults.string(forKey: "selectedSimilarityAlgorithm"))
-        let performanceModeEnabled = PerformanceModeSettings.isEnabled
-        let performanceModeSkipAniListTraversalForAnimeDetails = PerformanceModeSettings.skipsAniListTraversalForAnimeDetails
-        let performanceModeFastAnimeCatalogOverrides = PerformanceModeSettings.fastAnimeCatalogOverrides
-        let kanzenHomeSelectedSourceID = userDefaults.string(forKey: "kanzenHomeSelectedSourceID") ?? ""
-        let kanzenRecentSourceSearches = BackupData.sanitizedStringList(userDefaults.stringArray(forKey: "kanzenRecentSourceSearches"))
-
-        let searchHistory: BackupSearchHistory
-        if let historyData = userDefaults.data(forKey: "searchHistory") {
-            if let decoded = BackupSearchHistory.decodedQueries(from: historyData) {
-                searchHistory = BackupSearchHistory(queries: decoded, wasCaptured: true)
-            } else {
-                searchHistory = BackupSearchHistory()
-            }
-        } else {
-            searchHistory = BackupSearchHistory(wasCaptured: true)
-        }
-
-        let libraryManager = LibraryManager.shared
-        let activeCollections = libraryManager.collections(forProfile: activeProfileID)
-
-        let progressManager = ProgressManager.shared
-        let activeProgress = progressManager.progressData(forProfile: activeProfileID)
-        let activeRatings = UserRatingManager.shared.ratingsAndNotes(forProfile: activeProfileID)
-
-        let activeCatalogs = CatalogManager.shared.catalogsForBackup(forProfile: activeProfileID)
-        let activeMangaCollections = MangaLibraryManager.shared
-            .collectionsSnapshot(forProfile: activeProfileID)
-        let activeMangaProgress = MangaReadingProgressManager.shared
-            .progressSnapshot(forProfile: activeProfileID)
-        let activeMangaCatalogs = MangaCatalogManager.shared
-            .catalogsSnapshot(forProfile: activeProfileID)
-        let activeCustomCatalogs = KanzenCustomCatalogManager.shared
-            .catalogsSnapshot(forProfile: activeProfileID)
-        let trackerManager = TrackerManager.shared
-        let activeTrackerState: TrackerState? = {
-            if Thread.isMainThread {
-                return useSafeCloudSkyStreamSnapshot
-                    ? trackerManager.trackerStateForPrivateCloudExport(
-                        forProfile: activeProfileID
-                    )
-                    : trackerManager.trackerState(forProfile: activeProfileID)
-            }
-            return DispatchQueue.main.sync {
-                useSafeCloudSkyStreamSnapshot
-                    ? trackerManager.trackerStateForPrivateCloudExport(
-                        forProfile: activeProfileID
-                    )
-                    : trackerManager.trackerState(forProfile: activeProfileID)
-            }
-        }()
-        var unreadableCompatibilityDomains: [String] = []
-        if activeCollections == nil { unreadableCompatibilityDomains.append("library") }
-        if activeProgress == nil { unreadableCompatibilityDomains.append("progress") }
-        if activeRatings == nil { unreadableCompatibilityDomains.append("ratings") }
-        if activeCatalogs == nil { unreadableCompatibilityDomains.append("catalogs") }
-        if activeTrackerState == nil { unreadableCompatibilityDomains.append("trackers") }
-        if activeMangaCollections == nil {
-            unreadableCompatibilityDomains.append("Reader library")
-        }
-        if activeMangaProgress == nil {
-            unreadableCompatibilityDomains.append("Reader progress")
-        }
-        if activeMangaCatalogs == nil {
-            unreadableCompatibilityDomains.append("Reader catalogs")
-        }
-        if activeCustomCatalogs == nil {
-            unreadableCompatibilityDomains.append("Reader custom catalogs")
-        }
-        guard unreadableCompatibilityDomains.isEmpty,
-              let activeCollections,
-              let activeProgress,
-              let activeRatings,
-              let activeCatalogs,
-              let activeMangaCollections,
-              let activeMangaProgress,
-              let activeMangaCatalogs,
-              let activeCustomCatalogs,
-              let activeTrackerState else {
-            Logger.shared.log(
-                "BackupManager: refused to export unreadable active-profile legacy domains (\(unreadableCompatibilityDomains.joined(separator: ", ")))",
-                type: "Error"
-            )
-            throw BackupCreationError.activeProfileCompatibilityDomainsUnreadable(
-                unreadableCompatibilityDomains
-            )
-        }
-        let backupCollections = activeCollections.map { BackupCollection(from: $0) }
-        let progressData = activeProgress
-
-        let trackerState = useSafeCloudSkyStreamSnapshot
-            ? activeTrackerState
-            : Self.trackerStateWithoutCredentials(activeTrackerState)
-
-        let catalogs = activeCatalogs
-
-        let sourceCapture: (services: [BackupService], addons: [BackupStremioAddon])? = {
-            do {
-                let services = try ServiceStore.shared.backupRows().map { row in
-                    BackupService(
-                        id: row.id,
-                        url: row.url,
-                        jsonMetadata: row.jsonMetadata,
-                        jsScript: row.jsScript,
-                        isActive: row.isActive,
-                        sortIndex: row.sortIndex
-                    )
-                }
-                let addons = try StremioAddonStore.shared.backupRows().map { row in
-                    let resolvedURL = StremioConfiguredURLVault.resolve(
-                        addonID: row.id,
-                        persistedURL: row.configuredURL,
-                        profileID: activeProfileID
-                    )
-                    guard !StremioConfiguredURLVault.isUnresolvedReference(resolvedURL) else {
-                        throw CocoaError(.coderInvalidValue)
-                    }
-                    return BackupStremioAddon(
-                        id: row.id,
-                        configuredURL: resolvedURL,
-                        manifestJSON: row.manifestJSON,
-                        isActive: row.isActive,
-                        sortIndex: row.sortIndex
-                    )
-                }
-                return (services, addons)
-            } catch {
-                Logger.shared.log(
-                    "BackupManager: active Service/Stremio source capture was unavailable; the source roster was omitted",
-                    type: "Storage"
-                )
-                return nil
-            }
-        }()
-        let services = sourceCapture?.services ?? []
-        let stremioAddons = sourceCapture?.addons
-
-        var nuvioPlugins: NuvioStoredPluginsState? = nil
-        performOnMainThread {
-            MainActor.assumeIsolated {
-                let nuvioManager = NuvioPluginManager.shared
-                guard nuvioManager.isLoaded else { return }
-                nuvioPlugins = nuvioManager.backupState()
-            }
-        }
-
-        var skyStream: SkyStreamBackupSnapshot? = nil
-        var skyStreamBackupError: Error?
-#if os(iOS) && !targetEnvironment(macCatalyst)
-        var skyStreamManualCapturePlan: SkyStreamManualBackupCapturePlan?
-        if let opaqueSnapshot = loadOpaqueSkyStreamSnapshot(
-            preferringSafeCloud: useSafeCloudSkyStreamSnapshot
-        ) {
-
-            skyStream = useSafeCloudSkyStreamSnapshot
-                ? BackupData.skyStreamSnapshotForExperimentalCloudSync(
-                    opaqueSnapshot,
-                    stripArchives: !includePrivateCloudRecoveryPayloads
-                )
-                : opaqueSnapshot
-        } else {
-            performOnMainThread {
-                MainActor.assumeIsolated {
-                    let manager = SkyStreamPluginManager.shared
-                    guard manager.isLoaded else { return }
-                    if useSafeCloudSkyStreamSnapshot {
-                        skyStream = includePrivateCloudRecoveryPayloads
-                            ? manager.completePrivateCloudBackupSnapshot()
-                            : manager.completePrivateCloudMetadataSnapshot()
-                    } else {
-                        do {
-
-                            skyStreamManualCapturePlan = try manager.manualBackupCapturePlan()
-                        } catch {
-                            skyStreamBackupError = error
-                        }
-                    }
-                }
-            }
-        }
-        if let skyStreamManualCapturePlan, skyStreamBackupError == nil {
-            do {
-                skyStream = try SkyStreamPluginManager.materializeManualBackupSnapshot(
-                    skyStreamManualCapturePlan
-                )
-            } catch {
-                skyStreamBackupError = error
-            }
-        }
-#else
-        if let opaqueSnapshot = loadOpaqueSkyStreamSnapshot(
-            preferringSafeCloud: useSafeCloudSkyStreamSnapshot
-        ) {
-            skyStream = useSafeCloudSkyStreamSnapshot
-                ? BackupData.skyStreamSnapshotForExperimentalCloudSync(
-                    opaqueSnapshot,
-                    stripArchives: !includePrivateCloudRecoveryPayloads
-                )
-                : opaqueSnapshot
-        }
-#endif
-        if let skyStreamBackupError { throw skyStreamBackupError }
-
-        let mangaCollections = activeMangaCollections.map { collection in
-            BackupMangaCollection(
-                id: collection.id,
-                name: collection.name,
-                items: collection.items,
-                description: collection.description
-            )
-        }
-
-        let mangaReadingProgress = Dictionary(
-            uniqueKeysWithValues: activeMangaProgress
-                .map { ("\($0.key)", $0.value) }
-        )
-
-        let mangaCatalogs = activeMangaCatalogs
-
-        let customCatalogs = activeCustomCatalogs
-
-        let kanzenModules = ModuleManager.shared.modules.map { mod in
-            BackupKanzenModule(
-                id: mod.id,
-                moduleData: mod.moduleData,
-                localPath: mod.localPath,
-                moduleurl: mod.moduleurl,
-                isActive: mod.isActive
-            )
-        }
-
-#if !os(tvOS)
-        let readerExtensionsState: BackupReaderExtensionState?
-        do {
-            readerExtensionsState = try BackupReaderExtensionState.capture(
-                from: ProfileSettingsStore.services,
-                preferenceStore: ProfileSettingsStore.active
-            )
-        } catch {
-            if useSafeCloudSkyStreamSnapshot {
-                readerExtensionsState = nil
-                Logger.shared.log(
-                    "Backup: active Reader Extension metadata is unreadable; omitted from cloud snapshot rather than recorded as empty",
-                    type: "Storage"
-                )
-            } else {
-                throw error
-            }
-        }
-#else
-        let readerExtensionsState: BackupReaderExtensionState? = nil
-#endif
-
-        let backup = BackupData(
-            createdDate: Date(),
-            accentColor: accentColorData,
-            settingsGradientColor: settingsGradientColor,
-            readerAccentColor: readerAccentColor,
-            tmdbLanguage: tmdbLanguage,
-            selectedAppearance: selectedAppearance,
-            readerSelectedAppearance: readerSelectedAppearance,
-            readerGlobalAppearanceEnabled: readerGlobalAppearanceEnabled,
-            readerSettingsGradientColor: readerSettingsGradientColor,
-            enableSubtitlesByDefault: enableSubtitlesByDefault,
-            defaultSubtitleLanguage: defaultSubtitleLanguage,
-            playerSubtitleAppearanceEnabled: playerSubtitleAppearanceEnabled,
-
-            preferredAutoAudioLanguage: preferredAutoAudioLanguage,
-            preferredAnimeAudioLanguage: preferredAnimeAudioLanguage,
-            inAppPlayer: inAppPlayer,
-            showScheduleTab: showScheduleTab,
-            showLocalScheduleTime: showLocalScheduleTime,
-            defaultScheduleMode: defaultScheduleMode,
-            scheduleWindowDays: scheduleWindowDays,
-            localNotificationSubscriptions: localNotificationSubscriptions,
-            localNotificationEpisodeReminders: localNotificationEpisodeReminders,
-            localNotificationEpisodeLeadTime: localNotificationEpisodeLeadTime,
-            localNotificationSeasonLeadTime: localNotificationSeasonLeadTime,
-            localNotificationIncludeAnimeSpecials: localNotificationIncludeAnimeSpecials,
-
-            defaultPlaybackSpeed: defaultPlaybackSpeed,
-            holdSpeedPlayer: holdSpeedPlayer,
-            externalPlayer: externalPlayer,
-            preferDownloadedMedia: preferDownloadedMedia,
-            alwaysLandscape: alwaysLandscape,
-            playerPlaybackLockEnabled: playerPlaybackLockEnabled,
-            aniSkipEnabled: aniSkipEnabled,
-            introDBEnabled: introDBEnabled,
-            introDBAppEnabled: introDBAppEnabled,
-            aniSkipAutoSkip: aniSkipAutoSkip,
-            skip85sEnabled: skip85sEnabled,
-            skip85sAlwaysVisible: skip85sAlwaysVisible,
-            showNextEpisodeButton: showNextEpisodeButton,
-            showEpisodeBrowserButton: showEpisodeBrowserButton,
-            showPlayerServicesButton: showPlayerServicesButton,
-            showNextEpisodePosterButton: showNextEpisodePosterButton,
-            nextEpisodeThreshold: nextEpisodeThreshold,
-            nextEpisodeSkipFillerEnabled: nextEpisodeSkipFillerEnabled,
-            playerBrightnessGestureEnabled: playerBrightnessGestureEnabled,
-            playerVolumeGestureEnabled: playerVolumeGestureEnabled,
-            playerTwoFingerTapPlayPauseEnabled: playerTwoFingerTapPlayPauseEnabled,
-            playerCenterTapPlayPauseEnabled: playerCenterTapPlayPauseEnabled,
-            playerDoubleTapSeekEnabled: playerDoubleTapSeekEnabled,
-            playerDoubleTapSeekSeconds: playerDoubleTapSeekSeconds,
-            playerOpenSubtitlesEnabled: playerOpenSubtitlesEnabled,
-            playerOpenSubtitlesAutoFallbackEnabled: playerOpenSubtitlesAutoFallbackEnabled,
-            playerPerformanceOverlayEnabled: playerPerformanceOverlayEnabled,
-            mpvForegroundFPS: mpvForegroundFPS,
-            mpvRenderBackend: mpvRenderBackend,
-            mpvMetalQualityProfile: mpvMetalQualityProfile,
-            mpvUpscalingMode: mpvUpscalingMode,
-            mpvNeuralUpscaler: mpvNeuralUpscaler,
-            mpvNeuralUpscalerTV: mpvNeuralUpscalerTV,
-            mpvPlayerSkin: mpvPlayerSkin,
-            mpvPlayerSkinCustomPrimaryColor: mpvPlayerSkinCustomPrimaryColor,
-            mpvPlayerSkinCustomSecondaryColor: mpvPlayerSkinCustomSecondaryColor,
-            mpvPlayerSkinAnimationsEnabled: mpvPlayerSkinAnimationsEnabled,
-            mpvPlayerSkinTintControlsOnly: mpvPlayerSkinTintControlsOnly,
-            mpvPictureInPictureEnabled: mpvPictureInPictureEnabled,
-            mpvAppExitPictureInPictureEnabled: mpvAppExitPictureInPictureEnabled,
-            mpvHDRMode: mpvHDRMode,
-            mpvSurroundSoundEnabled: mpvSurroundSoundEnabled,
-            watchTogetherEnabled: watchTogetherEnabled,
-            smartInAppPlayerChoosingEnabled: smartInAppPlayerChoosingEnabled,
-            experimentalFeaturesEnabled: experimentalFeaturesEnabled,
-            experimentalFeaturesLastChangedAt: experimentalFeaturesLastChangedAt,
-            experimentalMPVPreloadEnabled: experimentalMPVPreloadEnabled,
-            experimentalMPVSmoothTransitionEnabled: experimentalMPVSmoothTransitionEnabled,
-            experimentalMPVPreloadCellularEnabled: experimentalMPVPreloadCellularEnabled,
-            experimentalMPVPreloadWifiLimitMB: experimentalMPVPreloadWifiLimitMB,
-            experimentalMPVPreloadCellularLimitMB: experimentalMPVPreloadCellularLimitMB,
-            experimentalMPVShowRemainingTime: experimentalMPVShowRemainingTime,
-            experimentalMPVPreciseProgress: experimentalMPVPreciseProgress,
-            experimentalMPVIgnoreSpecialSubtitleStyles: experimentalMPVIgnoreSpecialSubtitleStyles,
-            experimentalMPVPreloadAutoClear: experimentalMPVPreloadAutoClear,
-            experimentalICloudSyncEnabled: experimentalICloudSyncEnabled,
-
-            subtitleForegroundColor: subtitleForegroundColor,
-            subtitleStrokeColor: subtitleStrokeColor,
-            subtitleStrokeWidth: subtitleStrokeWidth,
-            subtitleFontSize: subtitleFontSize,
-            subtitleVerticalOffset: subtitleVerticalOffset,
-            subtitlesVisible: subtitlesVisible,
-
-            showKanzen: showKanzen,
-            hideSplashScreen: hideSplashScreen,
-            modeSwitchAnimationEnabled: modeSwitchAnimationEnabled,
-            kanzenAutoUpdateModules: kanzenAutoUpdateModules,
-            seasonMenu: seasonMenu,
-            horizontalEpisodeList: horizontalEpisodeList,
-            mediaDetailTitleArtworkEnabled: mediaDetailTitleArtworkEnabled,
-            mediaDetailAlternatePosterEnabled: mediaDetailAlternatePosterEnabled,
-            mediaDetailSimilarTitlesEnabled: mediaDetailSimilarTitlesEnabled,
-            useClassicScheduleUI: useClassicScheduleUI,
-            heroBannerCatalogId: heroBannerCatalogId,
-            heroBannerBehavior: heroBannerBehavior,
-            homeCatalogLayoutOverrides: homeCatalogLayoutOverrides,
-            homeAnimatedBackgroundEnabled: homeAnimatedBackgroundEnabled,
-            homeAnimatedBackgroundQuality: homeAnimatedBackgroundQuality,
-            homeAnimatedBackgroundFrameRate: homeAnimatedBackgroundFrameRate,
-            appPerformanceOverlayEnabled: appPerformanceOverlayEnabled,
-            experimentalMediaDesignPreset: experimentalMediaDesignPreset,
-            experimentalHeroBleedLevel: experimentalHeroBleedLevel,
-            experimentalHomeCardShape: experimentalHomeCardShape,
-            experimentalMultiGradientPalette: experimentalMultiGradientPalette,
-            experimentalHeroHeightScale: experimentalHeroHeightScale,
-            experimentalHeroBleedStrength: experimentalHeroBleedStrength,
-            experimentalHeroFadeDistanceScale: experimentalHeroFadeDistanceScale,
-            experimentalSectionSpacingScale: experimentalSectionSpacingScale,
-            experimentalCardRadiusScale: experimentalCardRadiusScale,
-            experimentalMediaCardScale: experimentalMediaCardScale,
-            experimentalGlassStrength: experimentalGlassStrength,
-            experimentalGradientBaseDarkness: experimentalGradientBaseDarkness,
-            experimentalGradientAccentIntensity: experimentalGradientAccentIntensity,
-            experimentalGradientScrollMotion: experimentalGradientScrollMotion,
-            experimentalGradientUseCustomColors: experimentalGradientUseCustomColors,
-            experimentalGradientColorA: experimentalGradientColorA,
-            experimentalGradientColorB: experimentalGradientColorB,
-            experimentalGradientColorC: experimentalGradientColorC,
-            atmosphereStyle: atmosphereStyle,
-            atmosphereSolidColorSource: atmosphereSolidColorSource,
-            atmosphereSolidColor: atmosphereSolidColor,
-            readerAtmosphereStyle: readerAtmosphereStyle,
-            readerAtmosphereSolidColorSource: readerAtmosphereSolidColorSource,
-            readerAtmosphereSolidColor: readerAtmosphereSolidColor,
-            mediaDetailElementOrder: mediaDetailElementOrder,
-            mediaDetailHiddenElements: mediaDetailHiddenElements,
-            readerDetailElementOrder: readerDetailElementOrder,
-            readerDetailHiddenElements: readerDetailHiddenElements,
-            mediaColumnsPortrait: mediaColumnsPortrait,
-            mediaColumnsLandscape: mediaColumnsLandscape,
-
-            readingMode: readingMode,
-            kanzenReaderMode: kanzenReaderMode,
-            kanzenReaderModeOverrides: kanzenReaderModeOverrides,
-            readerDownsampleImages: readerDownsampleImages,
-            readerCropBorders: readerCropBorders,
-            readerDisableQuickActions: readerDisableQuickActions,
-            readerDisableDoubleTap: readerDisableDoubleTap,
-            readerLiveText: readerLiveText,
-            readerHideBarsOnSwipe: readerHideBarsOnSwipe,
-            readerBackgroundColor: readerBackgroundColor,
-            readerOrientation: readerOrientation,
-            readerTapZones: readerTapZones,
-            readerInvertTapZones: readerInvertTapZones,
-            readerAnimatePageTransitions: readerAnimatePageTransitions,
-            readerUpscaleImages: readerUpscaleImages,
-            readerUpscaleMaxHeight: readerUpscaleMaxHeight,
-            readerUpscaleModelName: readerUpscaleModelName,
-            readerPagesToPreload: readerPagesToPreload,
-            readerPagedPageLayout: readerPagedPageLayout,
-            readerPagedPageOffset: readerPagedPageOffset,
-            readerPagedPageOffsetOverrides: readerPagedPageOffsetOverrides,
-            readerSplitWideImages: readerSplitWideImages,
-            readerReverseSplitOrder: readerReverseSplitOrder,
-            readerVerticalInfiniteScroll: readerVerticalInfiniteScroll,
-            readerPillarbox: readerPillarbox,
-            readerPillarboxAmount: readerPillarboxAmount,
-            readerPillarboxOrientation: readerPillarboxOrientation,
-            readerOrientationLockEnabled: readerOrientationLockEnabled,
-            readerOrientationLockMask: readerOrientationLockMask,
-            readerReadThresholdPercent: readerReadThresholdPercent,
-
-            readerFontSize: readerFontSize,
-            readerFontFamily: readerFontFamily,
-            readerFontWeight: readerFontWeight,
-            readerColorPreset: readerColorPreset,
-            readerTextAlignment: readerTextAlignment,
-            readerLineSpacing: readerLineSpacing,
-            readerMargin: readerMargin,
-
-            autoClearCacheEnabled: autoClearCacheEnabled,
-            autoClearCacheThresholdMB: autoClearCacheThresholdMB,
-            highQualityThreshold: highQualityThreshold,
-            backgroundHLSPipelineEnabled: backgroundHLSPipelineEnabled,
-            readerDownloadsBackgroundEnabled: readerDownloadsBackgroundEnabled,
-            readerDownloadsWifiOnly: readerDownloadsWifiOnly,
-            readerDownloadsParallelLimit: readerDownloadsParallelLimit,
-            autoUpdateServicesEnabled: autoUpdateServicesEnabled,
-            servicesAutoModeEnabled: servicesAutoModeEnabled,
-            servicesAutoSelectEpisodesEnabled: servicesAutoSelectEpisodesEnabled,
-            servicesAutoModeErrorIntelligenceEnabled: servicesAutoModeErrorIntelligenceEnabled,
-            servicesAutoModeSourceIds: servicesAutoModeSourceIds,
-            servicesAutoModeSourceOrderIds: servicesAutoModeSourceOrderIds,
-            servicesAutoModeQualityPreference: servicesAutoModeQualityPreference,
-            servicesResultMinimumSimilarity: servicesResultMinimumSimilarity,
-            servicesDropMismatchedResults: servicesDropMismatchedResults,
-            servicesStremioStyleSheetEnabled: servicesStremioStyleSheetEnabled,
-            servicesIncludedStreamLanguages: servicesIncludedStreamLanguages,
-            servicesHiddenStreamLanguages: servicesHiddenStreamLanguages,
-            servicesHideStreamsWithoutLanguageData: servicesHideStreamsWithoutLanguageData,
-            servicesAssumeOriginalAudio: servicesAssumeOriginalAudio,
-            servicesTreatDubbedAnimeAsEnglish: servicesTreatDubbedAnimeAsEnglish,
-            servicesHiddenStreamQualities: servicesHiddenStreamQualities,
-            servicesHideStreamsWithoutDetectedQuality: servicesHideStreamsWithoutDetectedQuality,
-            servicesExtraRulesSourceIds: servicesExtraRulesSourceIds,
-            githubReleaseAutoCheckEnabled: githubReleaseAutoCheckEnabled,
-            githubReleaseUpdateAvailable: githubReleaseUpdateAvailable,
-            githubReleaseLatestVersion: githubReleaseLatestVersion,
-            githubReleaseURL: githubReleaseURL,
-            githubReleaseShowAlertPending: githubReleaseShowAlertPending,
-            githubReleaseLastPromptedVersion: githubReleaseLastPromptedVersion,
-            filterHorrorContent: filterHorrorContent,
-            selectedSimilarityAlgorithm: selectedSimilarityAlgorithm,
-            performanceModeEnabled: performanceModeEnabled,
-            performanceModeSkipAniListTraversalForAnimeDetails: performanceModeSkipAniListTraversalForAnimeDetails,
-            performanceModeFastAnimeCatalogOverrides: performanceModeFastAnimeCatalogOverrides,
-            kanzenHomeSelectedSourceID: kanzenHomeSelectedSourceID,
-            kanzenRecentSourceSearches: kanzenRecentSourceSearches,
-
-            collections: backupCollections,
-            progressData: progressData,
-            trackerState: trackerState,
-            catalogs: catalogs,
-            services: services,
-            stremioAddons: stremioAddons,
-            skyStream: skyStream,
-            nuvioPlugins: nuvioPlugins,
-            mangaCollections: mangaCollections,
-            mangaReadingProgress: mangaReadingProgress,
-            mangaCatalogs: mangaCatalogs,
-            customCatalogs: customCatalogs,
-            kanzenModules: kanzenModules,
-            readerExtensionsState: readerExtensionsState,
-            searchHistory: searchHistory,
-            recommendationCache: RecommendationEngine.shared.getRecommendationCache(),
-            userRatings: activeRatings.ratings,
-            userRatingNotes: activeRatings.notes,
-            mediaStateSettings: BackupData.captureMediaStateSettings(),
-            servicesPresent: sourceCapture != nil,
-            kanzenModulesPresent: !ModuleManager.shared.metadataStoreFailedToLoad
-        )
-
-        var backupWithProfiles = backup
-
-        if let servicesSettings = Self.captureServicesScopedSettings() {
-            backupWithProfiles.servicesSettings = servicesSettings
-            backupWithProfiles.servicesSettingsWereCaptured = true
-        } else {
-            backupWithProfiles.servicesSettings = nil
-            backupWithProfiles.servicesSettingsWereCaptured = false
-        }
-        backupWithProfiles.sharesServices = ProfileSettingsStore.sharesServices
-        backupWithProfiles.profiles = try Self.captureProfileSnapshots(
-            profiles: captureContext.profiles,
-            includeCloudSourceMetadata: useSafeCloudSkyStreamSnapshot,
-            requireReadableReaderExtensionMetadata: !useSafeCloudSkyStreamSnapshot,
-            includePrivateCloudTrackerCredentials: useSafeCloudSkyStreamSnapshot
-        )
-        if useSafeCloudSkyStreamSnapshot,
-           let capturedActiveTracker = backupWithProfiles.profiles?.first(where: {
-               $0.id == activeProfileID
-                    && $0.trackerStateWasCaptured
-                    && $0.trackerCredentialsAndRosterWereCaptured
-           }) {
-            backupWithProfiles.trackerState = capturedActiveTracker.trackerState
-        }
-        backupWithProfiles.activeProfileID = activeProfileID
-
-        if !useSafeCloudSkyStreamSnapshot || includePrivateCloudRecoveryPayloads {
-            try Self.captureSharedSourcePayloads(into: &backupWithProfiles)
-        }
-        guard activeProfileScopeIsCurrent(capturedScope) else {
-            Logger.shared.log(
-                "BackupManager: discarded a backup captured across a profile scope or roster change",
-                type: "Error"
-            )
-            throw BackupCreationError.activeProfileChanged
-        }
-        return backupWithProfiles
-    }
-
-    private static func captureSharedSourcePayloads(into backup: inout BackupData) throws {
-        guard !ProfileSettingsStore.sharesServices,
-              let snapshots = backup.profiles else { return }
-        guard let activeProfileID = backup.activeProfileID else {
-            throw BackupCreationError.activeProfileChanged
-        }
-        let inactiveSnapshots = snapshots.filter { $0.id != activeProfileID }
-        guard !inactiveSnapshots.isEmpty else { return }
-
-        var remainingBytes = maximumSharedSourcePayloadBytes
-        var skippedForBudget = 0
-
-        var coveredPayloadPaths = Set<String>()
-        var coveredArchiveHashes = Set<String>()
-        var skyStreamPayloads: [BackupSkyStreamSharedPayload] = []
-        for snapshot in inactiveSnapshots {
-            guard let document = snapshot.skyStreamStateData,
-                  let plugins = decodedSkyStreamInstalledPlugins(document) else { continue }
-            for plugin in plugins where coveredPayloadPaths.insert(plugin.payloadRelativePath).inserted {
-                let archiveHash = plugin.archiveSHA256.lowercased()
-                let carriesArchive = !coveredArchiveHashes.contains(archiveHash)
-                guard let payload = sharedSkyStreamPayload(
-                    for: plugin,
-                    includingArchive: carriesArchive
-                ) else { continue }
-                let byteCount = payload.script.count + (payload.archive?.count ?? 0)
-                guard byteCount <= remainingBytes else {
-                    skippedForBudget += 1
-                    continue
-                }
-                remainingBytes -= byteCount
-                skyStreamPayloads.append(payload)
-
-                if payload.archive != nil {
-                    coveredArchiveHashes.insert(archiveHash)
-                }
-            }
-        }
-        if !skyStreamPayloads.isEmpty {
-            backup.skyStreamSharedPayloads = skyStreamPayloads
-        }
-
-        var coveredNuvioFiles = Set<String>()
-        var nuvioPayloads: [BackupNuvioSharedPayload] = []
-        for snapshot in inactiveSnapshots {
-            for scraper in snapshot.nuvioPlugins?.scrapers ?? [] {
-                let identity = "\(scraper.repositoryId)/\(scraper.codeFileName)"
-                guard coveredNuvioFiles.insert(identity).inserted,
-                      let code = NuvioPluginStore.shared.readCode(
-                        repositoryID: scraper.repositoryId,
-                        codeFileName: scraper.codeFileName
-                      ) else { continue }
-                let byteCount = code.utf8.count
-                guard byteCount <= remainingBytes else {
-                    skippedForBudget += 1
-                    continue
-                }
-                remainingBytes -= byteCount
-                nuvioPayloads.append(
-                    BackupNuvioSharedPayload(
-                        repositoryID: scraper.repositoryId,
-                        scraperID: scraper.id,
-                        codeFileName: scraper.codeFileName,
-                        code: code
-                    )
-                )
-            }
-        }
-        if !nuvioPayloads.isEmpty {
-            backup.nuvioSharedPayloads = nuvioPayloads
-        }
-
-        if skippedForBudget > 0 {
-            Logger.shared.log(
-                "BackupManager: refused an incomplete export because \(skippedForBudget) inactive-profile source payload(s) exceeded the shared-payload budget",
-                type: "Error"
-            )
-            throw BackupCreationError.sharedSourcePayloadBudgetExceeded(skippedForBudget)
-        }
-        if !skyStreamPayloads.isEmpty || !nuvioPayloads.isEmpty {
-            Logger.shared.log(
-                "BackupManager: carried \(skyStreamPayloads.count) SkyStream and \(nuvioPayloads.count) Nuvio payload(s) for inactive profiles",
-                type: "Services"
-            )
-        }
-    }
-
-    private static func sharedSkyStreamPayload(
-        for plugin: SkyStreamInstalledPluginState,
-        includingArchive: Bool
-    ) -> BackupSkyStreamSharedPayload? {
-        guard let payloadURL = sharedSkyStreamPayloadURL(relativePath: plugin.payloadRelativePath),
-              let script = try? Data(
-                contentsOf: payloadURL.appendingPathComponent("plugin.js", isDirectory: false),
-                options: [.mappedIfSafe]
-              ),
-              script.count <= maximumSkyStreamScriptBytes,
-              sha256Hex(script).caseInsensitiveCompare(plugin.scriptSHA256) == .orderedSame else {
-            Logger.shared.log(
-                "BackupManager: could not carry the SkyStream payload for \(plugin.id); its script is missing or does not match the hash its profile recorded",
-                type: "Error"
-            )
-            return nil
-        }
-
-        var archive: Data?
-        if includingArchive,
-           let archiveURL = sharedSkyStreamArchiveURL(
-            packageID: plugin.id,
-            archiveSHA256: plugin.archiveSHA256
-           ),
-           let bytes = try? Data(contentsOf: archiveURL, options: [.mappedIfSafe]),
-           bytes.count <= maximumSkyStreamArchiveBytes,
-           sha256Hex(bytes).caseInsensitiveCompare(plugin.archiveSHA256) == .orderedSame {
-            archive = bytes
-        }
-
-        return BackupSkyStreamSharedPayload(
-            packageID: plugin.id,
-            payloadRelativePath: plugin.payloadRelativePath,
-            scriptSHA256: plugin.scriptSHA256.lowercased(),
-            archiveSHA256: plugin.archiveSHA256.lowercased(),
-            script: script,
-            archive: archive
-        )
-    }
-
-    private struct SkyStreamPersistedInstalls: Decodable {
-        let installedPlugins: [SkyStreamInstalledPluginState]
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            installedPlugins = try container.decodeIfPresent(
-                [SkyStreamInstalledPluginState].self,
-                forKey: .installedPlugins
-            ) ?? []
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case installedPlugins
-        }
-    }
-
-    private static func decodedSkyStreamInstalledPlugins(_ document: Data) -> [SkyStreamInstalledPluginState]? {
-        guard document.count <= 8 * 1_024 * 1_024,
-              let decoded = try? JSONDecoder().decode(SkyStreamPersistedInstalls.self, from: document) else {
-            return nil
-        }
-        return decoded.installedPlugins
-    }
-
-    private static var sharedSkyStreamRootURL: URL? {
-        guard let support = try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: false
-        ) else { return nil }
-        return support.appendingPathComponent("SkyStream", isDirectory: true).standardizedFileURL
-    }
-
-    private static func sharedSkyStreamPayloadURL(relativePath: String) -> URL? {
-        guard let root = sharedSkyStreamRootURL,
-              !relativePath.isEmpty,
-              !relativePath.hasPrefix("/"),
-              !relativePath.contains("\\"),
-              !relativePath.split(separator: "/").contains("..") else { return nil }
-        let packageRoot = root
-            .appendingPathComponent("Packages", isDirectory: true)
-            .standardizedFileURL
-        let url = root.appendingPathComponent(relativePath, isDirectory: true).standardizedFileURL
-        guard url.path.hasPrefix(packageRoot.path + "/") else { return nil }
-        return url
-    }
-
-    private static func sharedSkyStreamArchiveURL(packageID: String, archiveSHA256: String) -> URL? {
-        guard let root = sharedSkyStreamRootURL,
-              SkyStreamStableID.isValidPackageName(packageID),
-              isSHA256Hex(archiveSHA256) else { return nil }
-        return root
-            .appendingPathComponent("Archives", isDirectory: true)
-            .appendingPathComponent(packageID, isDirectory: true)
-            .appendingPathComponent("\(archiveSHA256.lowercased()).sky", isDirectory: false)
-    }
-
-    private static func isSHA256Hex(_ value: String) -> Bool {
-        let normalized = value.lowercased()
-        return normalized.count == 64 && normalized.allSatisfy(\.isHexDigit)
-    }
-
-    private static func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    static func migratingNuvioSharedPayloadsForRestore(
-        _ source: BackupData,
-        writeCode: (_ code: String, _ repositoryID: String, _ scraperID: String) throws -> String
-    ) -> NuvioSharedPayloadMigrationResult {
-        var backup = source
-        var migratedPayloads: [BackupNuvioSharedPayload] = []
-        var migratedPayloadCount = 0
-        var refusedPayloadCount = 0
-        for payload in source.nuvioSharedPayloads ?? [] {
-            let legacyName = NuvioPluginSupport.codeFileName(forScraperID: payload.scraperID)
-            let contentAddressedName = NuvioPluginStore.codeFileName(
-                forScraperID: payload.scraperID,
-                code: payload.code
-            )
-            guard !payload.code.isEmpty,
-                  payload.code.utf8.count <= NuvioPluginStore.Bounds.codeBytes,
-                  payload.codeFileName == legacyName
-                    || payload.codeFileName == contentAddressedName,
-                  backupContainsNuvioPayloadReference(backup, payload: payload) else {
-                refusedPayloadCount += 1
-                continue
-            }
-            let writtenName: String
-            do {
-                writtenName = try writeCode(
-                    payload.code,
-                    payload.repositoryID,
-                    payload.scraperID
-                )
-            } catch {
-                refusedPayloadCount += 1
-                continue
-            }
-            guard writtenName == contentAddressedName else {
-                refusedPayloadCount += 1
-                continue
-            }
-            var rewrittenCount = replaceNuvioPayloadReferences(
-                in: &backup.nuvioPlugins,
-                payload: payload,
-                codeFileName: writtenName
-            )
-            if var profiles = backup.profiles {
-                for index in profiles.indices {
-                    rewrittenCount += replaceNuvioPayloadReferences(
-                        in: &profiles[index].nuvioPlugins,
-                        payload: payload,
-                        codeFileName: writtenName
-                    )
-                }
-                backup.profiles = profiles
-            }
-            guard rewrittenCount > 0 else {
-                refusedPayloadCount += 1
-                continue
-            }
-            migratedPayloads.append(BackupNuvioSharedPayload(
-                repositoryID: payload.repositoryID,
-                scraperID: payload.scraperID,
-                codeFileName: writtenName,
-                code: payload.code
-            ))
-            migratedPayloadCount += 1
-        }
-        backup.nuvioSharedPayloads = migratedPayloads.isEmpty ? nil : migratedPayloads
-        return NuvioSharedPayloadMigrationResult(
-            backup: backup,
-            migratedPayloadCount: migratedPayloadCount,
-            refusedPayloadCount: refusedPayloadCount
-        )
-    }
-
-    private static func backupContainsNuvioPayloadReference(
-        _ backup: BackupData,
-        payload: BackupNuvioSharedPayload
-    ) -> Bool {
-        if nuvioStateContainsPayloadReference(backup.nuvioPlugins, payload: payload) {
-            return true
-        }
-        return backup.profiles?.contains(where: {
-            nuvioStateContainsPayloadReference($0.nuvioPlugins, payload: payload)
-        }) == true
-    }
-
-    private static func nuvioStateContainsPayloadReference(
-        _ state: NuvioStoredPluginsState?,
-        payload: BackupNuvioSharedPayload
-    ) -> Bool {
-        state?.scrapers.contains(where: {
-            $0.id == payload.scraperID
-                && $0.repositoryId == payload.repositoryID
-                && $0.codeFileName == payload.codeFileName
-        }) == true
-    }
-
-    @discardableResult
-    private static func replaceNuvioPayloadReferences(
-        in state: inout NuvioStoredPluginsState?,
-        payload: BackupNuvioSharedPayload,
-        codeFileName: String
-    ) -> Int {
-        guard var restoredState = state else { return 0 }
-        var replacedCount = 0
-        restoredState.scrapers = restoredState.scrapers.map { scraper in
-            guard scraper.id == payload.scraperID,
-                  scraper.repositoryId == payload.repositoryID,
-                  scraper.codeFileName == payload.codeFileName else {
-                return scraper
-            }
-            replacedCount += 1
-            return NuvioPluginScraper(
-                id: scraper.id,
-                providerKey: scraper.providerKey,
-                repositoryId: scraper.repositoryId,
-                repositoryUrl: scraper.repositoryUrl,
-                name: scraper.name,
-                description: scraper.description,
-                author: scraper.author,
-                version: scraper.version,
-                filename: scraper.filename,
-                codeFileName: codeFileName,
-                supportedTypes: scraper.supportedTypes,
-                enabled: scraper.enabled,
-                manifestEnabled: scraper.manifestEnabled,
-                declaresSettings: scraper.declaresSettings,
-                logo: scraper.logo,
-                contentLanguage: scraper.contentLanguage,
-                formats: scraper.formats
-            )
-        }
-        state = restoredState
-        return replacedCount
-    }
-
-    private func migratingNuvioSharedPayloadsForRestore(_ source: BackupData) -> BackupData {
-        let store = NuvioPluginStore.shared
-        let migration = Self.migratingNuvioSharedPayloadsForRestore(source) {
-            code, repositoryID, scraperID in
-            try store.writeCode(
-                code,
-                repositoryID: repositoryID,
-                scraperID: scraperID
-            )
-        }
-        if migration.migratedPayloadCount > 0 || migration.refusedPayloadCount > 0 {
-            Logger.shared.log(
-                "BackupManager: migrated \(migration.migratedPayloadCount) Nuvio shared payload(s) to content-addressed storage; refused \(migration.refusedPayloadCount)",
-                type: "Services"
-            )
-        }
-        return migration.backup
-    }
-
-    private func restoreSharedSourcePayloads(_ backup: BackupData) {
-        var restoredScripts = 0
-        var refusedPayloads = 0
-        for payload in backup.skyStreamSharedPayloads ?? [] {
-            guard let payloadURL = Self.sharedSkyStreamPayloadURL(
-                relativePath: payload.payloadRelativePath
-            ),
-                  payload.script.count <= Self.maximumSkyStreamScriptBytes,
-                  Self.isSHA256Hex(payload.scriptSHA256),
-                  Self.sha256Hex(payload.script)
-                    .caseInsensitiveCompare(payload.scriptSHA256) == .orderedSame else {
-                refusedPayloads += 1
-                continue
-            }
-
-            let scriptURL = payloadURL.appendingPathComponent("plugin.js", isDirectory: false)
-            if !fileManager.fileExists(atPath: scriptURL.path) {
-                do {
-                    try fileManager.createDirectory(
-                        at: payloadURL,
-                        withIntermediateDirectories: true
-                    )
-                    try payload.script.write(to: scriptURL, options: .atomic)
-                    restoredScripts += 1
-                } catch {
-                    Logger.shared.log(
-                        "BackupManager: could not write the shared SkyStream payload for \(payload.packageID): \(error.localizedDescription)",
-                        type: "Error"
-                    )
-                    continue
-                }
-            }
-
-            guard let archive = payload.archive,
-                  archive.count <= Self.maximumSkyStreamArchiveBytes,
-                  Self.sha256Hex(archive)
-                    .caseInsensitiveCompare(payload.archiveSHA256) == .orderedSame,
-                  let archiveURL = Self.sharedSkyStreamArchiveURL(
-                    packageID: payload.packageID,
-                    archiveSHA256: payload.archiveSHA256
-                  ),
-                  !fileManager.fileExists(atPath: archiveURL.path) else { continue }
-            try? fileManager.createDirectory(
-                at: archiveURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try? archive.write(to: archiveURL, options: .atomic)
-        }
-
-        var restoredNuvioFiles = 0
-        let nuvioStore = NuvioPluginStore.shared
-        for payload in backup.nuvioSharedPayloads ?? [] {
-            let usesContentAddressedName = payload.codeFileName == NuvioPluginStore.codeFileName(
-                forScraperID: payload.scraperID,
-                code: payload.code
-            )
-            guard !payload.code.isEmpty,
-                  payload.code.utf8.count <= NuvioPluginStore.Bounds.codeBytes,
-                  usesContentAddressedName else {
-                refusedPayloads += 1
-                continue
-            }
-            guard !nuvioStore.hasCode(
-                repositoryID: payload.repositoryID,
-                codeFileName: payload.codeFileName
-            ) else { continue }
-            do {
-                _ = try nuvioStore.writeCode(
-                    payload.code,
-                    repositoryID: payload.repositoryID,
-                    scraperID: payload.scraperID
-                )
-                restoredNuvioFiles += 1
-            } catch {
-                refusedPayloads += 1
-            }
-        }
-
-        if restoredScripts > 0 || restoredNuvioFiles > 0 || refusedPayloads > 0 {
-            Logger.shared.log(
-                "BackupManager: restored \(restoredScripts) SkyStream and \(restoredNuvioFiles) Nuvio shared payload(s); refused \(refusedPayloads)",
-                type: "Services"
-            )
-        }
-    }
-
-    private static func captureProfileSnapshots(
-        profiles: [Profile],
-        includeCloudSourceMetadata: Bool,
-        requireReadableReaderExtensionMetadata: Bool,
-        includePrivateCloudTrackerCredentials: Bool
-    ) throws -> [BackupProfileSnapshot] {
-        try profiles.map { profile in
-            var snapshot = BackupProfileSnapshot(
-                id: profile.id,
-                name: profile.name,
-                avatarSymbol: profile.avatarSymbol,
-                avatarColorHex: profile.avatarColorHex,
-                avatarPhotoData: profile.avatarPhotoData,
-                isKidsProfile: profile.isKidsProfile,
-                createdAt: profile.createdAt,
-                pinHash: profile.pinHash,
-                pinChangedAt: profile.pinChangedAt,
-                kidsFlagChangedAt: profile.kidsFlagChangedAt
-            )
-            if let progress = ProgressManager.shared.progressData(forProfile: profile.id) {
-                snapshot.progressData = progress
-            } else {
-                snapshot.progressWasCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s progress store could not be read; its watch history is absent from this backup rather than recorded as empty",
-                    type: "Error"
-                )
-            }
-            if let ratings = UserRatingManager.shared.ratingsAndNotes(forProfile: profile.id) {
-                snapshot.userRatings = ratings.ratings
-                snapshot.userRatingNotes = ratings.notes
-            } else {
-                snapshot.ratingsWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s ratings store could not be read; its ratings are absent from this backup rather than recorded as empty",
-                    type: "Error"
-                )
-            }
-            if let collections = LibraryManager.shared.collections(forProfile: profile.id) {
-                snapshot.collections = collections.map(BackupCollection.init(from:))
-            } else {
-                snapshot.collectionsWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s library store could not be read; its collections are absent from this backup rather than recorded as empty",
-                    type: "Error"
-                )
-            }
-            if let catalogs = CatalogManager.shared.catalogsForBackup(forProfile: profile.id) {
-                snapshot.catalogs = catalogs
-            } else {
-                snapshot.catalogsWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s catalog store could not be read; its catalog ordering is absent from this backup rather than recorded as defaults",
-                    type: "Error"
-                )
-            }
-
-            let trackerState = includePrivateCloudTrackerCredentials
-                ? TrackerManager.shared.trackerStateForPrivateCloudExport(
-                    forProfile: profile.id
-                )
-                : TrackerManager.shared.trackerState(forProfile: profile.id)
-            if let trackerState {
-                snapshot.trackerState = includePrivateCloudTrackerCredentials
-                    ? trackerState
-                    : Self.trackerStateWithoutCredentials(trackerState)
-                snapshot.trackerCredentialsAndRosterWereCaptured =
-                    includePrivateCloudTrackerCredentials
-            } else {
-                snapshot.trackerStateWasCaptured = false
-                snapshot.trackerCredentialsAndRosterWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s tracker state could not be read; its tracker metadata is absent from this backup rather than recorded as disconnected",
-                    type: "Error"
-                )
-            }
-            snapshot.settings = captureProfileScopedSettings(forProfile: profile.id)
-
-            if let historyData = ProfileSettingsStore.shared.store(for: profile.id).data(forKey: "searchHistory") {
-                if let queries = BackupSearchHistory.decodedQueries(from: historyData) {
-                    snapshot.searchHistory = BackupSearchHistory(queries: queries, wasCaptured: true)
-                }
-            } else {
-                snapshot.searchHistory = BackupSearchHistory(wasCaptured: true)
-            }
-            try captureProfileSources(
-                into: &snapshot,
-                profileID: profile.id,
-                includeCloudSourceMetadata: includeCloudSourceMetadata,
-                requireReadableReaderExtensionMetadata: requireReadableReaderExtensionMetadata
-            )
-#if !os(tvOS)
-            if let collections = MangaLibraryManager.shared.collectionsSnapshot(forProfile: profile.id) {
-                snapshot.mangaCollections = collections.map {
-                    BackupMangaCollection(
-                        id: $0.id,
-                        name: $0.name,
-                        items: $0.items,
-                        description: $0.description
-                    )
-                }
-            } else {
-                snapshot.mangaCollectionsWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s Reader library is unreadable; omitted rather than recorded as empty",
-                    type: "Storage"
-                )
-            }
-            if let progress = MangaReadingProgressManager.shared.progressSnapshot(forProfile: profile.id) {
-                snapshot.mangaReadingProgress = progress.reduce(into: [String: MangaProgress]()) {
-                    $0[String($1.key)] = $1.value
-                }
-            } else {
-                snapshot.mangaReadingProgressWasCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s Reader progress is unreadable; omitted rather than recorded as empty",
-                    type: "Storage"
-                )
-            }
-            if let catalogs = MangaCatalogManager.shared.catalogsSnapshot(forProfile: profile.id) {
-                snapshot.mangaCatalogs = catalogs
-            } else {
-                snapshot.mangaCatalogsWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s Reader catalogs are unreadable; omitted rather than recorded as empty",
-                    type: "Storage"
-                )
-            }
-            if let customCatalogs = KanzenCustomCatalogManager.shared.catalogsSnapshot(forProfile: profile.id) {
-                snapshot.customCatalogs = customCatalogs
-            } else {
-                snapshot.customCatalogsWereCaptured = false
-                Logger.shared.log(
-                    "BackupManager: profile \(profile.id)'s Reader custom catalogs are unreadable; omitted rather than recorded as empty",
-                    type: "Storage"
-                )
-            }
-#endif
-            return snapshot
-        }
-    }
-
-    private static func captureServicesScopedSettings() -> [String: Data]? {
-        let store = ProfileSettingsStore.services
-        let domainName: String
-        if ProfileSettingsStore.sharesServices
-            || ProfileManager.shared.activeProfileID == ProfileManager.defaultProfileID {
-            domainName = Bundle.main.bundleIdentifier ?? "app.Eclipse"
-        } else {
-            domainName = ProfileSettingsStore.suiteName(for: ProfileManager.shared.activeProfileID)
-        }
-        let domain = UserDefaults.standard.persistentDomain(forName: domainName) ?? [:]
-
-        var result: [String: Data] = [:]
-        for (key, _) in domain where EclipseSettingsRegistry.scope(for: key) == .services
-            && !BackupData.isTypedOrLegacyReaderSourceSetting(key) {
-            guard let value = store.object(forKey: key),
-                  let data = try? PropertyListSerialization.data(
-                    fromPropertyList: value,
-                    format: .binary,
-                    options: 0
-                  ),
-                  data.count <= maximumProfileSettingValueBytes else {
-                return nil
-            }
-            result[key] = data
-        }
-        return BackupData.servicesSettingsForExperimentalCloudSync(result)
-    }
-
-#if !os(tvOS)
-    static func captureReaderExtensionState(
-        metadataStore: UserDefaults,
-        preferenceStore: UserDefaults
-    ) throws -> BackupReaderExtensionState {
-        try BackupReaderExtensionState.capture(
-            from: metadataStore,
-            preferenceStore: preferenceStore
-        )
-    }
-
-    /// Applies untrusted Reader backup metadata transactionally. A rejected
-    /// incoming payload is not evidence that the already-verified local store
-    /// is corrupt, so this path must never set the legacy migration quarantine
-    /// that gates Reader and completed offline downloads at startup.
-    @discardableResult
-    static func restoreReaderExtensionStatePreservingLocalOnFailure(
-        _ state: BackupReaderExtensionState,
-        metadataStore: UserDefaults,
-        preferenceStore: UserDefaults,
-        context: String,
-        postRestoreVerification: (() throws -> Void)? = nil
-    ) -> Bool {
-        do {
-            try state.restore(
-                to: metadataStore,
-                preferenceStore: preferenceStore,
-                postRestoreVerification: postRestoreVerification
-            )
-            return true
-        } catch {
-            Logger.shared.log(
-                "BackupManager: rejected Reader Extension metadata for \(context); existing local Reader state was preserved",
-                type: "Storage"
-            )
-            return false
-        }
-    }
-#endif
-
-    private func restoreProfileSources(
-        _ snapshot: BackupProfileSnapshot,
-        into store: UserDefaults,
-        profileID: UUID,
-        preservingDeviceLocalNuvioCloudState: Bool = false
-    ) -> Bool {
-
-        let currentNuvioState = preservingDeviceLocalNuvioCloudState
-            ? NuvioPluginStore(defaults: store).load()
-            : nil
-        let nuvioRestorePlan = snapshot.nuvioPlugins.map { incoming in
-            guard let currentNuvioState else {
-                return ExperimentalCloudNuvioRestorePlan(
-                    state: incoming,
-                    deviceLocalSourceIDs: []
-                )
-            }
-            return BackupData.nuvioRestorePlanForExperimentalCloudSync(
-                incoming: incoming,
-                current: currentNuvioState
-            )
-        }
-        let preservedDeviceLocalNuvioSourceIDs: Set<String>
-        if let nuvioRestorePlan {
-            preservedDeviceLocalNuvioSourceIDs = nuvioRestorePlan.deviceLocalSourceIDs
-        } else if let currentNuvioState {
-            // A missing captured domain has no source-deletion authority.
-            preservedDeviceLocalNuvioSourceIDs = Set(
-                currentNuvioState.repositories.map(\.id)
-                    + currentNuvioState.scrapers.map(\.id)
-            )
-        } else {
-            preservedDeviceLocalNuvioSourceIDs = []
-        }
-
-        Self.restoreServicesSettings(
-            snapshot.servicesSettings,
-            capturedCompletely: snapshot.servicesSettingsWereCaptured,
-            to: store,
-            preserving: preservedDeviceLocalNuvioSourceIDs
-        )
-
-        if let nuvio = nuvioRestorePlan?.state,
-           let encoded = try? JSONEncoder().encode(nuvio) {
-            store.set(encoded, forKey: "nuvioPluginsState.v2")
-        }
-
-        if let skyStream = snapshot.skyStream, skyStream.isSafeCloudSnapshot {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            if let encoded = try? encoder.encode(skyStream), encoded.count <= 50_000_000 {
-                store.set(encoded, forKey: SkyStreamPluginManager.pendingSafeCloudSnapshotKey)
-            }
-        }
-
-        let readerConfigurationWasRestored = restoreProfileReaderConfiguration(
-            snapshot,
-            into: store,
-            profileID: profileID
-        )
-
-        guard let services = snapshot.services, let addons = snapshot.stremioAddons else {
-            return readerConfigurationWasRestored
-        }
-
-        if profileID == ProfileManager.shared.activeProfileID {
-            restoreActiveProfileSources(services: services, addons: addons)
-            return readerConfigurationWasRestored
-        }
-
-        ServiceStoreScope.restoreSources(
-            services: services.map {
-                ServiceStoreScope.RestoredService(
-                    id: $0.id,
-                    url: $0.url,
-                    jsonMetadata: $0.jsonMetadata,
-                    jsScript: $0.jsScript,
-                    isActive: $0.isActive,
-                    sortIndex: $0.sortIndex
-                )
-            },
-            addons: addons.map {
-                ServiceStoreScope.RestoredAddon(
-                    id: $0.id,
-                    configuredURL: $0.configuredURL,
-                    manifestJSON: $0.manifestJSON,
-                    isActive: $0.isActive,
-                    sortIndex: $0.sortIndex
-                )
-            },
-            skyStreamStateData: snapshot.skyStreamStateData,
-            forProfile: profileID
-        )
-        return readerConfigurationWasRestored
-    }
-
-    private func restoreProfileReaderConfiguration(
-        _ snapshot: BackupProfileSnapshot,
-        into store: UserDefaults,
-        profileID: UUID,
-        permitsUnrosteredProfile: Bool = false
-    ) -> Bool {
-#if !os(tvOS)
-        guard PlatformCapabilities.current.supportsReader else { return true }
-        let readerMetadataStore = ProfileSettingsStore.sharesServices
-            ? UserDefaults.standard
-            : store
-        guard let readerState = snapshot.readerExtensionsState
-            ?? snapshot.aidokuState.map(BackupReaderExtensionState.migratingLegacyAidoku) else {
-            return snapshot.readerPrivateCloudConfigurationData == nil
-        }
-        guard let rawConfigurationData = snapshot.readerPrivateCloudConfigurationData else {
-            return Self.restoreReaderExtensionStatePreservingLocalOnFailure(
-                readerState,
-                metadataStore: readerMetadataStore,
-                preferenceStore: store,
-                context: "profile \(profileID)"
-            )
-        }
-        guard let configurationData = BackupProfileSnapshot
-            .boundedReaderPrivateCloudConfigurationData(rawConfigurationData) else {
-            Logger.shared.log(
-                "BackupManager: rejected Reader private-cloud configuration for profile \(profileID); existing local Reader configuration was preserved",
-                type: "Storage"
-            )
-            return false
-        }
-        var configurationWasRestored = false
-        performOnMainThread {
-            MainActor.assumeIsolated {
-                do {
-                    let configuration = try JSONDecoder().decode(
-                        ReaderExtensionPrivateCloudConfiguration.self,
-                        from: configurationData
-                    )
-                    let previousSources = try ReaderExtensionPersistence
-                        .applyingPreferenceOverlay(
-                            to: ReaderExtensionPersistence.loadInstalledSources(
-                                from: readerMetadataStore
-                            ),
-                            from: store
-                        )
-                    let restored = Self.restoreReaderExtensionStatePreservingLocalOnFailure(
-                        readerState,
-                        metadataStore: readerMetadataStore,
-                        preferenceStore: store,
-                        context: "profile \(profileID)",
-                        postRestoreVerification: {
-                            try ReaderExtensionPersistence.applyPrivateCloudConfiguration(
-                                configuration,
-                                profileID: profileID,
-                                metadataStore: readerMetadataStore,
-                                preferenceStore: store,
-                                previousSources: previousSources,
-                                postMutationVerification: {
-                                    guard readerMetadataStore.synchronize(),
-                                          store.synchronize(),
-                                          UserDefaults.standard.synchronize() else {
-                                        throw ReaderExtensionError.persistenceFailed(
-                                            "Reader private-cloud restore was not persisted"
-                                        )
-                                    }
-                                }
-                            )
-                        }
-                    )
-                    configurationWasRestored = restored
-                    guard restored, !permitsUnrosteredProfile,
-                          profileID == ProfileManager.shared.activeProfileID else { return }
-                    do {
-                        _ = try ReaderExtensionManager.shared.reloadAfterExternalRestore()
-                    } catch {
-                        Logger.shared.log(
-                            "BackupManager: restored Reader private-cloud configuration for profile \(profileID), but the active Reader state could not reload",
-                            type: "Storage"
-                        )
-                    }
-                } catch {
-                    Logger.shared.log(
-                        "BackupManager: rejected Reader private-cloud configuration for profile \(profileID); existing local Reader configuration was preserved",
-                        type: "Storage"
-                    )
-                }
-            }
-        }
-        return configurationWasRestored
-#else
-        return true
-#endif
-    }
-
-    private func restoreActiveProfileSources(
-        services: [BackupService],
-        addons: [BackupStremioAddon]
-    ) {
-        let serviceStore = ServiceStore.shared
-        for existing in serviceStore.getServices() {
-            serviceStore.remove(existing)
-        }
-        for (index, service) in services.enumerated() {
-
-            guard let script = ServiceStoreScope.securedScriptForRestore(
-                service.jsScript,
-                serviceID: service.id,
-                profileID: ProfileManager.shared.activeProfileID
-            ) else { continue }
-            serviceStore.storeService(
-                id: service.id,
-                url: service.url,
-                jsonMetadata: service.jsonMetadata,
-                jsScript: script,
-                isActive: service.isActive,
-                sortIndex: Int64(index)
-            )
-        }
-
-        let stremioStore = StremioAddonStore.shared
-        stremioStore.removeAll()
-        for (index, addon) in addons.enumerated() {
-
-            guard !StremioConfiguredURLVault.isUnresolvedReference(addon.configuredURL) else {
-                continue
-            }
-            guard let manifestData = addon.manifestJSON.data(using: .utf8),
-                  let manifest = try? JSONDecoder().decode(StremioManifest.self, from: manifestData),
-                  manifest.supportsInstallableResources else {
-                Logger.shared.log("Skipping invalid Stremio addon from profile snapshot: \(addon.id)", type: "Stremio")
-                continue
-            }
-            stremioStore.storeAddon(
-                id: addon.id,
-                configuredURL: addon.configuredURL,
-                manifestJSON: addon.manifestJSON,
-                isActive: addon.isActive,
-                sortIndex: Int64(index)
-            )
-        }
-
-        Task { @MainActor in
-            ServiceManager.shared.loadServicesFromCloud()
-            StremioAddonManager.shared.loadAddons()
-        }
-    }
-
-    private static func captureProfileSources(
-        into snapshot: inout BackupProfileSnapshot,
-        profileID: UUID,
-        includeCloudSourceMetadata: Bool,
-        requireReadableReaderExtensionMetadata: Bool
-    ) throws {
-        let store = ProfileSettingsStore.shared.store(for: profileID)
-#if !os(tvOS)
-        do {
-            let readerMetadataStore = ProfileSettingsStore.sharesServices
-                ? UserDefaults.standard
-                : store
-            snapshot.readerExtensionsState = try captureReaderExtensionState(
-                metadataStore: readerMetadataStore,
-                preferenceStore: store
-            )
-        } catch {
-            if requireReadableReaderExtensionMetadata {
-                throw error
-            }
-            Logger.shared.log(
-                "Backup: profile \(profileID)'s Reader Extension metadata is unreadable; omitted from cloud snapshot",
-                type: "Storage"
-            )
-        }
-        if includeCloudSourceMetadata {
-            var configurationData: Data?
-            BackupManager.shared.performOnMainThread {
-                MainActor.assumeIsolated {
-                    do {
-                        let configuration = try ReaderExtensionManager.shared
-                            .capturePrivateCloudConfiguration(for: profileID)
-                        let encoder = JSONEncoder()
-                        encoder.outputFormatting = [.sortedKeys]
-                        configurationData = BackupProfileSnapshot
-                            .boundedReaderPrivateCloudConfigurationData(
-                                try encoder.encode(configuration)
-                            )
-                    } catch {
-                        Logger.shared.log(
-                            "Backup: profile \(profileID)'s Reader private-cloud configuration is unreadable; omitted rather than recorded as empty",
-                            type: "Storage"
-                        )
-                    }
-                }
-            }
-            snapshot.readerPrivateCloudConfigurationData = configurationData
-        }
-#endif
-        guard !ProfileSettingsStore.sharesServices else { return }
-
-        typealias CapturedSources = (
-            services: [BackupService],
-            addons: [BackupStremioAddon],
-            skyStreamState: Data?,
-            skyStreamStateWasCaptured: Bool
-        )
-        let captured = ServiceStoreScope.withReadOnlyStore(forProfile: profileID) { context -> Result<CapturedSources, Error> in
-            Result {
-                let serviceRequest = NSFetchRequest<NSManagedObject>(entityName: "ServiceEntity")
-                let serviceEntities = try context.fetch(serviceRequest)
-                var serviceRowsWereComplete = true
-                let services = serviceEntities.compactMap { entity -> BackupService? in
-                    guard let id = entity.value(forKey: "id") as? UUID else {
-                        serviceRowsWereComplete = false
-                        return nil
-                    }
-                    return BackupService(
-                        id: id,
-                        url: entity.value(forKey: "url") as? String ?? "",
-                        jsonMetadata: entity.value(forKey: "jsonMetadata") as? String ?? "",
-                        jsScript: entity.value(forKey: "jsScript") as? String ?? "",
-                        isActive: entity.value(forKey: "isActive") as? Bool ?? true,
-                        sortIndex: entity.value(forKey: "sortIndex") as? Int64 ?? 0
-                    )
-                }
-
-                let addonRequest = NSFetchRequest<NSManagedObject>(entityName: "StremioAddonEntity")
-                let addonEntities = try context.fetch(addonRequest)
-                var addonRowsWereComplete = true
-                let addons = addonEntities.compactMap { entity -> BackupStremioAddon? in
-                    guard let id = entity.value(forKey: "id") as? UUID else {
-                        addonRowsWereComplete = false
-                        return nil
-                    }
-                    let persisted = entity.value(forKey: "configuredURL") as? String ?? ""
-                    let configuredURL = StremioConfiguredURLVault.resolve(
-                        addonID: id,
-                        persistedURL: persisted,
-                        profileID: profileID
-                    )
-                    guard !StremioConfiguredURLVault.isUnresolvedReference(configuredURL) else {
-                        addonRowsWereComplete = false
-                        return nil
-                    }
-                    return BackupStremioAddon(
-                        id: id,
-                        configuredURL: configuredURL,
-                        manifestJSON: entity.value(forKey: "manifestJSON") as? String ?? "",
-                        isActive: entity.value(forKey: "isActive") as? Bool ?? true,
-                        sortIndex: entity.value(forKey: "sortIndex") as? Int64 ?? 0
-                    )
-                }
-                guard serviceRowsWereComplete,
-                      addonRowsWereComplete,
-                      services.count == serviceEntities.count,
-                      addons.count == addonEntities.count else {
-                    throw CocoaError(.coderInvalidValue)
-                }
-
-                let stateRequest = NSFetchRequest<NSManagedObject>(entityName: "SkyStreamStateEntity")
-                stateRequest.predicate = NSPredicate(format: "id == %@", SkyStreamStateEntity.singletonID)
-                stateRequest.fetchLimit = 1
-                let stateEntity = try context.fetch(stateRequest).first
-                let skyStreamState: Data?
-                let skyStreamStateWasCaptured: Bool
-                if stateEntity == nil {
-                    skyStreamState = nil
-                    skyStreamStateWasCaptured = true
-                } else if let json = stateEntity?.value(forKey: "jsonState") as? String,
-                   let data = json.data(using: .utf8),
-                   data.count <= 8 * 1_024 * 1_024 {
-                    skyStreamState = data
-                    skyStreamStateWasCaptured = true
-                } else {
-                    skyStreamState = nil
-                    skyStreamStateWasCaptured = false
-                }
-                return (
-                    services,
-                    addons,
-                    skyStreamState,
-                    skyStreamStateWasCaptured
-                )
-            }
-        }
-
-        if case .success(let values)? = captured {
-            snapshot.services = values.services
-            snapshot.stremioAddons = values.addons
-            snapshot.skyStreamStateData = values.skyStreamState
-            if includeCloudSourceMetadata,
-               PlatformCapabilities.current.supportsSkyStreamPlugins,
-               values.skyStreamStateWasCaptured {
-                if let stateData = values.skyStreamState {
-                    var safeSnapshot: SkyStreamBackupSnapshot?
-                    let capture = {
-                        MainActor.assumeIsolated {
-                            safeSnapshot = SkyStreamPluginManager.completePrivateCloudMetadataSnapshot(
-                                fromPersistedStateData: stateData
-                            )
-                        }
-                    }
-                    if Thread.isMainThread {
-                        capture()
-                    } else {
-                        DispatchQueue.main.sync(execute: capture)
-                    }
-                    snapshot.skyStream = safeSnapshot
-                } else {
-                    snapshot.skyStream = SkyStreamBackupSnapshot(
-                        repositories: [],
-                        plugins: [],
-                        createdAt: Date(timeIntervalSince1970: 0),
-                        isSafeCloudSnapshot: true,
-                        privateCloudConfigurationIsComplete: true
-                    )
-                }
-            }
-        } else {
-            if case .failure(let error)? = captured {
-                Logger.shared.log(
-                    "Backup: source fetch failed for profile \(profileID): \(error.localizedDescription)",
-                    type: "Storage"
-                )
-            }
-            Logger.shared.log(
-                "Backup: could not read the services database for profile \(profileID); its sources are absent from this backup rather than recorded as empty",
-                type: "Storage"
-            )
-        }
-
-        let domainName = profileID == ProfileManager.defaultProfileID
-            ? (Bundle.main.bundleIdentifier ?? "app.Eclipse")
-            : ProfileSettingsStore.suiteName(for: profileID)
-        let domain = UserDefaults.standard.persistentDomain(forName: domainName) ?? [:]
-        var servicesSettings: [String: Data] = [:]
-        for (key, _) in domain where EclipseSettingsRegistry.scope(for: key) == .services
-            && !BackupData.isTypedOrLegacyReaderSourceSetting(key)
-            && !BackupData.cloudUnsafeServicesSettingsKeys.contains(key) {
-            guard let value = store.object(forKey: key),
-                  let data = try? PropertyListSerialization.data(
-                    fromPropertyList: value,
-                    format: .binary,
-                    options: 0
-                  ), data.count <= maximumProfileSettingValueBytes else {
-                snapshot.servicesSettings = [:]
-                snapshot.servicesSettingsWereCaptured = false
-                return
-            }
-            servicesSettings[key] = data
-        }
-        if let safeSettings = BackupData.servicesSettingsForExperimentalCloudSync(
-            servicesSettings
-        ) {
-            snapshot.servicesSettings = safeSettings
-            snapshot.servicesSettingsWereCaptured = true
-        }
-
-        if includeCloudSourceMetadata,
-           PlatformCapabilities.current.supportsNuvioPlugins {
-            let nuvioStore = NuvioPluginStore(defaults: store)
-            let state = nuvioStore.load()
-            if !nuvioStore.stateWritesSuspended {
-                snapshot.nuvioPlugins = state
-            }
-        } else if let data = store.data(forKey: "nuvioPluginsState.v2"),
-                  let state = try? JSONDecoder().decode(
-                    NuvioStoredPluginsState.self,
-                    from: data
-                  ) {
-            snapshot.nuvioPlugins = state
-        }
-    }
-
-    private static let deviceLocalProfileSettingKeys: Set<String> = [
-        "searchHistory",
-        "eclipseServicesSettingsSeededV1",
-        "appearanceMigratedV1",
-        "experimentalMPVPreloadHashedCacheKeysMigrated",
-        "sourceHealthRecordsV1",
-        "sourceHealthLastDailyCheckTimestamp",
-        "trackerPendingCredentialDeletions.v1",
-        "trackerPendingDiscardedProfileCleanup.v1",
-        "traktHistoryWriteReceipts.v1",
-        "localNotificationFutureMetadataRefreshDates",
-        "Reader.upscaleModelName"
-    ]
-
-    private static let deviceLocalProfileSettingPrefixes = [
-        "libraryCollections",
-        "enabledCatalogs",
-        "mangaLibraryCollections",
-        "mangaReadingProgress",
-        "kanzenMangaCatalogs",
-        "kanzenCustomCatalogs",
-        "kanzenReaderLegacyUnavailableV1",
-        "readerExtensions.legacyReconnectLedger",
-        "mediaStateCloudKitSuspended",
-        "experimentalCloudSync",
-        "experimentalICloudSync",
-        "experimentalGoogleDriveSync",
-        "experimentalOneDriveSync"
-    ]
-
-    static let maximumProfileSettingValueBytes = 512 * 1_024
-    static let maximumProfileSettingKeys = 1_024
-
-    static func carriesProfileScopedSetting(_ key: String) -> Bool {
-        isEclipseSettingKey(key)
-            && EclipseSettingsRegistry.scope(for: key) == .profile
-            && !deviceLocalProfileSettingKeys.contains(key)
-            && !deviceLocalProfileSettingPrefixes.contains(where: key.hasPrefix)
-    }
-
-    static func validatedBackupSettingValue(from data: Data, forKey key: String) -> Any? {
-        guard data.count <= maximumProfileSettingValueBytes else { return nil }
-        if let scope = MediaStateSettingRegistry.scope(for: key) {
-            guard scope.appliesToCurrentPlatform else { return nil }
-            return MediaStateSettingValueValidator.validatedValue(from: data, forKey: key)
-        }
-        return try? PropertyListSerialization.propertyList(
-            from: data,
-            options: [],
-            format: nil
-        )
-    }
-
-    static func servicesSettingParticipatesInPrivateCloud(_ key: String) -> Bool {
-        EclipseSettingsRegistry.scope(for: key) == .services
-            && !BackupData.cloudUnsafeServicesSettingsKeys.contains(key)
-            && !BackupData.isTypedOrLegacyReaderSourceSetting(key)
-    }
-
-    static func missingAuthoritativeServicesSettingKeys(
-        current: Set<String>,
-        incoming: Set<String>,
-        capturedCompletely: Bool
-    ) -> [String] {
-        guard capturedCompletely else { return [] }
-        return current.filter {
-            servicesSettingParticipatesInPrivateCloud($0)
-                && !incoming.contains($0)
-        }.sorted()
-    }
-
-    private static func restoreServicesSettings(
-        _ settings: [String: Data],
-        capturedCompletely: Bool,
-        to store: UserDefaults,
-        preserving deviceLocalSourceIDs: Set<String>
-    ) {
-        let keys = orderedRawServicesSettingKeys(settings)
-        let incomingKeys = Set(keys)
-        let missingKeys = missingAuthoritativeServicesSettingKeys(
-            current: Set(store.dictionaryRepresentation().keys),
-            incoming: incomingKeys,
-            capturedCompletely: capturedCompletely
-        )
-        for key in missingKeys {
-            let resetValue = ExperimentalCloudLocalSourceSelectionPolicy.restoredValue(
-                [String](),
-                forKey: key,
-                currentStore: store,
-                preserving: deviceLocalSourceIDs
-            )
-            if let retained = resetValue as? [String], !retained.isEmpty {
-                store.set(retained, forKey: key)
-            } else {
-                store.removeObject(forKey: key)
-            }
-        }
-        for key in keys.prefix(maximumProfileSettingKeys) {
-            guard let data = settings[key],
-                  let decodedValue = validatedBackupSettingValue(
-                    from: data,
-                    forKey: key
-                  ) else { continue }
-            let value = ExperimentalCloudLocalSourceSelectionPolicy.restoredValue(
-                decodedValue,
-                forKey: key,
-                currentStore: store,
-                preserving: deviceLocalSourceIDs
-            )
-            store.set(value, forKey: key)
-        }
-    }
-
-    private static func orderedRawServicesSettingKeys(
-        _ settings: [String: Data]
-    ) -> [String] {
-        settings.keys.filter {
-            servicesSettingParticipatesInPrivateCloud($0)
-        }.sorted { lhs, rhs in
-            let lhsIsRegistered = MediaStateSettingRegistry.scope(for: lhs) != nil
-            let rhsIsRegistered = MediaStateSettingRegistry.scope(for: rhs) != nil
-            if lhsIsRegistered != rhsIsRegistered { return lhsIsRegistered }
-            return lhs < rhs
-        }
-    }
-
-    private static func isEclipseSettingKey(_ key: String) -> Bool {
-        if key.hasPrefix("Reader.") { return true }
-        guard let first = key.first, first.isASCII, first.isLowercase else { return false }
-        return !key.hasPrefix("com.")
-    }
-
-    private static func captureProfileScopedSettings(forProfile profileID: UUID) -> [String: Data] {
-        let store = ProfileSettingsStore.shared.store(for: profileID)
-        let domainName = profileID == ProfileManager.defaultProfileID
-            ? (Bundle.main.bundleIdentifier ?? "app.Eclipse")
-            : ProfileSettingsStore.suiteName(for: profileID)
-        let domain = UserDefaults.standard.persistentDomain(forName: domainName) ?? [:]
-
-        var seen = Set(MediaStateSettingRegistry.allKeys.filter(carriesProfileScopedSetting))
-        var keys = seen.sorted()
-        keys.append(contentsOf: domain.keys.filter {
-            carriesProfileScopedSetting($0) && seen.insert($0).inserted
-        }.sorted())
-
-        var result: [String: Data] = [:]
-        var skippedOversizedKeys = 0
-        for key in keys {
-            guard result.count < maximumProfileSettingKeys else { break }
-            guard let value = store.object(forKey: key),
-                  PropertyListSerialization.propertyList(value, isValidFor: .binary),
-                  let data = try? PropertyListSerialization.data(
-                    fromPropertyList: value,
-                    format: .binary,
-                    options: 0
-                  ) else {
-                continue
-            }
-            guard data.count <= maximumProfileSettingValueBytes else {
-                skippedOversizedKeys += 1
-                continue
-            }
-            result[key] = data
-        }
-        if skippedOversizedKeys > 0 {
-            Logger.shared.log(
-                "BackupManager: skipped \(skippedOversizedKeys) oversized profile setting(s) for profile \(profileID)",
-                type: "Info"
-            )
-        }
-        return result
-    }
-
-    private func isSkyStreamBackupDomainReady() -> Bool {
-        skyStreamBackupDomainReadiness() == .ready
-    }
-
-    private func skyStreamBackupDomainReadiness() -> ExperimentalCloudBackupDomainReadiness {
-#if os(iOS) && !targetEnvironment(macCatalyst)
-        var readiness = ExperimentalCloudBackupDomainReadiness.loading
-        performOnMainThread {
-            readiness = MainActor.assumeIsolated {
-                let manager = SkyStreamPluginManager.shared
-                if manager.isLoaded { return .ready }
-                return manager.lastErrorMessage == nil ? .loading : .unavailable
-            }
-        }
-        return readiness
-#else
-        return .ready
-#endif
-    }
-
-    func restoreManualBackup(
-        from url: URL,
-        scope: ManualBackupRestoreScope
-    ) async -> Bool {
-        recordManualRestoreResult(failureReason: nil)
-        let preflight: ManualRestorePreflight
-        do {
-            preflight = try manualRestorePreflight(from: url)
-        } catch {
-            let message = (error as? LocalizedError)?.errorDescription
-                ?? error.localizedDescription
-            recordManualRestoreResult(failureReason: message)
-            Logger.shared.log("Backup restore validation failed: \(message)", type: "Error")
-            return false
-        }
-#if os(iOS)
-        guard let syncSession = await MainActor.run(body: {
-            ExperimentalCloudSyncManager.shared.beginManualRestore(
-                keepsChangesOnThisDevice: scope.keepsChangesOnThisDevice
-            )
-        }) else {
-            Logger.shared.log(
-                "Backup restore waited because a cloud operation is still active",
-                type: "CloudSync"
-            )
-            recordManualRestoreResult(
-                failureReason: "A cloud sync or restore is still running. Wait for it to finish, then import the backup again."
-            )
-            return false
-        }
-
-        let succeeded: Bool
-        if #available(iOS 17.0, *) {
-            succeeded = await MediaStateSyncManager.shared
-                .performAuthoritativeSnapshotRestore {
-                    await self.restoreBackup(from: url)
-                }
-        } else {
-            succeeded = await restoreBackup(from: url)
-        }
-        await MainActor.run {
-            ExperimentalCloudSyncManager.shared.finishManualRestore(
-                syncSession,
-                succeeded: succeeded
-            )
-            if succeeded,
-               let preferredProfileID = preflight.preferredActiveProfileID,
-               ProfileManager.shared.profiles.contains(where: { $0.id == preferredProfileID }) {
-                // A clean install starts on the built-in profile. Previous
-                // versions restored a custom profile's data under its old UUID
-                // but left that empty built-in profile selected, making the
-                // restore look as if it had lost all watch history.
-                ProfileManager.shared.switchProfile(to: preferredProfileID)
-            }
-        }
-        if succeeded {
-            recordManualRestoreResult(
-                failureReason: nil,
-                importedRecordCount: preflight.watchRecordCount
-            )
-        } else if lastManualRestoreFailureReason == nil {
-            recordManualRestoreResult(
-                failureReason: "The backup could not be applied. No restored data was selected; wait for any cloud operation to finish and try again."
-            )
-        }
-        return succeeded
-#else
-        let succeeded = await restoreBackup(from: url)
-        if succeeded {
-            recordManualRestoreResult(
-                failureReason: nil,
-                importedRecordCount: preflight.watchRecordCount
-            )
-        }
-        return succeeded
-#endif
-    }
-
-    private func manualRestorePreflight(from url: URL) throws -> ManualRestorePreflight {
-        let data = try BoundedLocalStoreReader.read(
-            from: url,
-            maximumBytes: Self.maximumManualBackupFileBytes
-        )
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw BackupRestoreError.invalidDocument
-        }
-
-        let version = (object["version"] as? String) ?? "1.0"
-        guard Self.compareSchemaVersion(
-            version,
-            to: BackupData.currentCloudSchemaVersion
-        ) != .orderedDescending else {
-            throw BackupRestoreError.unsupportedVersion(version)
-        }
-
-        let knownPayloadKeys: Set<String> = [
-            "profiles", "progressData", "collections", "settings", "services",
-            "stremioAddons", "catalogs", "trackerState"
-        ]
-        guard !knownPayloadKeys.isDisjoint(with: Set(object.keys)) else {
-            throw BackupRestoreError.missingBackupPayload
-        }
-
-        func progressCount(in value: Any?) -> Int {
-            guard let progress = value as? [String: Any] else { return 0 }
-            let movieCount = (progress["movieProgress"] as? [Any])?.count ?? 0
-            let episodeCount = (progress["episodeProgress"] as? [Any])?.count ?? 0
-            return movieCount + episodeCount
-        }
-
-        let profiles = object["profiles"] as? [[String: Any]]
-        let profileRecordCount = profiles?.reduce(into: 0) { count, profile in
-            count += progressCount(in: profile["progressData"])
-        } ?? 0
-        let watchRecordCount = profileRecordCount > 0
-            ? profileRecordCount
-            : progressCount(in: object["progressData"])
-        let preferredActiveProfileID = (object["activeProfileID"] as? String)
-            .flatMap(UUID.init(uuidString:))
-
-        return ManualRestorePreflight(
-            watchRecordCount: watchRecordCount,
-            preferredActiveProfileID: preferredActiveProfileID
-        )
-    }
-
-    func restoreBackup(
-        from url: URL,
-        preservesSyncedMediaState: Bool = false
-    ) async -> Bool {
-        do {
-            let jsonData = try BoundedLocalStoreReader.read(
-                from: url,
-                maximumBytes: Self.maximumManualBackupFileBytes
-            )
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-
-            var backupData: BackupData
-
-            do {
-                backupData = try decoder.decode(BackupData.self, from: jsonData)
-                backupData = migratingNuvioSharedPayloadsForRestore(backupData)
-                Logger.shared.log("Backup decoded successfully", type: "Info")
-            } catch {
-                Logger.shared.log("Standard decode failed, attempting lenient restore: \(error.localizedDescription)", type: "Info")
-
-                guard let decodedBackupData = tryLenientDecode(from: jsonData) else {
-                    Logger.shared.log("Lenient decode also failed", type: "Error")
-                    return false
-                }
-                let backupData = migratingNuvioSharedPayloadsForRestore(decodedBackupData)
-
-                Logger.shared.log("Lenient decode succeeded with partial data", type: "Info")
-                let intendedScope = activeProfileScopeToken()
-                let restoreStart = try await beginShareServicesRestoreTransaction(
-                    for: backupData,
-                    expectedScope: intendedScope
-                )
-                let shareServicesTransaction = restoreStart.transaction
-                let restoreScope = restoreStart.scope
-
-                let ownsTopLevelSources = appliesTopLevelSourceData(
-                    backupData,
-                    activeProfileID: restoreScope.profileID
-                )
-                guard await restoreSkyStreamSnapshotAndWaitIfSupported(
-                    ownsTopLevelSources ? backupData.skyStream : nil,
-                    expectedScope: restoreScope
-                ) else {
-                    await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                    return false
-                }
-                guard await restoreNuvioSnapshotIfSupported(
-                    ownsTopLevelSources ? backupData.nuvioPlugins : nil,
-                    expectedScope: restoreScope
-                ) else {
-                    await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                    return false
-                }
-                guard let postApply = await applyBackupDataIfScopeIsCurrent(
-                    backupData,
-                    preservingLegacyCloudMediaState: preservesSyncedMediaState,
-                    expectedScope: restoreScope
-                ) else {
-                    await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                    return false
-                }
-                let postApplyScope = postApply.scope
-                await SkyStreamPluginManager.shared.captureSourceDefaultsState(
-                    expectedScopeGeneration: postApplyScope.servicesGeneration
-                )
-                await repairActiveProfileSkyStreamStateIfNeeded(
-                    backupData,
-                    expectedScope: postApplyScope
-                )
-                guard await reloadSourceManagersAfterRestore(
-                expectedScope: postApplyScope,
-                toleratesInertReaderRuntime: true
-            ) else {
-                    await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                    return false
-                }
-                completeShareServicesRestoreTransaction(shareServicesTransaction)
-                return true
-            }
-
-            let intendedScope = activeProfileScopeToken()
-            let restoreStart = try await beginShareServicesRestoreTransaction(
-                for: backupData,
-                expectedScope: intendedScope
-            )
-            let shareServicesTransaction = restoreStart.transaction
-            let restoreScope = restoreStart.scope
-            let ownsTopLevelSources = appliesTopLevelSourceData(
-                backupData,
-                activeProfileID: restoreScope.profileID
-            )
-            guard await restoreSkyStreamSnapshotAndWaitIfSupported(
-                ownsTopLevelSources ? backupData.skyStream : nil,
-                expectedScope: restoreScope
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                return false
-            }
-            guard await restoreNuvioSnapshotIfSupported(
-                ownsTopLevelSources ? backupData.nuvioPlugins : nil,
-                expectedScope: restoreScope
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                return false
-            }
-            guard let postApply = await applyBackupDataIfScopeIsCurrent(
-                backupData,
-                preservingLegacyCloudMediaState: preservesSyncedMediaState,
-                expectedScope: restoreScope
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                return false
-            }
-            let postApplyScope = postApply.scope
-            await SkyStreamPluginManager.shared.captureSourceDefaultsState(
-                expectedScopeGeneration: postApplyScope.servicesGeneration
-            )
-            await repairActiveProfileSkyStreamStateIfNeeded(
-                backupData,
-                expectedScope: postApplyScope
-            )
-            guard await reloadSourceManagersAfterRestore(
-                expectedScope: postApplyScope,
-                toleratesInertReaderRuntime: true
-            ) else {
-                await restoreShareServicesModeAfterFailedRestore(shareServicesTransaction)
-                return false
-            }
-            completeShareServicesRestoreTransaction(shareServicesTransaction)
-            return true
-        } catch {
-            Logger.shared.log("Failed to restore backup: \(error.localizedDescription)", type: "Error")
-            return false
-        }
-    }
-
-    private func tryLenientDecode(from jsonData: Data) -> BackupData? {
-        guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            return nil
-        }
-
-        let lenientDecoder = JSONDecoder()
-        lenientDecoder.dateDecodingStrategy = .iso8601
-
-        let createdDate: Date
-        if let dateString = json["createdDate"] as? String {
-            let formatter = ISO8601DateFormatter()
-            createdDate = formatter.date(from: dateString) ?? Date()
-        } else {
-            createdDate = Date()
-        }
-
-        let version = json["version"] as? String ?? "1.0"
-        let accentColor = BackupData.backupColorData(from: json["accentColor"])
-        let settingsGradientColor = BackupData.backupColorData(from: json["settingsGradientColor"])
-        let readerAccentColor = BackupData.backupColorData(from: json["readerAccentColor"])
-        let readerSettingsGradientColor = BackupData.backupColorData(from: json["readerSettingsGradientColor"])
-        let tmdbLanguage = json["tmdbLanguage"] as? String ?? "en-US"
-        let selectedAppearance = BackupData.sanitizedAppearance(json["selectedAppearance"] as? String)
-        let readerSelectedAppearance = BackupData.sanitizedAppearance(json["readerSelectedAppearance"] as? String ?? selectedAppearance)
-        let readerGlobalAppearanceEnabled = json["readerGlobalAppearanceEnabled"] as? Bool ?? true
-        let enableSubtitlesByDefault = json["enableSubtitlesByDefault"] as? Bool ?? false
-        let defaultSubtitleLanguage = json["defaultSubtitleLanguage"] as? String ?? "eng"
-        let playerSubtitleAppearanceEnabled = json["playerSubtitleAppearanceEnabled"] as? Bool
-            ?? json["enableVLCSubtitleEditMenu"] as? Bool
-            ?? true
-        let preferredAutoAudioLanguage = json["preferredAutoAudioLanguage"] as? String ?? "eng"
-        let preferredAnimeAudioLanguage = json["preferredAnimeAudioLanguage"] as? String ?? "jpn"
-        let inAppPlayer = Settings.normalizedInAppPlayer(json["inAppPlayer"] as? String ?? json["playerChoice"] as? String)
-        let showScheduleTab = json["showScheduleTab"] as? Bool ?? true
-        let showLocalScheduleTime = json["showLocalScheduleTime"] as? Bool ?? true
-        let defaultScheduleMode = ScheduleMode.sanitizedRawValue(json["defaultScheduleMode"] as? String)
-        let scheduleWindowDays = ScheduleWindow.sanitizedDays(json["scheduleWindowDays"] as? Int)
-        let localNotificationSubscriptions = BackupData.sanitizedLocalNotificationSubscriptions(
-            json["localNotificationSubscriptions"] as? String
-        )
-        let localNotificationEpisodeReminders = BackupData.sanitizedLocalNotificationEpisodeReminders(
-            json["localNotificationEpisodeReminders"] as? String
-        )
-        let localNotificationEpisodeLeadTime = BackupData.sanitizedLocalNotificationEpisodeLeadTime(
-            json["localNotificationEpisodeLeadTime"] as? Int
-        )
-        let localNotificationSeasonLeadTime = BackupData.sanitizedLocalNotificationSeasonLeadTime(
-            json["localNotificationSeasonLeadTime"] as? Int
-        )
-        let localNotificationIncludeAnimeSpecials = json["localNotificationIncludeAnimeSpecials"] as? Bool
-
-        let defaultPlaybackSpeed = BackupData.sanitizedDefaultPlaybackSpeed(
-            json["defaultPlaybackSpeed"] as? Double
-        )
-        let holdSpeedPlayer = BackupData.sanitizedHoldSpeedPlayer(
-            json["holdSpeedPlayer"] as? Double
-        )
-        let externalPlayer = json["externalPlayer"] as? String ?? "none"
-        let preferDownloadedMedia = json["preferDownloadedMedia"] as? Bool ?? false
-        let alwaysLandscape = json["alwaysLandscape"] as? Bool ?? false
-        let playerPlaybackLockEnabled = json["playerPlaybackLockEnabled"] as? Bool ?? PlayerPlaybackLockSettings.defaultEnabled
-        let aniSkipEnabled = json["aniSkipEnabled"] as? Bool ?? true
-        let introDBEnabled = json["introDBEnabled"] as? Bool ?? true
-        let introDBAppEnabled = json["introDBAppEnabled"] as? Bool ?? true
-        let aniSkipAutoSkip = json["aniSkipAutoSkip"] as? Bool ?? false
-        let skip85sEnabled = json["skip85sEnabled"] as? Bool ?? false
-        let skip85sAlwaysVisible = json["skip85sAlwaysVisible"] as? Bool ?? false
-        let showNextEpisodeButton = json["showNextEpisodeButton"] as? Bool ?? true
-        let showEpisodeBrowserButton = json["showEpisodeBrowserButton"] as? Bool ?? json["showVLCEpisodeBrowserButton"] as? Bool ?? true
-        let showPlayerServicesButton = json["showPlayerServicesButton"] as? Bool ?? false
-        let showNextEpisodePosterButton = json["showNextEpisodePosterButton"] as? Bool ?? false
-        let nextEpisodeThreshold = BackupData.sanitizedNextEpisodeThreshold(
-            json["nextEpisodeThreshold"] as? Double
-        )
-        let nextEpisodeSkipFillerEnabled = json["nextEpisodeSkipFillerEnabled"] as? Bool ?? NextEpisodeFillerSettings.defaultEnabled
-        let playerBrightnessGestureEnabled = json["playerBrightnessGestureEnabled"] as? Bool ?? json["vlcBrightnessGestureEnabled"] as? Bool ?? false
-        let playerVolumeGestureEnabled = json["playerVolumeGestureEnabled"] as? Bool ?? json["vlcVolumeGestureEnabled"] as? Bool ?? false
-        let playerTwoFingerTapPlayPauseEnabled = json["playerTwoFingerTapPlayPauseEnabled"] as? Bool ?? true
-        let playerCenterTapPlayPauseEnabled = json["playerCenterTapPlayPauseEnabled"] as? Bool ?? true
-        let playerDoubleTapSeekEnabled = json["playerDoubleTapSeekEnabled"] as? Bool ?? json["vlcDoubleTapSeekEnabled"] as? Bool ?? true
-        let playerDoubleTapSeekSeconds = BackupData.sanitizedPlayerDoubleTapSeekSeconds(
-            json["playerDoubleTapSeekSeconds"] as? Double
-                ?? json["vlcDoubleTapSeekSeconds"] as? Double
-        )
-        let playerOpenSubtitlesEnabled = json["playerOpenSubtitlesEnabled"] as? Bool ?? json["vlcOpenSubtitlesEnabled"] as? Bool ?? false
-        let playerOpenSubtitlesAutoFallbackEnabled = json["playerOpenSubtitlesAutoFallbackEnabled"] as? Bool ?? json["vlcOpenSubtitlesAutoFallbackEnabled"] as? Bool ?? true
-        let playerPerformanceOverlayEnabled = json["playerPerformanceOverlayEnabled"] as? Bool ?? false
-        let mpvForegroundFPSRaw = BackupData.optionalInt(
-            from: json["mpvForegroundFPS"],
-            defaultValue: 30
-        )
-        let mpvForegroundFPS = mpvForegroundFPSRaw == 60 ? 60 : 30
-        let mpvRenderBackend = BackupData.sanitizedMPVRenderBackend(json["mpvRenderBackend"] as? String)
-        let mpvMetalQualityProfile = BackupData.sanitizedMPVMetalQualityProfile(json["mpvMetalQualityProfile"] as? String)
-        let mpvUpscalingMode = BackupData.sanitizedMPVUpscalingMode(json["mpvUpscalingMode"] as? String)
-        let mpvNeuralUpscaler = BackupData.sanitizedMPVNeuralUpscaler(json["mpvNeuralUpscaler"] as? String)
-        let mpvNeuralUpscalerTV = BackupData.sanitizedMPVNeuralUpscaler(json["mpvNeuralUpscalerTV"] as? String)
-        let mpvPlayerSkin = BackupData.sanitizedMPVPlayerSkin(json["mpvPlayerSkin"] as? String)
-        let mpvPlayerSkinCustomPrimaryColor = BackupData.backupColorData(from: json["mpvPlayerSkinCustomPrimaryColor"])
-        let mpvPlayerSkinCustomSecondaryColor = BackupData.backupColorData(from: json["mpvPlayerSkinCustomSecondaryColor"])
-        let mpvPlayerSkinAnimationsEnabled = json["mpvPlayerSkinAnimationsEnabled"] as? Bool ?? MPVPlayerSkinSettings.defaultAnimationsEnabled
-        let mpvPlayerSkinTintControlsOnly = json["mpvPlayerSkinTintControlsOnly"] as? Bool ?? MPVPlayerSkinSettings.defaultTintControlsOnly
-        let mpvPictureInPictureEnabled = json["mpvPictureInPictureEnabled"] as? Bool ?? true
-        let mpvAppExitPictureInPictureEnabled = json["mpvAppExitPictureInPictureEnabled"] as? Bool ?? false
-        let mpvHDRMode = MPVHDRMode(rawValue: json["mpvHDRMode"] as? String ?? MPVHDRMode.defaultMode.rawValue)?.rawValue ?? MPVHDRMode.defaultMode.rawValue
-        let mpvSurroundSoundEnabled = json["mpvSurroundSoundEnabled"] as? Bool ?? true
-        let watchTogetherEnabled = json["watchTogetherEnabled"] as? Bool ?? WatchTogetherSettings.defaultEnabled
-        let smartInAppPlayerChoosingEnabled = json["smartInAppPlayerChoosingEnabled"] as? Bool ?? false
-        let experimentalFeaturesEnabled = json["experimentalFeaturesEnabled"] as? Bool
-        let experimentalFeaturesLastChangedAt = BackupData.sanitizedExperimentalFeaturesLastChangedAt(
-            json["experimentalFeaturesLastChangedAt"] as? Double
-        )
-        let experimentalMPVPreloadEnabled = json["experimentalMPVPreloadEnabled"] as? Bool ?? true
-        let experimentalMPVSmoothTransitionEnabled = json["experimentalMPVSmoothTransitionEnabled"] as? Bool ?? true
-        let experimentalMPVPreloadCellularEnabled = json["experimentalMPVPreloadCellularEnabled"] as? Bool ?? false
-        let experimentalMPVPreloadWifiLimitMB = ExperimentalFeatureState.resolvedMPVPreloadWifiLimitMB(BackupData.optionalInt(from: json["experimentalMPVPreloadWifiLimitMB"], defaultValue: ExperimentalFeatureState.mpvPreloadWifiDefaultLimitMB))
-        let experimentalMPVPreloadCellularLimitMB = ExperimentalFeatureState.resolvedMPVPreloadCellularLimitMB(BackupData.optionalInt(from: json["experimentalMPVPreloadCellularLimitMB"], defaultValue: ExperimentalFeatureState.mpvPreloadCellularDefaultLimitMB))
-        let experimentalMPVShowRemainingTime = json["experimentalMPVShowRemainingTime"] as? Bool ?? true
-        let experimentalMPVPreciseProgress = json["experimentalMPVPreciseProgress"] as? Bool ?? true
-        let experimentalMPVIgnoreSpecialSubtitleStyles = json["experimentalMPVIgnoreSpecialSubtitleStyles"] as? Bool ?? false
-        let experimentalMPVPreloadAutoClear = json["experimentalMPVPreloadAutoClear"] as? Bool ?? true
-        let experimentalICloudSyncEnabled = json["experimentalICloudSyncEnabled"] as? Bool ?? false
-
-        let subtitleForegroundColor = BackupData.backupColorData(from: json["subtitleForegroundColor"])
-        let subtitleStrokeColor = BackupData.backupColorData(from: json["subtitleStrokeColor"])
-        let subtitleStrokeWidth = BackupData.sanitizedSubtitleStrokeWidth(
-            json["subtitleStrokeWidth"] as? Double
-        )
-        let subtitleFontSize = BackupData.sanitizedSubtitleFontSize(
-            json["subtitleFontSize"] as? Double
-        )
-        let subtitleVerticalOffset = BackupData.sanitizedSubtitleVerticalOffset(
-            json["subtitleVerticalOffset"] as? Double
-        )
-        let subtitlesVisible = json["subtitlesVisible"] as? Bool ?? false
-
-        let showKanzen = json["showKanzen"] as? Bool ?? false
-        let hideSplashScreen = json["hideSplashScreen"] as? Bool
-        let modeSwitchAnimationEnabled = json["modeSwitchAnimationEnabled"] as? Bool ?? ModeSwitchAnimationSettings.defaultEnabled
-        let kanzenAutoUpdateModules = json["kanzenAutoUpdateModules"] as? Bool ?? true
-        let seasonMenu = json["seasonMenu"] as? Bool ?? false
-        let horizontalEpisodeList = json["horizontalEpisodeList"] as? Bool ?? false
-        let mediaDetailTitleArtworkEnabled = json["mediaDetailTitleArtworkEnabled"] as? Bool ?? MediaDetailTitleArtworkSettings.defaultEnabled
-        let mediaDetailAlternatePosterEnabled = json["mediaDetailAlternatePosterEnabled"] as? Bool ?? MediaDetailAlternatePosterSettings.defaultEnabled
-        let mediaDetailSimilarTitlesEnabled = json["mediaDetailSimilarTitlesEnabled"] as? Bool ?? MediaDetailSimilarTitlesSettings.defaultEnabled
-        let useClassicScheduleUI = json["useClassicScheduleUI"] as? Bool ?? false
-        let heroBannerCatalogId = BackupData.sanitizedNonEmptyString(json["heroBannerCatalogId"] as? String, defaultValue: "trending")
-        let heroBannerBehavior = BackupData.sanitizedHeroBannerBehavior(json["heroBannerBehavior"] as? String)
-        let homeCatalogLayoutOverrides = json["homeCatalogLayoutOverrides"] as? String ?? ""
-        let homeAnimatedBackgroundEnabled = json["homeAnimatedBackgroundEnabled"] as? Bool
-        let homeAnimatedBackgroundQuality = BackupData.sanitizedHomeAnimatedBackgroundQuality(json["homeAnimatedBackgroundQuality"] as? String)
-        let homeAnimatedBackgroundFrameRate = BackupData.sanitizedHomeAnimatedBackgroundFrameRate(json["homeAnimatedBackgroundFrameRate"] as? String)
-        let appPerformanceOverlayEnabled = json["appPerformanceOverlayEnabled"] as? Bool ?? AppPerformanceOverlaySettings.defaultEnabled
-        let experimentalMediaDesignPreset = BackupData.sanitizedExperimentalMediaDesignPreset(json["experimentalMediaDesignPreset"] as? String)
-        let experimentalHeroBleedLevel = BackupData.sanitizedExperimentalHeroBleedLevel(json["experimentalHeroBleedLevel"] as? String)
-        let experimentalHomeCardShape = BackupData.sanitizedExperimentalHomeCardShape(json["experimentalHomeCardShape"] as? String)
-        let experimentalMultiGradientPalette = BackupData.sanitizedExperimentalMultiGradientPalette(json["experimentalMultiGradientPalette"] as? String)
-        let experimentalHeroHeightScale = BackupData.sanitizedExperimentalHeroHeightScale(BackupData.optionalDouble(from: json["experimentalHeroHeightScale"], defaultValue: ExperimentalVisualTuning.defaultHeroHeightScale))
-        let experimentalHeroBleedStrength = BackupData.sanitizedExperimentalHeroBleedStrength(BackupData.optionalDouble(from: json["experimentalHeroBleedStrength"], defaultValue: ExperimentalVisualTuning.defaultHeroBleedStrength))
-        let experimentalHeroFadeDistanceScale = BackupData.sanitizedExperimentalHeroFadeDistanceScale(BackupData.optionalDouble(from: json["experimentalHeroFadeDistanceScale"], defaultValue: ExperimentalVisualTuning.defaultHeroFadeDistanceScale))
-        let experimentalSectionSpacingScale = BackupData.sanitizedExperimentalSectionSpacingScale(BackupData.optionalDouble(from: json["experimentalSectionSpacingScale"], defaultValue: ExperimentalVisualTuning.defaultSectionSpacingScale))
-        let experimentalCardRadiusScale = BackupData.sanitizedExperimentalCardRadiusScale(BackupData.optionalDouble(from: json["experimentalCardRadiusScale"], defaultValue: ExperimentalVisualTuning.defaultCardRadiusScale))
-        let experimentalMediaCardScale = BackupData.sanitizedExperimentalMediaCardScale(BackupData.optionalDouble(from: json["experimentalMediaCardScale"], defaultValue: ExperimentalVisualTuning.defaultMediaCardScale))
-        let experimentalGlassStrength = BackupData.sanitizedExperimentalGlassStrength(BackupData.optionalDouble(from: json["experimentalGlassStrength"], defaultValue: ExperimentalVisualTuning.defaultGlassStrength))
-        let experimentalGradientBaseDarkness = BackupData.sanitizedExperimentalGradientBaseDarkness(BackupData.optionalDouble(from: json["experimentalGradientBaseDarkness"], defaultValue: ExperimentalVisualTuning.defaultGradientBaseDarkness))
-        let experimentalGradientAccentIntensity = BackupData.sanitizedExperimentalGradientAccentIntensity(BackupData.optionalDouble(from: json["experimentalGradientAccentIntensity"], defaultValue: ExperimentalVisualTuning.defaultGradientAccentIntensity))
-        let experimentalGradientScrollMotion = BackupData.sanitizedExperimentalGradientScrollMotion(BackupData.optionalDouble(from: json["experimentalGradientScrollMotion"], defaultValue: ExperimentalVisualTuning.defaultGradientScrollMotion))
-        let experimentalGradientUseCustomColors = json["experimentalGradientUseCustomColors"] as? Bool ?? false
-        let experimentalGradientColorA = BackupData.backupColorData(from: json["experimentalGradientColorA"])
-        let experimentalGradientColorB = BackupData.backupColorData(from: json["experimentalGradientColorB"])
-        let experimentalGradientColorC = BackupData.backupColorData(from: json["experimentalGradientColorC"])
-        let atmosphereStyle = BackupData.sanitizedAtmosphereStyle(json["atmosphereStyle"] as? String)
-        let atmosphereSolidColorSource = BackupData.sanitizedAtmosphereSolidColorSource(json["atmosphereSolidColorSource"] as? String)
-        let atmosphereSolidColor = BackupData.backupColorData(from: json["atmosphereSolidColor"])
-        let readerAtmosphereStyle = BackupData.sanitizedAtmosphereStyle(json["readerAtmosphereStyle"] as? String ?? atmosphereStyle)
-        let readerAtmosphereSolidColorSource = BackupData.sanitizedAtmosphereSolidColorSource(json["readerAtmosphereSolidColorSource"] as? String ?? atmosphereSolidColorSource)
-        let readerAtmosphereSolidColor = BackupData.backupColorData(from: json["readerAtmosphereSolidColor"])
-        let mediaDetailElementOrder = BackupData.sanitizedMediaDetailElementOrder(json["mediaDetailElementOrder"] as? String)
-        let mediaDetailHiddenElements = BackupData.sanitizedMediaDetailHiddenElements(json["mediaDetailHiddenElements"] as? String)
-        let readerDetailElementOrder = BackupData.sanitizedReaderDetailElementOrder(json["readerDetailElementOrder"] as? String)
-        let readerDetailHiddenElements = BackupData.sanitizedReaderDetailHiddenElements(json["readerDetailHiddenElements"] as? String)
-        let mediaColumnsPortrait = json["mediaColumnsPortrait"] as? Int ?? 3
-        let mediaColumnsLandscape = json["mediaColumnsLandscape"] as? Int ?? 5
-
-        let readingMode = BackupData.optionalInt(from: json["readingMode"], defaultValue: 2)
-        let kanzenReaderMode = (json["kanzenReaderMode"] as? String).map(BackupData.sanitizedKanzenReaderMode)
-            ?? BackupData.kanzenReaderModeRawValue(forReadingMode: readingMode)
-        let kanzenReaderModeOverrides = BackupData.sanitizedKanzenReaderModeOverrides(json["kanzenReaderModeOverrides"] as? [String: String])
-        let readerDownsampleImages = json["readerDownsampleImages"] as? Bool ?? true
-        let readerCropBorders = json["readerCropBorders"] as? Bool ?? false
-        let readerDisableQuickActions = json["readerDisableQuickActions"] as? Bool ?? false
-        let readerDisableDoubleTap = json["readerDisableDoubleTap"] as? Bool ?? false
-        let readerLiveText = json["readerLiveText"] as? Bool ?? false
-        let readerHideBarsOnSwipe = json["readerHideBarsOnSwipe"] as? Bool ?? false
-        let readerBackgroundColor = BackupData.sanitizedReaderBackgroundColor(json["readerBackgroundColor"] as? String)
-        let readerOrientation = BackupData.sanitizedReaderOrientation(json["readerOrientation"] as? String)
-        let readerTapZones = BackupData.sanitizedReaderTapZones(json["readerTapZones"] as? String)
-        let readerInvertTapZones = json["readerInvertTapZones"] as? Bool ?? false
-        let readerAnimatePageTransitions = json["readerAnimatePageTransitions"] as? Bool ?? true
-        let readerUpscaleImages = json["readerUpscaleImages"] as? Bool ?? false
-        let readerUpscaleMaxHeight = BackupData.sanitizedReaderUpscaleMaxHeight(BackupData.optionalInt(from: json["readerUpscaleMaxHeight"], defaultValue: 2000))
-        let readerUpscaleModelName = json["readerUpscaleModelName"] as? String ?? "None"
-        let readerPagesToPreload = BackupData.sanitizedReaderPagesToPreload(BackupData.optionalInt(from: json["readerPagesToPreload"], defaultValue: 3))
-        let readerPagedPageLayout = BackupData.sanitizedReaderPagedPageLayout(json["readerPagedPageLayout"] as? String)
-        let readerPagedPageOffset = json["readerPagedPageOffset"] as? Bool ?? false
-        let readerPagedPageOffsetOverrides = BackupData.sanitizedReaderPagedPageOffsetOverrides(json["readerPagedPageOffsetOverrides"] as? [String: Bool])
-        let readerSplitWideImages = json["readerSplitWideImages"] as? Bool ?? false
-        let readerReverseSplitOrder = json["readerReverseSplitOrder"] as? Bool ?? false
-        let readerVerticalInfiniteScroll = json["readerVerticalInfiniteScroll"] as? Bool ?? true
-        let readerPillarbox = json["readerPillarbox"] as? Bool ?? false
-        let readerPillarboxAmount = BackupData.sanitizedReaderPillarboxAmount(BackupData.optionalDouble(from: json["readerPillarboxAmount"], defaultValue: 15))
-        let readerPillarboxOrientation = BackupData.sanitizedReaderPillarboxOrientation(json["readerPillarboxOrientation"] as? String)
-        let readerOrientationLockEnabled = json["readerOrientationLockEnabled"] as? Bool ?? false
-        let readerOrientationLockMask = BackupData.sanitizedReaderOrientationLockMask(json["readerOrientationLockMask"] as? String)
-        let readerReadThresholdPercent = BackupData.sanitizedReaderReadThresholdPercent(json["readerReadThresholdPercent"] as? Double)
-
-        let readerFontSize = BackupData.sanitizedReaderFontSize(
-            json["readerFontSize"] as? Double
-        )
-        let readerFontFamily = json["readerFontFamily"] as? String ?? "-apple-system"
-        let readerFontWeight = json["readerFontWeight"] as? String ?? "normal"
-        let readerColorPreset = BackupData.sanitizedReaderColorPreset(json["readerColorPreset"] as? Int)
-        let readerTextAlignment = json["readerTextAlignment"] as? String ?? "left"
-        let readerLineSpacing = BackupData.sanitizedReaderLineSpacing(
-            json["readerLineSpacing"] as? Double
-        )
-        let readerMargin = BackupData.sanitizedReaderMargin(
-            json["readerMargin"] as? Double
-        )
-
-        let autoClearCacheEnabled = json["autoClearCacheEnabled"] as? Bool ?? false
-        let autoClearCacheThresholdMB = BackupData.sanitizedAutoClearCacheThresholdMB(
-            json["autoClearCacheThresholdMB"] as? Double
-        )
-        let highQualityThreshold = BackupData.sanitizedHighQualityThreshold(
-            json["highQualityThreshold"] as? Double
-        )
-        let backgroundHLSPipelineEnabled = json["backgroundHLSPipelineEnabled"] as? Bool ?? false
-        let readerDownloadsBackgroundEnabled = json["readerDownloadsBackgroundEnabled"] as? Bool ?? true
-        let readerDownloadsWifiOnly = json["readerDownloadsWifiOnly"] as? Bool ?? false
-        let readerDownloadsParallelLimit = BackupData.sanitizedReaderDownloadsParallelLimit(BackupData.optionalInt(from: json["readerDownloadsParallelLimit"], defaultValue: 2))
-        let autoUpdateServicesEnabled = json["autoUpdateServicesEnabled"] as? Bool ?? true
-        let servicesAutoModeEnabled = json["servicesAutoModeEnabled"] as? Bool ?? AutoModeSettings.defaultEnabled
-        let servicesAutoSelectEpisodesEnabled = json["servicesAutoSelectEpisodesEnabled"] as? Bool ?? false
-        let servicesAutoModeErrorIntelligenceEnabled = json["servicesAutoModeErrorIntelligenceEnabled"] as? Bool ?? AutoModeErrorIntelligenceSettings.defaultEnabled
-        let servicesAutoModeSourceIds = BackupData.sanitizedStringList(BackupData.stringList(from: json["servicesAutoModeSourceIds"]))
-        let servicesAutoModeSourceOrderIds = BackupData.sanitizedStringList(BackupData.stringList(from: json["servicesAutoModeSourceOrderIds"]))
-        let servicesAutoModeQualityPreference = AutoModeQualityPreference.sanitizedRawValue(json["servicesAutoModeQualityPreference"] as? String)
-        let servicesResultMinimumSimilarity = BackupData.sanitizedServicesResultMinimumSimilarity(
-            BackupData.optionalDouble(from: json["servicesResultMinimumSimilarity"], defaultValue: ServicesResultRankingSettings.defaultMinimumSimilarity)
-        )
-        let servicesDropMismatchedResults = json["servicesDropMismatchedResults"] as? Bool ?? ServicesResultRankingSettings.defaultDropMismatchedResults
-        let servicesStremioStyleSheetEnabled = json["servicesStremioStyleSheetEnabled"] as? Bool ?? ServicesSheetPresentationSettings.defaultStremioStyleEnabled
-        let servicesIncludedStreamLanguages = StreamLanguageFilter.sanitizedLanguageList(BackupData.stringList(from: json["servicesIncludedStreamLanguages"]))
-        let servicesHiddenStreamLanguages = StreamLanguageFilter.sanitizedLanguageList(BackupData.stringList(from: json["servicesHiddenStreamLanguages"]))
-        let servicesHideStreamsWithoutLanguageData = json["servicesHideStreamsWithoutLanguageData"] as? Bool ?? false
-        let servicesAssumeOriginalAudio = json["servicesAssumeOriginalAudio"] as? Bool ?? false
-        let servicesTreatDubbedAnimeAsEnglish = json["servicesTreatDubbedAnimeAsEnglish"] as? Bool ?? false
-        let servicesHiddenStreamQualities = StreamLanguageFilter.sanitizedQualityHeights(BackupData.intList(from: json["servicesHiddenStreamQualities"]))
-        let servicesHideStreamsWithoutDetectedQuality = json["servicesHideStreamsWithoutDetectedQuality"] as? Bool ?? false
-        let servicesExtraRulesSourceIds: [String]?
-        if let rawSourceIds = json["servicesExtraRulesSourceIds"] as? [String] {
-            servicesExtraRulesSourceIds = StreamLanguageFilter.sanitizedExtraRulesSourceIds(rawSourceIds)
-        } else {
-            servicesExtraRulesSourceIds = nil
-        }
-        let githubReleaseAutoCheckEnabled = json["githubReleaseAutoCheckEnabled"] as? Bool ?? true
-        let githubReleaseUpdateAvailable = json["githubReleaseUpdateAvailable"] as? Bool ?? false
-        let githubReleaseLatestVersion = json["githubReleaseLatestVersion"] as? String ?? ""
-        let githubReleaseURL = json["githubReleaseURL"] as? String ?? ""
-        let githubReleaseShowAlertPending = json["githubReleaseShowAlertPending"] as? Bool ?? false
-        let githubReleaseLastPromptedVersion = json["githubReleaseLastPromptedVersion"] as? String ?? ""
-        let filterHorrorContent = json["filterHorror"] as? Bool ?? false
-        let selectedSimilarityAlgorithm = BackupData.sanitizedSimilarityAlgorithm(json["selectedSimilarityAlgorithm"] as? String)
-        let performanceModeEnabled = json["performanceModeEnabled"] as? Bool ?? PerformanceModeSettings.defaultEnabled
-        let performanceModeSkipAniListTraversalForAnimeDetails = json["performanceModeSkipAniListTraversalForAnimeDetails"] as? Bool ?? false
-        let rawPerformanceModeOverrides = json["performanceModeFastAnimeCatalogOverrides"] as? [String: Bool] ?? [:]
-        let performanceModeFastAnimeCatalogOverrides = rawPerformanceModeOverrides.filter { PerformanceModeSettings.animeCatalogIds.contains($0.key) }
-        let kanzenHomeSelectedSourceID = json["kanzenHomeSelectedSourceID"] as? String ?? ""
-        let kanzenRecentSourceSearches = BackupData.stringList(from: json["kanzenRecentSourceSearches"])
-
-        // Lenient restore may salvage independent fields, but a destructive
-        // domain is authoritative only when its entire payload decodes. A
-        // malformed member must not turn the rest into a partial replacement.
-        let decodedCollections = decodeBackupJSONValue(
-            [BackupCollection].self,
-            from: json["collections"],
-            using: lenientDecoder
-        )
-        let decodedProgressData = decodeBackupJSONValue(
-            ProgressData.self,
-            from: json["progressData"],
-            using: lenientDecoder
-        )
-        let decodedTrackerState = decodeBackupJSONValue(
-            TrackerState.self,
-            from: json["trackerState"],
-            using: lenientDecoder
-        )
-        let decodedCatalogs = decodeBackupJSONValue(
-            [Catalog].self,
-            from: json["catalogs"],
-            using: lenientDecoder
-        )
-        let decodedServices = decodeBackupJSONValue(
-            [BackupService].self,
-            from: json["services"],
-            using: lenientDecoder
-        )
-        let collections = decodedCollections ?? []
-        let progressData = decodedProgressData ?? ProgressData()
-        let trackerState = decodedTrackerState ?? TrackerState()
-        let catalogs = decodedCatalogs ?? []
-        let services = decodedServices ?? []
-
-        let stremioAddons = decodeBackupJSONValue(
-            [BackupStremioAddon].self,
-            from: json["stremioAddons"],
-            using: lenientDecoder
-        )
-
-        var skyStream: SkyStreamBackupSnapshot? = nil
-        if let skyStreamValue = json["skyStream"],
-           JSONSerialization.isValidJSONObject(skyStreamValue),
-           let skyStreamJSON = try? JSONSerialization.data(withJSONObject: skyStreamValue) {
-            skyStream = try? lenientDecoder.decode(SkyStreamBackupSnapshot.self, from: skyStreamJSON)
-        }
-
-        var nuvioPlugins: NuvioStoredPluginsState? = nil
-        if let nuvioValue = json["nuvioPlugins"],
-           JSONSerialization.isValidJSONObject(nuvioValue),
-           let nuvioJSON = try? JSONSerialization.data(withJSONObject: nuvioValue) {
-            nuvioPlugins = try? lenientDecoder.decode(NuvioStoredPluginsState.self, from: nuvioJSON)
-        }
-
-        let decodedMangaCollections = decodeBackupJSONValue(
-            [BackupMangaCollection].self,
-            from: json["mangaCollections"],
-            using: lenientDecoder
-        )
-        let decodedMangaReadingProgress = decodeBackupJSONValue(
-            [String: MangaProgress].self,
-            from: json["mangaReadingProgress"],
-            using: lenientDecoder
-        )
-        let decodedMangaCatalogs = decodeBackupJSONValue(
-            [MangaCatalog].self,
-            from: json["mangaCatalogs"],
-            using: lenientDecoder
-        )
-        let decodedCustomCatalogs = decodeBackupJSONValue(
-            [KanzenCustomCatalog].self,
-            from: json["customCatalogs"],
-            using: lenientDecoder
-        )
-        let decodedKanzenModules = decodeBackupJSONValue(
-            [BackupKanzenModule].self,
-            from: json["kanzenModules"],
-            using: lenientDecoder
-        )
-        let mangaCollections = decodedMangaCollections ?? []
-        let mangaReadingProgress = decodedMangaReadingProgress ?? [:]
-        let mangaCatalogs = decodedMangaCatalogs ?? []
-        let customCatalogs = decodedCustomCatalogs ?? []
-        let kanzenModules = decodedKanzenModules ?? []
-
-        var aidokuState: BackupAidokuState?
-        if let aidokuDict = json["aidokuState"] as? [String: Any],
-           let data = try? JSONSerialization.data(withJSONObject: aidokuDict),
-           let decoded = try? lenientDecoder.decode(BackupAidokuState.self, from: data) {
-            aidokuState = BackupData.aidokuStateWithoutExecutablePayloads(decoded)
-        }
-
-        var readerExtensionsState: BackupReaderExtensionState?
-        if let readerExtensionsDictionary = json["readerExtensionsState"] as? [String: Any],
-           let data = try? JSONSerialization.data(withJSONObject: readerExtensionsDictionary),
-           let decoded = try? lenientDecoder.decode(BackupReaderExtensionState.self, from: data) {
-            readerExtensionsState = decoded.sanitized()
-        } else if let aidokuState {
-            readerExtensionsState = BackupReaderExtensionState.migratingLegacyAidoku(aidokuState)
-        }
-
-        let searchHistory = BackupSearchHistory(jsonValue: json["searchHistory"])
-
-        var recommendationCache: [TMDBSearchResult] = []
-        if let recsData = json["recommendationCache"] as? [[String: Any]] {
-            for dict in recsData {
-                if let data = try? JSONSerialization.data(withJSONObject: dict),
-                   let rec = try? lenientDecoder.decode(TMDBSearchResult.self, from: data) {
-                    recommendationCache.append(rec)
-                }
-            }
-        }
-
-        let decodedUserRatings: [String: Double]? = decodeBackupJSONValue(
-            [String: Double].self,
-            from: json["userRatings"],
-            using: lenientDecoder
-        ) ?? decodeBackupJSONValue(
-            [String: Int].self,
-            from: json["userRatings"],
-            using: lenientDecoder
-        ).map { $0.mapValues(Double.init) }
-        let decodedUserRatingNotes = decodeBackupJSONValue(
-            [String: String].self,
-            from: json["userRatingNotes"],
-            using: lenientDecoder
-        )
-        let userRatings = BackupData.sanitizedUserRatings(decodedUserRatings ?? [:])
-        let userRatingNotes = BackupData.sanitizedUserRatingNotes(decodedUserRatingNotes ?? [:])
-
-        let mediaStateSettings = BackupData.mediaStateSettings(fromJSONValue: json["mediaStateSettings"])
-        let collectionsPresent = decodedCollections != nil
-        let progressDataPresent = decodedProgressData != nil
-        let trackerStatePresent = decodedTrackerState != nil
-        let catalogsPresent = decodedCatalogs != nil
-        let servicesPresent = decodedServices != nil
-        let mangaCollectionsPresent = decodedMangaCollections != nil
-        let mangaReadingProgressPresent = decodedMangaReadingProgress != nil
-        let mangaCatalogsPresent = decodedMangaCatalogs != nil
-        let customCatalogsPresent = decodedCustomCatalogs != nil
-        let kanzenModulesPresent = decodedKanzenModules != nil
-        let userRatingsPresent = decodedUserRatings != nil && decodedUserRatingNotes != nil
-
-        var lenient = BackupData(
-            version: version,
-            createdDate: createdDate,
-            accentColor: accentColor,
-            settingsGradientColor: settingsGradientColor,
-            readerAccentColor: readerAccentColor,
-            tmdbLanguage: tmdbLanguage,
-            selectedAppearance: selectedAppearance,
-            readerSelectedAppearance: readerSelectedAppearance,
-            readerGlobalAppearanceEnabled: readerGlobalAppearanceEnabled,
-            readerSettingsGradientColor: readerSettingsGradientColor,
-            enableSubtitlesByDefault: enableSubtitlesByDefault,
-            defaultSubtitleLanguage: defaultSubtitleLanguage,
-            playerSubtitleAppearanceEnabled: playerSubtitleAppearanceEnabled,
-            preferredAutoAudioLanguage: preferredAutoAudioLanguage,
-            preferredAnimeAudioLanguage: preferredAnimeAudioLanguage,
-            inAppPlayer: inAppPlayer,
-            showScheduleTab: showScheduleTab,
-            showLocalScheduleTime: showLocalScheduleTime,
-            defaultScheduleMode: defaultScheduleMode,
-            scheduleWindowDays: scheduleWindowDays,
-            localNotificationSubscriptions: localNotificationSubscriptions,
-            localNotificationEpisodeReminders: localNotificationEpisodeReminders,
-            localNotificationEpisodeLeadTime: localNotificationEpisodeLeadTime,
-            localNotificationSeasonLeadTime: localNotificationSeasonLeadTime,
-            localNotificationIncludeAnimeSpecials: localNotificationIncludeAnimeSpecials,
-            defaultPlaybackSpeed: defaultPlaybackSpeed,
-            holdSpeedPlayer: holdSpeedPlayer,
-            externalPlayer: externalPlayer,
-            preferDownloadedMedia: preferDownloadedMedia,
-            alwaysLandscape: alwaysLandscape,
-            playerPlaybackLockEnabled: playerPlaybackLockEnabled,
-            aniSkipEnabled: aniSkipEnabled,
-            introDBEnabled: introDBEnabled,
-            introDBAppEnabled: introDBAppEnabled,
-            aniSkipAutoSkip: aniSkipAutoSkip,
-            skip85sEnabled: skip85sEnabled,
-            skip85sAlwaysVisible: skip85sAlwaysVisible,
-            showNextEpisodeButton: showNextEpisodeButton,
-            showEpisodeBrowserButton: showEpisodeBrowserButton,
-            showPlayerServicesButton: showPlayerServicesButton,
-            showNextEpisodePosterButton: showNextEpisodePosterButton,
-            nextEpisodeThreshold: nextEpisodeThreshold,
-            nextEpisodeSkipFillerEnabled: nextEpisodeSkipFillerEnabled,
-            playerBrightnessGestureEnabled: playerBrightnessGestureEnabled,
-            playerVolumeGestureEnabled: playerVolumeGestureEnabled,
-            playerTwoFingerTapPlayPauseEnabled: playerTwoFingerTapPlayPauseEnabled,
-            playerCenterTapPlayPauseEnabled: playerCenterTapPlayPauseEnabled,
-            playerDoubleTapSeekEnabled: playerDoubleTapSeekEnabled,
-            playerDoubleTapSeekSeconds: playerDoubleTapSeekSeconds,
-            playerOpenSubtitlesEnabled: playerOpenSubtitlesEnabled,
-            playerOpenSubtitlesAutoFallbackEnabled: playerOpenSubtitlesAutoFallbackEnabled,
-            playerPerformanceOverlayEnabled: playerPerformanceOverlayEnabled,
-            mpvForegroundFPS: mpvForegroundFPS,
-            mpvRenderBackend: mpvRenderBackend,
-            mpvMetalQualityProfile: mpvMetalQualityProfile,
-            mpvUpscalingMode: mpvUpscalingMode,
-            mpvNeuralUpscaler: mpvNeuralUpscaler,
-            mpvNeuralUpscalerTV: mpvNeuralUpscalerTV,
-            mpvPlayerSkin: mpvPlayerSkin,
-            mpvPlayerSkinCustomPrimaryColor: mpvPlayerSkinCustomPrimaryColor,
-            mpvPlayerSkinCustomSecondaryColor: mpvPlayerSkinCustomSecondaryColor,
-            mpvPlayerSkinAnimationsEnabled: mpvPlayerSkinAnimationsEnabled,
-            mpvPlayerSkinTintControlsOnly: mpvPlayerSkinTintControlsOnly,
-            mpvPictureInPictureEnabled: mpvPictureInPictureEnabled,
-            mpvAppExitPictureInPictureEnabled: mpvAppExitPictureInPictureEnabled,
-            mpvHDRMode: mpvHDRMode,
-            mpvSurroundSoundEnabled: mpvSurroundSoundEnabled,
-            watchTogetherEnabled: watchTogetherEnabled,
-            smartInAppPlayerChoosingEnabled: smartInAppPlayerChoosingEnabled,
-            experimentalFeaturesEnabled: experimentalFeaturesEnabled,
-            experimentalFeaturesLastChangedAt: experimentalFeaturesLastChangedAt,
-            experimentalMPVPreloadEnabled: experimentalMPVPreloadEnabled,
-            experimentalMPVSmoothTransitionEnabled: experimentalMPVSmoothTransitionEnabled,
-            experimentalMPVPreloadCellularEnabled: experimentalMPVPreloadCellularEnabled,
-            experimentalMPVPreloadWifiLimitMB: experimentalMPVPreloadWifiLimitMB,
-            experimentalMPVPreloadCellularLimitMB: experimentalMPVPreloadCellularLimitMB,
-            experimentalMPVShowRemainingTime: experimentalMPVShowRemainingTime,
-            experimentalMPVPreciseProgress: experimentalMPVPreciseProgress,
-            experimentalMPVIgnoreSpecialSubtitleStyles: experimentalMPVIgnoreSpecialSubtitleStyles,
-            experimentalMPVPreloadAutoClear: experimentalMPVPreloadAutoClear,
-            experimentalICloudSyncEnabled: experimentalICloudSyncEnabled,
-            subtitleForegroundColor: subtitleForegroundColor,
-            subtitleStrokeColor: subtitleStrokeColor,
-            subtitleStrokeWidth: subtitleStrokeWidth,
-            subtitleFontSize: subtitleFontSize,
-            subtitleVerticalOffset: subtitleVerticalOffset,
-            subtitlesVisible: subtitlesVisible,
-            showKanzen: showKanzen,
-            hideSplashScreen: hideSplashScreen,
-            modeSwitchAnimationEnabled: modeSwitchAnimationEnabled,
-            kanzenAutoUpdateModules: kanzenAutoUpdateModules,
-            seasonMenu: seasonMenu,
-            horizontalEpisodeList: horizontalEpisodeList,
-            mediaDetailTitleArtworkEnabled: mediaDetailTitleArtworkEnabled,
-            mediaDetailAlternatePosterEnabled: mediaDetailAlternatePosterEnabled,
-            mediaDetailSimilarTitlesEnabled: mediaDetailSimilarTitlesEnabled,
-            useClassicScheduleUI: useClassicScheduleUI,
-            heroBannerCatalogId: heroBannerCatalogId,
-            heroBannerBehavior: heroBannerBehavior,
-            homeCatalogLayoutOverrides: homeCatalogLayoutOverrides,
-            homeAnimatedBackgroundEnabled: homeAnimatedBackgroundEnabled,
-            homeAnimatedBackgroundQuality: homeAnimatedBackgroundQuality,
-            homeAnimatedBackgroundFrameRate: homeAnimatedBackgroundFrameRate,
-            appPerformanceOverlayEnabled: appPerformanceOverlayEnabled,
-            experimentalMediaDesignPreset: experimentalMediaDesignPreset,
-            experimentalHeroBleedLevel: experimentalHeroBleedLevel,
-            experimentalHomeCardShape: experimentalHomeCardShape,
-            experimentalMultiGradientPalette: experimentalMultiGradientPalette,
-            experimentalHeroHeightScale: experimentalHeroHeightScale,
-            experimentalHeroBleedStrength: experimentalHeroBleedStrength,
-            experimentalHeroFadeDistanceScale: experimentalHeroFadeDistanceScale,
-            experimentalSectionSpacingScale: experimentalSectionSpacingScale,
-            experimentalCardRadiusScale: experimentalCardRadiusScale,
-            experimentalMediaCardScale: experimentalMediaCardScale,
-            experimentalGlassStrength: experimentalGlassStrength,
-            experimentalGradientBaseDarkness: experimentalGradientBaseDarkness,
-            experimentalGradientAccentIntensity: experimentalGradientAccentIntensity,
-            experimentalGradientScrollMotion: experimentalGradientScrollMotion,
-            experimentalGradientUseCustomColors: experimentalGradientUseCustomColors,
-            experimentalGradientColorA: experimentalGradientColorA,
-            experimentalGradientColorB: experimentalGradientColorB,
-            experimentalGradientColorC: experimentalGradientColorC,
-            atmosphereStyle: atmosphereStyle,
-            atmosphereSolidColorSource: atmosphereSolidColorSource,
-            atmosphereSolidColor: atmosphereSolidColor,
-            readerAtmosphereStyle: readerAtmosphereStyle,
-            readerAtmosphereSolidColorSource: readerAtmosphereSolidColorSource,
-            readerAtmosphereSolidColor: readerAtmosphereSolidColor,
-            mediaDetailElementOrder: mediaDetailElementOrder,
-            mediaDetailHiddenElements: mediaDetailHiddenElements,
-            readerDetailElementOrder: readerDetailElementOrder,
-            readerDetailHiddenElements: readerDetailHiddenElements,
-            mediaColumnsPortrait: mediaColumnsPortrait,
-            mediaColumnsLandscape: mediaColumnsLandscape,
-            readingMode: readingMode,
-            kanzenReaderMode: kanzenReaderMode,
-            kanzenReaderModeOverrides: kanzenReaderModeOverrides,
-            readerDownsampleImages: readerDownsampleImages,
-            readerCropBorders: readerCropBorders,
-            readerDisableQuickActions: readerDisableQuickActions,
-            readerDisableDoubleTap: readerDisableDoubleTap,
-            readerLiveText: readerLiveText,
-            readerHideBarsOnSwipe: readerHideBarsOnSwipe,
-            readerBackgroundColor: readerBackgroundColor,
-            readerOrientation: readerOrientation,
-            readerTapZones: readerTapZones,
-            readerInvertTapZones: readerInvertTapZones,
-            readerAnimatePageTransitions: readerAnimatePageTransitions,
-            readerUpscaleImages: readerUpscaleImages,
-            readerUpscaleMaxHeight: readerUpscaleMaxHeight,
-            readerUpscaleModelName: readerUpscaleModelName,
-            readerPagesToPreload: readerPagesToPreload,
-            readerPagedPageLayout: readerPagedPageLayout,
-            readerPagedPageOffset: readerPagedPageOffset,
-            readerPagedPageOffsetOverrides: readerPagedPageOffsetOverrides,
-            readerSplitWideImages: readerSplitWideImages,
-            readerReverseSplitOrder: readerReverseSplitOrder,
-            readerVerticalInfiniteScroll: readerVerticalInfiniteScroll,
-            readerPillarbox: readerPillarbox,
-            readerPillarboxAmount: readerPillarboxAmount,
-            readerPillarboxOrientation: readerPillarboxOrientation,
-            readerOrientationLockEnabled: readerOrientationLockEnabled,
-            readerOrientationLockMask: readerOrientationLockMask,
-            readerReadThresholdPercent: readerReadThresholdPercent,
-            readerFontSize: readerFontSize,
-            readerFontFamily: readerFontFamily,
-            readerFontWeight: readerFontWeight,
-            readerColorPreset: readerColorPreset,
-            readerTextAlignment: readerTextAlignment,
-            readerLineSpacing: readerLineSpacing,
-            readerMargin: readerMargin,
-            autoClearCacheEnabled: autoClearCacheEnabled,
-            autoClearCacheThresholdMB: autoClearCacheThresholdMB,
-            highQualityThreshold: highQualityThreshold,
-            backgroundHLSPipelineEnabled: backgroundHLSPipelineEnabled,
-            readerDownloadsBackgroundEnabled: readerDownloadsBackgroundEnabled,
-            readerDownloadsWifiOnly: readerDownloadsWifiOnly,
-            readerDownloadsParallelLimit: readerDownloadsParallelLimit,
-            autoUpdateServicesEnabled: autoUpdateServicesEnabled,
-            servicesAutoModeEnabled: servicesAutoModeEnabled,
-            servicesAutoSelectEpisodesEnabled: servicesAutoSelectEpisodesEnabled,
-            servicesAutoModeErrorIntelligenceEnabled: servicesAutoModeErrorIntelligenceEnabled,
-            servicesAutoModeSourceIds: servicesAutoModeSourceIds,
-            servicesAutoModeSourceOrderIds: servicesAutoModeSourceOrderIds,
-            servicesAutoModeQualityPreference: servicesAutoModeQualityPreference,
-            servicesResultMinimumSimilarity: servicesResultMinimumSimilarity,
-            servicesDropMismatchedResults: servicesDropMismatchedResults,
-            servicesStremioStyleSheetEnabled: servicesStremioStyleSheetEnabled,
-            servicesIncludedStreamLanguages: servicesIncludedStreamLanguages,
-            servicesHiddenStreamLanguages: servicesHiddenStreamLanguages,
-            servicesHideStreamsWithoutLanguageData: servicesHideStreamsWithoutLanguageData,
-            servicesAssumeOriginalAudio: servicesAssumeOriginalAudio,
-            servicesTreatDubbedAnimeAsEnglish: servicesTreatDubbedAnimeAsEnglish,
-            servicesHiddenStreamQualities: servicesHiddenStreamQualities,
-            servicesHideStreamsWithoutDetectedQuality: servicesHideStreamsWithoutDetectedQuality,
-            servicesExtraRulesSourceIds: servicesExtraRulesSourceIds,
-            githubReleaseAutoCheckEnabled: githubReleaseAutoCheckEnabled,
-            githubReleaseUpdateAvailable: githubReleaseUpdateAvailable,
-            githubReleaseLatestVersion: githubReleaseLatestVersion,
-            githubReleaseURL: githubReleaseURL,
-            githubReleaseShowAlertPending: githubReleaseShowAlertPending,
-            githubReleaseLastPromptedVersion: githubReleaseLastPromptedVersion,
-            filterHorrorContent: filterHorrorContent,
-            selectedSimilarityAlgorithm: selectedSimilarityAlgorithm,
-            performanceModeEnabled: performanceModeEnabled,
-            performanceModeSkipAniListTraversalForAnimeDetails: performanceModeSkipAniListTraversalForAnimeDetails,
-            performanceModeFastAnimeCatalogOverrides: performanceModeFastAnimeCatalogOverrides,
-            kanzenHomeSelectedSourceID: kanzenHomeSelectedSourceID,
-            kanzenRecentSourceSearches: kanzenRecentSourceSearches,
-            collections: collections,
-            progressData: progressData,
-            trackerState: trackerState,
-            catalogs: catalogs,
-            services: services,
-            stremioAddons: stremioAddons,
-            skyStream: skyStream,
-            nuvioPlugins: nuvioPlugins,
-            mangaCollections: mangaCollections,
-            mangaReadingProgress: mangaReadingProgress,
-            mangaCatalogs: mangaCatalogs,
-            customCatalogs: customCatalogs,
-            kanzenModules: kanzenModules,
-            readerExtensionsState: readerExtensionsState,
-            aidokuState: aidokuState,
-            searchHistory: searchHistory,
-            recommendationCache: recommendationCache,
-            userRatings: userRatings,
-            userRatingNotes: userRatingNotes,
-            mediaStateSettings: mediaStateSettings,
-            collectionsPresent: collectionsPresent,
-            progressDataPresent: progressDataPresent,
-            trackerStatePresent: trackerStatePresent,
-            catalogsPresent: catalogsPresent,
-            servicesPresent: servicesPresent,
-            mangaCollectionsPresent: mangaCollectionsPresent,
-            mangaReadingProgressPresent: mangaReadingProgressPresent,
-            mangaCatalogsPresent: mangaCatalogsPresent,
-            customCatalogsPresent: customCatalogsPresent,
-            kanzenModulesPresent: kanzenModulesPresent,
-            userRatingsPresent: userRatingsPresent
-        )
-
-        if let profilesJSON = json["profiles"], !(profilesJSON is NSNull) {
-            guard let decodedProfiles = decodeBackupJSONValue(
-                [BackupProfileSnapshot].self,
-                from: profilesJSON,
-                using: lenientDecoder
-            ) else {
-                Logger.shared.log(
-                    "Lenient decode refused an unreadable profile roster",
-                    type: "Error"
-                )
-                return nil
-            }
-            lenient.profiles = decodedProfiles
-        } else if json["profiles"] is NSNull {
-            Logger.shared.log(
-                "Lenient decode found a null profile roster; only independently authoritative top-level domains can restore",
-                type: "Info"
-            )
-        }
-        lenient.activeProfileID = (json["activeProfileID"] as? String).flatMap(UUID.init(uuidString:))
-
-        lenient.sharesServices = json["sharesServices"] as? Bool
-        if let servicesJSON = json["servicesSettings"],
-           let servicesData = try? JSONSerialization.data(withJSONObject: servicesJSON),
-           let decodedServices = try? lenientDecoder.decode([String: Data].self, from: servicesData) {
-            lenient.servicesSettings = decodedServices
-        }
-
-        if let payloadsJSON = json["skyStreamSharedPayloads"],
-           let payloadsData = try? JSONSerialization.data(withJSONObject: payloadsJSON),
-           let decoded = try? lenientDecoder.decode([BackupSkyStreamSharedPayload].self, from: payloadsData) {
-            lenient.skyStreamSharedPayloads = decoded
-        }
-        if let payloadsJSON = json["nuvioSharedPayloads"],
-           let payloadsData = try? JSONSerialization.data(withJSONObject: payloadsJSON),
-           let decoded = try? lenientDecoder.decode([BackupNuvioSharedPayload].self, from: payloadsData) {
-            lenient.nuvioSharedPayloads = decoded
-        }
-        lenient.allTopLevelSettingsWereCaptured = false
-        let decodedSettingKeys = BackupData.decodedTopLevelSettingKeys(
-            fromJSONObject: json
-        )
-        if json.keys.contains("topLevelSettingKeys") {
-            lenient.decodedTopLevelSettingKeys = decodedSettingKeys.intersection(
-                BackupData.sanitizedDeclaredTopLevelSettingKeys(
-                    json["topLevelSettingKeys"] as? [String]
-                )
-            )
-        } else {
-            lenient.decodedTopLevelSettingKeys = decodedSettingKeys
-        }
-        return lenient
-    }
-
-    @MainActor
-    private func restoreNuvioSnapshotIfSupported(
-        _ snapshot: NuvioStoredPluginsState?,
-        expectedScope: ActiveProfileScopeToken,
-        preservingDeviceLocalCloudState: Bool = false
-    ) async -> Bool {
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            return false
-        }
-        guard let snapshot else { return true }
-#if os(iOS) && !targetEnvironment(macCatalyst)
-        guard PlatformCapabilities.current.supportsNuvioPlugins else { return true }
-        let manager = NuvioPluginManager.shared
-        manager.load()
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            return false
-        }
-        let stateToRestore: NuvioStoredPluginsState
-        if preservingDeviceLocalCloudState {
-            stateToRestore = BackupData.nuvioRestorePlanForExperimentalCloudSync(
-                incoming: snapshot,
-                current: manager.backupState() ?? NuvioStoredPluginsState()
-            ).state
-        } else {
-            stateToRestore = snapshot
-        }
-        let result = await manager.restoreBackupState(
-            stateToRestore,
-            expectedScopeGeneration: expectedScope.servicesGeneration
-        )
-        guard result.restoreWasPersisted, !result.wasInterrupted else {
-            return false
-        }
-#endif
-        return ProfileManager.shared.activeProfileID == expectedScope.profileID
-            && ServiceStoreScope.isCurrent(expectedScope.servicesGeneration)
-            && ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration
-    }
-
-    @MainActor
-    private func restoreSkyStreamSnapshotAndWaitIfSupported(
-        _ snapshot: SkyStreamBackupSnapshot?,
-        expectedScope: ActiveProfileScopeToken
-    ) async -> Bool {
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            return false
-        }
-        guard let snapshot else { return true }
-
-#if os(iOS) && !targetEnvironment(macCatalyst)
-        if !PlatformCapabilities.current.supportsSkyStreamPlugins {
-            do {
-
-                try persistOpaqueSkyStreamSnapshot(snapshot)
-                return ProfileManager.shared.activeProfileID == expectedScope.profileID
-                    && ServiceStoreScope.isCurrent(expectedScope.servicesGeneration)
-                    && ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration
-            } catch {
-                Logger.shared.log(
-                    "Failed to preserve disabled SkyStream restore errorType=\(String(reflecting: type(of: error)))",
-                    type: snapshot.isSafeCloudSnapshot ? "CloudSync" : "Error"
-                )
-                return false
-            }
-        }
-        let safeSnapshot = snapshot.isSafeCloudSnapshot
-            ? BackupData.skyStreamSnapshotForExperimentalCloudSync(snapshot)
-            : nil
-        if snapshot.isSafeCloudSnapshot, safeSnapshot == nil {
-            Logger.shared.log("Refused invalid safe SkyStream backup metadata", type: "CloudSync")
-            return false
-        }
-
-        let manager = SkyStreamPluginManager.shared
-        await manager.reloadPersistedStateAfterRestore()
-        guard manager.isLoaded, !Task.isCancelled,
-              ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            let context = snapshot.isSafeCloudSnapshot ? "cloud metadata merge" : "manual restore"
-            Logger.shared.log(
-                "SkyStream \(context) skipped because the plugin manager did not finish loading",
-                type: snapshot.isSafeCloudSnapshot ? "CloudSync" : "Error"
-            )
-            return false
-        }
-        do {
-            if let safeSnapshot {
-                let result = try await manager.restoreSafeCloudSnapshot(safeSnapshot)
-                if result.isComplete {
-                    clearAdoptedOpaqueSkyStreamSnapshot(isSafeCloudSnapshot: true)
-                    Logger.shared.log("Safe SkyStream cloud metadata merged", type: "CloudSync")
-                } else {
-                    Logger.shared.log(
-                        "Safe SkyStream cloud metadata partially merged unresolvedCount=\(result.unresolvedPackageIDs.count)",
-                        type: "CloudSync"
-                    )
-                }
-            } else {
-                try await manager.restoreManualBackupSnapshot(snapshot)
-                clearAdoptedOpaqueSkyStreamSnapshot(isSafeCloudSnapshot: false)
-                Logger.shared.log("Authoritative SkyStream manual backup restored", type: "Info")
-            }
-            return ProfileManager.shared.activeProfileID == expectedScope.profileID
-                && ServiceStoreScope.isCurrent(expectedScope.servicesGeneration)
-                && ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration
-        } catch {
-            let context = snapshot.isSafeCloudSnapshot ? "cloud metadata merge" : "manual restore"
-            Logger.shared.log(
-                "Failed SkyStream \(context) errorType=\(String(reflecting: type(of: error)))",
-                type: snapshot.isSafeCloudSnapshot ? "CloudSync" : "Error"
-            )
-            return false
-        }
-#else
-        do {
-
-            try persistOpaqueSkyStreamSnapshot(snapshot)
-            return ProfileManager.shared.activeProfileID == expectedScope.profileID
-                && ServiceStoreScope.isCurrent(expectedScope.servicesGeneration)
-                && ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration
-        } catch {
-            Logger.shared.log(
-                "Failed to preserve opaque SkyStream backup errorType=\(String(reflecting: type(of: error)))",
-                type: snapshot.isSafeCloudSnapshot ? "CloudSync" : "Error"
-            )
-            return false
-        }
-#endif
-    }
-
-    private func repairActiveProfileSkyStreamStateIfNeeded(
-        _ backup: BackupData,
-        expectedScope: ActiveProfileScopeToken
-    ) async {
-        guard !ProfileSettingsStore.sharesServices else { return }
-
-        guard activeProfileScopeIsCurrent(expectedScope, includingRoster: false) else { return }
-        let activeProfileID = expectedScope.profileID
-        guard let owner = backup.activeProfileID, owner != activeProfileID else { return }
-        guard let stateData = backup.profiles?
-            .first(where: { $0.id == activeProfileID })?
-            .skyStreamStateData else { return }
-        do {
-            try await ServiceStore.shared.saveSkyStreamStateData(
-                stateData,
-                expectedScopeGeneration: expectedScope.servicesGeneration
-            )
-        } catch {
-            Logger.shared.log(
-                "BackupManager: could not restore the active profile's own SkyStream state after an owner-mismatched restore: \(error.localizedDescription)",
-                type: "Error"
-            )
-            return
-        }
-        Logger.shared.log(
-            "BackupManager: applied the active profile's own SkyStream state over the top-level owner's (\(owner))",
-            type: "Services"
-        )
-    }
-
-    private func appliesTopLevelSourceData(_ backup: BackupData, activeProfileID: UUID) -> Bool {
-        if backup.sharesServices ?? ProfileSettingsStore.sharesServices { return true }
-
-        guard currentProfileRosterIsReadable() else { return false }
-        guard let owner = backup.activeProfileID else { return true }
-        return owner == activeProfileID
-    }
-
-    private func currentActiveProfileID() -> UUID {
-        var id = ProfileManager.defaultProfileID
-        performOnMainThread {
-            id = ProfileManager.shared.activeProfileID
-        }
-        return id
-    }
-
-    private func currentProfileRosterIsReadable() -> Bool {
-        var isReadable = false
-        performOnMainThread {
-            isReadable = ProfileManager.shared.rosterStoreIsReadable
-        }
-        return isReadable
-    }
-
-    @MainActor
-    private func applyBackupDataIfScopeIsCurrent(
-        _ backup: BackupData,
-        refreshCloudSources: Bool = false,
-        preservingLegacyCloudMediaState: Bool = false,
-        preservingDeviceLocalReaderModelSelection: Bool = false,
-        expectedScope: ActiveProfileScopeToken
-    ) -> ScopedBackupApplicationResult? {
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            Logger.shared.log(
-                "BackupManager: aborted restore because the active profile changed",
-                type: "Error"
-            )
-            return nil
-        }
-        let mediaStateAuthority = preservingLegacyCloudMediaState
-            ? captureLegacyCloudMediaStateAuthority()
-            : nil
-        let application = applyBackupData(
-            backup,
-            refreshCloudSources: refreshCloudSources,
-            preservingCanonicalMediaState: preservingLegacyCloudMediaState,
-            preservingDeviceLocalReaderModelSelection: preservingDeviceLocalReaderModelSelection
-        )
-        if let mediaStateAuthority {
-            restoreLegacyCloudMediaStateAuthority(mediaStateAuthority)
-        }
-        guard let application else { return nil }
-        performOnMainThread {
-            HomeCatalogLayoutStore.shared.reloadFromStorage()
-            EclipseTheme.shared.reloadForActiveProfile()
-            AlgorithmManager.shared.reloadForActiveProfile()
-            AccentColorManager.shared.reloadForActiveProfile()
-            Settings.current?.reloadForActiveProfile()
-        }
-
-        return ScopedBackupApplicationResult(
-            scope: ActiveProfileScopeToken(
-                profileID: ProfileManager.shared.activeProfileID,
-                servicesGeneration: ServiceStoreScope.generation,
-                rosterGeneration: ProfileManager.shared.rosterGeneration
-            ),
-            authoritativeTrackerProfileIDs: application.authoritativeTrackerProfileIDs
-        )
-    }
-
-    private func applyShareServicesModeIfNeeded(_ backup: BackupData) {
-        guard let sharesServices = backup.sharesServices,
-              sharesServices != ProfileSettingsStore.sharesServices else { return }
-        ProfileSettingsStore.sharesServices = sharesServices
-        performOnMainThread {
-            ServiceStoreScope.activeProfileDidChange()
-        }
-        Logger.shared.log(
-            "BackupManager: applied the backup's Share Services mode (\(sharesServices)) before restoring sources",
-            type: "Services"
-        )
-    }
-
-    @MainActor
-    private func beginShareServicesRestoreTransaction(
-        for backup: BackupData,
-        expectedScope: ActiveProfileScopeToken
-    ) throws -> ShareServicesRestoreStart {
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            throw BackupRestoreError.activeProfileChanged
-        }
-        let previousValue = ProfileSettingsStore.sharesServices
-        let requestedValue = backup.sharesServices ?? previousValue
-        let activeProfileID = ProfileManager.shared.activeProfileID
-        let targetUsesSharedDefaults = requestedValue
-            || activeProfileID == ProfileManager.defaultProfileID
-        let targetStoreURL = targetUsesSharedDefaults
-            ? ServiceStoreScope.sharedStoreURL
-            : ServiceStoreScope.scopedStoreURL(forProfile: activeProfileID)
-
-        ServiceStoreScope.willChangeActiveProfile()
-        let targetStoreSnapshot = try ServiceStoreScope.captureStoreFileSnapshot(
-            at: targetStoreURL,
-            scopedVaultProfileID: targetUsesSharedDefaults ? nil : activeProfileID
-        )
-        let targetSettings = captureServicesSettingsForRollback(
-            profileID: activeProfileID,
-            usesSharedDefaults: targetUsesSharedDefaults
-        )
-        let transaction = ShareServicesRestoreTransaction(
-            previousValue: previousValue,
-            requestedValue: requestedValue,
-            activeProfileID: activeProfileID,
-            targetUsesSharedDefaults: targetUsesSharedDefaults,
-            targetStoreSnapshot: targetStoreSnapshot,
-            targetSettingsBeforeTransition: targetSettings
-        )
-
-        if transaction.didSwitch {
-            ProfileSettingsStore.sharesServices = requestedValue
-            ServiceStoreScope.activeProfileDidChange(notifyObservers: false)
-            Logger.shared.log(
-                "BackupManager: applied the backup's Share Services mode (\(requestedValue)) before restoring sources",
-                type: "Services"
-            )
-        }
-        let postTransitionScope = ActiveProfileScopeToken(
-            profileID: ProfileManager.shared.activeProfileID,
-            servicesGeneration: ServiceStoreScope.generation,
-            rosterGeneration: ProfileManager.shared.rosterGeneration
-        )
-        guard transaction.activeProfileID == postTransitionScope.profileID,
-              postTransitionScope.rosterGeneration == expectedScope.rosterGeneration else {
-            throw BackupRestoreError.activeProfileChanged
-        }
-        return ShareServicesRestoreStart(
-            transaction: transaction,
-            scope: postTransitionScope
-        )
-    }
-
-    private func captureServicesSettingsForRollback(
-        profileID: UUID,
-        usesSharedDefaults: Bool
-    ) -> [String: Data] {
-        let domainName = usesSharedDefaults
-            ? (Bundle.main.bundleIdentifier ?? "app.Eclipse")
-            : ProfileSettingsStore.suiteName(for: profileID)
-        let domain = UserDefaults.standard.persistentDomain(forName: domainName) ?? [:]
-        return domain.reduce(into: [String: Data]()) { result, entry in
-            guard entry.key == "eclipseServicesSettingsSeededV1"
-                    || EclipseSettingsRegistry.scope(for: entry.key) == .services,
-                  let data = try? PropertyListSerialization.data(
-                    fromPropertyList: entry.value,
-                    format: .binary,
-                    options: 0
-                  ) else { return }
-            result[entry.key] = data
-        }
-    }
-
-    private func restoreServicesSettingsAfterFailedTransition(
-        _ transaction: ShareServicesRestoreTransaction
-    ) {
-        let profileID = transaction.activeProfileID
-        let store = transaction.targetUsesSharedDefaults
-            ? UserDefaults.standard
-            : ProfileSettingsStore.shared.store(for: profileID)
-        let domainName = transaction.targetUsesSharedDefaults
-            ? (Bundle.main.bundleIdentifier ?? "app.Eclipse")
-            : ProfileSettingsStore.suiteName(for: profileID)
-        let currentDomain = UserDefaults.standard.persistentDomain(forName: domainName) ?? [:]
-        for key in currentDomain.keys where key == "eclipseServicesSettingsSeededV1"
-            || EclipseSettingsRegistry.scope(for: key) == .services {
-            store.removeObject(forKey: key)
-        }
-        for (key, data) in transaction.targetSettingsBeforeTransition {
-            guard let value = try? PropertyListSerialization.propertyList(
-                from: data,
-                options: [],
-                format: nil
-            ) else { continue }
-            store.set(value, forKey: key)
-        }
-    }
-
-    @MainActor
-    private func restoreShareServicesModeAfterFailedRestore(
-        _ transaction: ShareServicesRestoreTransaction
-    ) async {
-        if transaction.didSwitch {
-            ProfileSettingsStore.sharesServices = transaction.previousValue
-            ServiceStoreScope.activeProfileDidChange(notifyObservers: false)
-        } else {
-            ServiceStoreScope.willChangeActiveProfile()
-        }
-        if let snapshot = transaction.targetStoreSnapshot {
-            do {
-                try ServiceStoreScope.restoreStoreFileSnapshot(snapshot)
-            } catch {
-                Logger.shared.log(
-                    "BackupManager: failed to restore the pre-attempt services database: \(error.localizedDescription)",
-                    type: "Error"
-                )
-            }
-            ServiceStoreScope.discardStoreFileSnapshot(snapshot)
-        }
-        restoreServicesSettingsAfterFailedTransition(transaction)
-        _ = await reloadSourceManagersAfterRestore(
-            expectedScope: activeProfileScopeToken(),
-            toleratesInertReaderRuntime: true
-        )
-        Logger.shared.log(
-            "BackupManager: restored Share Services mode and scoped source state after a failed restore",
-            type: "Services"
-        )
-    }
-
-    private func completeShareServicesRestoreTransaction(
-        _ transaction: ShareServicesRestoreTransaction
-    ) {
-        if let snapshot = transaction.targetStoreSnapshot {
-            ServiceStoreScope.discardStoreFileSnapshot(snapshot)
-        }
-    }
-
-    @MainActor
-    func prepareReaderExtensionAuthenticationForAccountBoundary(
-        outgoingProfileIDs: Set<UUID>
-    ) -> Bool {
-#if os(iOS)
-        do {
-            let result = try ReaderExtensionProfileAuthenticationLifecycle
-                .prepareForProfileStoreDeletion(
-                    profileIDs: Array(outgoingProfileIDs)
-                )
-            if let error = result.firstError {
-                Logger.shared.log(
-                    "BackupManager: Reader authentication cleanup remains durably pending at the account boundary: \(error.localizedDescription)",
-                    type: "Storage"
-                )
-            }
-        } catch {
-            Logger.shared.log(
-                "BackupManager: refused to clear Reader metadata because authentication cleanup could not be checkpointed: \(error.localizedDescription)",
-                type: "Storage"
-            )
-            return false
-        }
-#else
-        _ = outgoingProfileIDs
-#endif
-        return true
-    }
-
-    @MainActor
-    func replaceActiveSourcesWithAccountNeutralState(
-        outgoingProfileIDs: Set<UUID>,
-        readerAuthenticationCleanupPrepared: Bool = false
-    ) -> Bool {
-        if !readerAuthenticationCleanupPrepared,
-           !prepareReaderExtensionAuthenticationForAccountBoundary(
-                outgoingProfileIDs: outgoingProfileIDs
-           ) {
-            return false
-        }
-        let serviceStore = ServiceStore.shared
-        TVServiceSettingVault.removeAllAccountsForAccountBoundary()
-        StremioConfiguredURLVault.removeAllAccountsForAccountBoundary()
-
-        let clearedServices = serviceStore.removeAllServicesForAccountBoundary()
-        let clearedAddons = StremioAddonStore.shared.removeAll()
-        let clearedSkyStream = serviceStore.clearSkyStreamStateDataForAccountBoundary()
-
-        let defaults = ProfileSettingsStore.services
-#if !os(tvOS)
-        let retainedServicesKeys: Set<String> = [
-            ReaderExtensionPersistence.pendingAuthenticationCleanupKey
-        ]
-#else
-        let retainedServicesKeys: Set<String> = []
-#endif
-        for key in defaults.dictionaryRepresentation().keys
-            where EclipseSettingsRegistry.scope(for: key) == .services
-                && !retainedServicesKeys.contains(key) {
-            defaults.removeObject(forKey: key)
-        }
-
-#if os(iOS)
-        let clearedModules = ModuleManager.shared.replaceWithAccountNeutralMetadata()
-        do {
-            try BackupReaderExtensionState(
-                metadataJSON: nil,
-                installedSourceCount: 0,
-                showMatureSources: false,
-                autoUpdateSources: true,
-                lastAutoUpdate: nil
-            ).restore(to: defaults)
-            defaults.removeObject(
-                forKey: BackupReaderExtensionState.legacyAidokuSourcesStorageKey
-            )
-        } catch {
-            Logger.shared.log(
-                "BackupManager: could not clear Reader Extension metadata at the account boundary",
-                type: "Storage"
-            )
-            return false
-        }
-#else
-        let clearedModules = true
-#endif
-
-        ServiceManager.shared.loadServicesFromCloud()
-        StremioAddonManager.shared.loadAddons()
-        SourceHealthStore.shared.reloadPersistedStateAfterRestore()
-#if os(iOS) && !targetEnvironment(macCatalyst)
-        NuvioPluginManager.shared.load()
-#endif
-
-        return clearedServices && clearedAddons && clearedSkyStream && clearedModules
-    }
-
-    @MainActor
-    func reloadSourceManagersAfterAccountBoundary() async -> Bool {
-        await reloadSourceManagersAfterRestore(
-            expectedScope: activeProfileScopeToken(),
-            toleratesInertReaderRuntime: true
-        )
-    }
-
-    @MainActor
-    private func reloadSourceManagersAfterRestore(
-        expectedScope: ActiveProfileScopeToken,
-        toleratesInertReaderRuntime: Bool = false
-    ) async -> Bool {
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            return false
-        }
-
-        ServiceManager.shared.loadServicesFromCloud()
-        StremioAddonManager.shared.loadAddons()
-        SourceHealthStore.shared.reloadPersistedStateAfterRestore()
-
-        await SkyStreamPluginManager.shared.reloadPersistedStateAfterRestore()
-        guard ProfileManager.shared.activeProfileID == expectedScope.profileID,
-              ServiceStoreScope.isCurrent(expectedScope.servicesGeneration),
-              ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration else {
-            return false
-        }
-
-#if os(iOS) && !targetEnvironment(macCatalyst)
-        if PlatformCapabilities.current.supportsNuvioPlugins {
-            guard await NuvioPluginManager.shared.reloadPersistedStateAfterRestore(
-                expectedScopeGeneration: expectedScope.servicesGeneration
-            ) else { return false }
-        }
-#endif
-#if !os(tvOS)
-        do {
-            guard try ReaderExtensionManager.shared.reloadPersistedStateAfterRestore() else {
-                return false
-            }
-        } catch {
-            guard toleratesInertReaderRuntime,
-                  ReaderExtensionRestoreReloadPolicy.restoreSurvives(error) else {
-                Logger.shared.log(
-                    "BackupManager: Reader Extension metadata could not reload after restore: \(error.localizedDescription)",
-                    type: "Storage"
-                )
-                return false
-            }
-            Logger.shared.log(
-                "BackupManager: Reader Extensions stayed inert after restore; every other restored domain stands",
-                type: "Storage"
-            )
-        }
-#endif
-
-        return ProfileManager.shared.activeProfileID == expectedScope.profileID
-            && ServiceStoreScope.isCurrent(expectedScope.servicesGeneration)
-            && ProfileManager.shared.rosterGeneration == expectedScope.rosterGeneration
-    }
-
-    private func applyBackupData(
-        _ backup: BackupData,
-        refreshCloudSources: Bool = false,
-        preservingCanonicalMediaState: Bool = false,
-        preservingDeviceLocalReaderModelSelection: Bool = false
-    ) -> BackupApplicationResult? {
-        var trackerManager: TrackerManager!
-        performOnMainThread {
-            trackerManager = TrackerManager.shared
-        }
-        trackerManager.setBackupRestoreSyncSuppressed(true)
-        defer {
-            trackerManager.setBackupRestoreSyncSuppressed(false)
-        }
-
-        let topLevelOwner = backup.activeProfileID
-
-        let activeProfileID = currentActiveProfileID()
-        var appliesTopLevelPerProfileData = currentProfileRosterIsReadable()
-            && !preservingCanonicalMediaState
-        if appliesTopLevelPerProfileData,
-           let topLevelOwner {
-            appliesTopLevelPerProfileData = topLevelOwner == activeProfileID
-        }
-        if !appliesTopLevelPerProfileData {
-            Logger.shared.log(
-                "BackupManager: the top-level payload belongs to profile \(topLevelOwner?.uuidString ?? "?"), which is not active here; it will be restored from the per-profile roster instead",
-                type: "Info"
-            )
-        }
-
-        let topLevelSnapshot = topLevelOwner.flatMap { owner in
-            backup.profiles?.first { $0.id == owner }
-        }
-        let appliesTopLevelCollections = appliesTopLevelPerProfileData
-            && Self.topLevelDomainIsAuthoritative(
-                payloadWasDecoded: backup.hasCollections,
-                profileCaptureFlag: topLevelSnapshot?.collectionsWereCaptured
-            )
-        let appliesTopLevelProgress = appliesTopLevelPerProfileData
-            && Self.topLevelDomainIsAuthoritative(
-                payloadWasDecoded: backup.hasProgressData,
-                profileCaptureFlag: topLevelSnapshot?.progressWasCaptured
-            )
-        let appliesTopLevelRatings = appliesTopLevelPerProfileData
-            && Self.topLevelDomainIsAuthoritative(
-                payloadWasDecoded: backup.hasUserRatings,
-                profileCaptureFlag: topLevelSnapshot?.ratingsWereCaptured
-            )
-        let appliesTopLevelCatalogs = appliesTopLevelPerProfileData
-            && Self.topLevelDomainIsAuthoritative(
-                payloadWasDecoded: backup.hasCatalogs,
-                profileCaptureFlag: topLevelSnapshot?.catalogsWereCaptured
-            )
-        let appliesTopLevelTracker = appliesTopLevelPerProfileData
-            && Self.topLevelDomainIsAuthoritative(
-                payloadWasDecoded: backup.hasTrackerState,
-                profileCaptureFlag: topLevelSnapshot?.trackerStateWasCaptured
-            )
-        let appliesTopLevelMangaCollections = appliesTopLevelPerProfileData
-            && (topLevelSnapshot?.mangaCollectionsWereCaptured ?? true)
-        let appliesTopLevelMangaProgress = appliesTopLevelPerProfileData
-            && (topLevelSnapshot?.mangaReadingProgressWasCaptured ?? true)
-        let appliesTopLevelMangaCatalogs = appliesTopLevelPerProfileData
-            && (topLevelSnapshot?.mangaCatalogsWereCaptured ?? true)
-        let appliesTopLevelCustomCatalogs = appliesTopLevelPerProfileData
-            && (topLevelSnapshot?.customCatalogsWereCaptured ?? true)
-        if appliesTopLevelPerProfileData,
-           !appliesTopLevelCollections || !appliesTopLevelProgress || !appliesTopLevelRatings
-            || !appliesTopLevelCatalogs || !appliesTopLevelTracker {
-            Logger.shared.log(
-                "BackupManager: the top-level payload is missing domains its own profile could not capture (collections=\(appliesTopLevelCollections) progress=\(appliesTopLevelProgress) ratings=\(appliesTopLevelRatings) catalogs=\(appliesTopLevelCatalogs) tracker=\(appliesTopLevelTracker)); this device keeps its own copy of those",
-                type: "Error"
-            )
-        }
-
-        let appliesTopLevelSources = appliesTopLevelSourceData(backup, activeProfileID: activeProfileID)
-        if !appliesTopLevelSources {
-            Logger.shared.log(
-                "BackupManager: the top-level sources belong to profile \(topLevelOwner?.uuidString ?? "?") and services are not shared; this profile keeps its own sources",
-                type: "Services"
-            )
-        }
-
-        let userDefaults = ScopedSettingsDefaults(
-            appliesProfileScopedWrites: appliesTopLevelPerProfileData,
-            appliesServicesScopedWrites: appliesTopLevelSources,
-            decodedTopLevelSettingKeys: backup.decodedTopLevelSettingKeys,
-            allTopLevelSettingsWereCaptured: backup.allTopLevelSettingsWereCaptured
-        )
-
-        let preservesLocalSkySourceSettings = backup.skyStream == nil
-            || backup.skyStream?.isSafeCloudSnapshot == true
-
-        let preservesLocalNuvioSourceSettings = backup.nuvioPlugins == nil
-        let currentAutoModeSourceIds = userDefaults.stringArray(
-            forKey: "servicesAutoModeSourceIds"
-        ) ?? []
-        let currentAutoModeSourceOrderIds = userDefaults.stringArray(
-            forKey: "servicesAutoModeSourceOrderIds"
-        ) ?? []
-        let currentExtraRulesSourceIds = StreamLanguageFilter.extraRulesSourceIds()
-        var preservedLocalSourceIDs = Set<String>()
-        if preservesLocalSkySourceSettings {
-            preservedLocalSourceIDs.formUnion(currentAutoModeSourceIds.filter(
-                StreamLanguageFilter.isValidSkyStreamSourceID
-            ))
-            preservedLocalSourceIDs.formUnion(currentAutoModeSourceOrderIds.filter(
-                StreamLanguageFilter.isValidSkyStreamSourceID
-            ))
-            preservedLocalSourceIDs.formUnion((currentExtraRulesSourceIds ?? []).filter(
-                StreamLanguageFilter.isValidSkyStreamSourceID
-            ))
-        }
-        if preservesLocalNuvioSourceSettings {
-            preservedLocalSourceIDs.formUnion(currentAutoModeSourceIds.filter(
-                StreamLanguageFilter.isValidNuvioSourceID
-            ))
-            preservedLocalSourceIDs.formUnion(currentAutoModeSourceOrderIds.filter(
-                StreamLanguageFilter.isValidNuvioSourceID
-            ))
-            preservedLocalSourceIDs.formUnion((currentExtraRulesSourceIds ?? []).filter(
-                StreamLanguageFilter.isValidNuvioSourceID
-            ))
-        }
-        if refreshCloudSources,
-           appliesTopLevelSources,
-           let incomingNuvioState = backup.nuvioPlugins {
-            let currentNuvioState = NuvioPluginStore(
-                defaults: ProfileSettingsStore.services
-            ).load()
-            preservedLocalSourceIDs.formUnion(
-                BackupData.nuvioRestorePlanForExperimentalCloudSync(
-                    incoming: incomingNuvioState,
-                    current: currentNuvioState
-                ).deviceLocalSourceIDs
-            )
-        }
-        if refreshCloudSources {
-            for service in ServiceStore.shared.getServices() {
-                let metadata = (try? JSONEncoder().encode(service.metadata))
-                    .flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                let backupService = BackupService(
-                    id: service.id,
-                    url: service.url,
-                    jsonMetadata: metadata,
-                    jsScript: service.jsScript,
-                    isActive: service.isActive,
-                    sortIndex: service.sortIndex
-                )
-                if BackupData.serviceForExperimentalCloudSync(backupService) == nil {
-                    preservedLocalSourceIDs.insert("service:\(service.id.uuidString)")
-                }
-            }
-            for addon in StremioAddonStore.shared.getAddons() {
-                let manifestJSON = (try? JSONEncoder().encode(addon.manifest))
-                    .flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                let backupAddon = BackupStremioAddon(
-                    id: addon.id,
-                    configuredURL: addon.configuredURL,
-                    manifestJSON: manifestJSON,
-                    isActive: addon.isActive,
-                    sortIndex: addon.sortIndex
-                )
-                if BackupData.stremioAddonForExperimentalCloudSync(backupAddon) == nil {
-                    preservedLocalSourceIDs.insert("stremio:\(addon.id.uuidString)")
-                }
-            }
-        }
-        let preservedExtraRulesLocalSourceIds = (currentExtraRulesSourceIds
-            ?? currentAutoModeSourceOrderIds).filter(preservedLocalSourceIDs.contains)
-
-        if !preservingCanonicalMediaState {
-            BackupData.restoreMediaStateSettings(
-                backup.mediaStateSettings,
-                appliesProfileScopedWrites: appliesTopLevelPerProfileData,
-                appliesServicesScopedWrites: appliesTopLevelSources
-            )
-        }
-
-        if let accentColorData = backup.accentColor {
-            userDefaults.set(accentColorData, forKey: "accentColor")
-        }
-        if let settingsGradientColor = backup.settingsGradientColor {
-            userDefaults.set(settingsGradientColor, forKey: "eclipseThemeGradientColor")
-        }
-        if let readerAccentColor = backup.readerAccentColor {
-            userDefaults.set(readerAccentColor, forKey: "readerAccentColor")
-        }
-        if let readerSettingsGradientColor = backup.readerSettingsGradientColor {
-            userDefaults.set(readerSettingsGradientColor, forKey: "readerThemeGradientColor")
-        }
-        userDefaults.set(backup.tmdbLanguage, forKey: "tmdbLanguage")
-        userDefaults.set(BackupData.sanitizedAppearance(backup.selectedAppearance), forKey: "selectedAppearance")
-        userDefaults.set(BackupData.sanitizedAppearance(backup.readerSelectedAppearance), forKey: "readerSelectedAppearance")
-        userDefaults.set(backup.readerGlobalAppearanceEnabled, forKey: "readerGlobalAppearanceEnabled")
-        userDefaults.set(backup.enableSubtitlesByDefault, forKey: "enableSubtitlesByDefault")
-        userDefaults.set(backup.defaultSubtitleLanguage, forKey: "defaultSubtitleLanguage")
-        userDefaults.set(backup.playerSubtitleAppearanceEnabled, forKey: "playerSubtitleAppearanceEnabled")
-
-        userDefaults.set(backup.preferredAutoAudioLanguage, forKey: "preferredAutoAudioLanguage")
-        userDefaults.set(backup.preferredAnimeAudioLanguage, forKey: "preferredAnimeAudioLanguage")
-        let restoredEngineRaw = Settings.normalizedInAppPlayer(backup.inAppPlayer)
-        let decodedEngine = PlaybackEngine(rawValue: restoredEngineRaw)
-            ?? PlaybackEngine.defaultSelection(deviceFamily: .current)
-        let restoredEngine = PlaybackEngine.supportedSelection(
-            decodedEngine,
-            deviceFamily: .current
-        )
-        userDefaults.set(restoredEngine.rawValue, forKey: PlaybackEngine.defaultsKey)
-
-        userDefaults.set(restoredEngine.rawValue, forKey: "inAppPlayer")
-        userDefaults.set(backup.showScheduleTab, forKey: "showScheduleTab")
-        userDefaults.set(backup.showLocalScheduleTime, forKey: "showLocalScheduleTime")
-        userDefaults.set(ScheduleMode.sanitizedRawValue(backup.defaultScheduleMode), forKey: "defaultScheduleMode")
-        userDefaults.set(ScheduleWindow.sanitizedDays(backup.scheduleWindowDays), forKey: ScheduleWindow.storageKey)
-        if let value = BackupData.sanitizedLocalNotificationSubscriptions(
-            backup.localNotificationSubscriptions
-        ) {
-            userDefaults.set(value, forKey: "localNotificationSubscriptions")
-        }
-        if let value = BackupData.sanitizedLocalNotificationEpisodeReminders(
-            backup.localNotificationEpisodeReminders
-        ) {
-            userDefaults.set(value, forKey: "localNotificationEpisodeReminders")
-        }
-        if let value = BackupData.sanitizedLocalNotificationEpisodeLeadTime(
-            backup.localNotificationEpisodeLeadTime
-        ) {
-            userDefaults.set(value, forKey: "localNotificationEpisodeLeadTime")
-        }
-        if let value = BackupData.sanitizedLocalNotificationSeasonLeadTime(
-            backup.localNotificationSeasonLeadTime
-        ) {
-            userDefaults.set(value, forKey: "localNotificationSeasonLeadTime")
-        }
-        if let value = backup.localNotificationIncludeAnimeSpecials {
-            userDefaults.set(value, forKey: "localNotificationIncludeAnimeSpecials")
-        }
-
-        userDefaults.set(
-            BackupData.sanitizedDefaultPlaybackSpeed(backup.defaultPlaybackSpeed),
-            forKey: "defaultPlaybackSpeed"
-        )
-        userDefaults.set(
-            BackupData.sanitizedHoldSpeedPlayer(backup.holdSpeedPlayer),
-            forKey: "holdSpeedPlayer"
-        )
-        userDefaults.set(backup.externalPlayer, forKey: "externalPlayer")
-        userDefaults.set(backup.preferDownloadedMedia, forKey: "preferDownloadedMedia")
-        userDefaults.set(backup.alwaysLandscape, forKey: "alwaysLandscape")
-
-        if appliesTopLevelPerProfileData,
-           backup.topLevelSettingIsAuthoritative(
-                storageKey: PlayerPlaybackLockSettings.enabledKey
-           ) {
-            PlayerPlaybackLockSettings.setEnabled(backup.playerPlaybackLockEnabled)
-        }
-        userDefaults.set(backup.aniSkipEnabled, forKey: "aniSkipEnabled")
-        userDefaults.set(backup.introDBEnabled, forKey: "introDBEnabled")
-        userDefaults.set(backup.introDBAppEnabled, forKey: "introDBAppEnabled")
-        userDefaults.set(backup.aniSkipAutoSkip, forKey: "aniSkipAutoSkip")
-        userDefaults.set(backup.skip85sEnabled, forKey: "skip85sEnabled")
-        userDefaults.set(backup.skip85sAlwaysVisible, forKey: "skip85sAlwaysVisible")
-        userDefaults.set(backup.showNextEpisodeButton, forKey: "showNextEpisodeButton")
-        userDefaults.set(backup.showEpisodeBrowserButton, forKey: "showEpisodeBrowserButton")
-        userDefaults.set(backup.showPlayerServicesButton, forKey: PlayerServicesButtonSettings.key)
-        userDefaults.set(backup.showNextEpisodePosterButton, forKey: "showNextEpisodePosterButton")
-        userDefaults.set(
-            BackupData.sanitizedNextEpisodeThreshold(backup.nextEpisodeThreshold),
-            forKey: "nextEpisodeThreshold"
-        )
-        userDefaults.set(backup.nextEpisodeSkipFillerEnabled, forKey: NextEpisodeFillerSettings.enabledKey)
-        userDefaults.set(backup.playerBrightnessGestureEnabled, forKey: "playerBrightnessGestureEnabled")
-        userDefaults.set(backup.playerVolumeGestureEnabled, forKey: "playerVolumeGestureEnabled")
-        userDefaults.set(backup.playerTwoFingerTapPlayPauseEnabled, forKey: "playerTwoFingerTapPlayPauseEnabled")
-        userDefaults.set(backup.playerCenterTapPlayPauseEnabled, forKey: "playerCenterTapPlayPauseEnabled")
-        userDefaults.set(backup.playerDoubleTapSeekEnabled, forKey: "playerDoubleTapSeekEnabled")
-        userDefaults.set(
-            BackupData.sanitizedPlayerDoubleTapSeekSeconds(
-                backup.playerDoubleTapSeekSeconds
-            ),
-            forKey: "playerDoubleTapSeekSeconds"
-        )
-        userDefaults.set(backup.playerOpenSubtitlesEnabled, forKey: "playerOpenSubtitlesEnabled")
-        userDefaults.set(backup.playerOpenSubtitlesAutoFallbackEnabled, forKey: "playerOpenSubtitlesAutoFallbackEnabled")
-        userDefaults.set(backup.playerPerformanceOverlayEnabled, forKey: "playerPerformanceOverlayEnabled")
-        userDefaults.set(backup.mpvForegroundFPS == 60 ? 60 : 30, forKey: "mpvForegroundFPS")
-        userDefaults.set(BackupData.sanitizedMPVRenderBackend(backup.mpvRenderBackend), forKey: "mpvRenderBackend")
-        userDefaults.set(BackupData.sanitizedMPVMetalQualityProfile(backup.mpvMetalQualityProfile), forKey: "mpvMetalQualityProfile")
-        userDefaults.set(BackupData.sanitizedMPVUpscalingMode(backup.mpvUpscalingMode), forKey: "mpvUpscalingMode")
-        userDefaults.set(BackupData.sanitizedMPVNeuralUpscaler(backup.mpvNeuralUpscaler), forKey: "mpvNeuralUpscaler")
-        userDefaults.set(BackupData.sanitizedMPVNeuralUpscaler(backup.mpvNeuralUpscalerTV), forKey: "mpvNeuralUpscalerTV")
-        userDefaults.set(BackupData.sanitizedMPVPlayerSkin(backup.mpvPlayerSkin), forKey: MPVPlayerSkinSettings.skinKey)
-        if let primaryColor = backup.mpvPlayerSkinCustomPrimaryColor {
-            userDefaults.set(primaryColor, forKey: MPVPlayerSkinSettings.customPrimaryColorKey)
-        } else {
-            userDefaults.removeObject(forKey: MPVPlayerSkinSettings.customPrimaryColorKey)
-        }
-        if let secondaryColor = backup.mpvPlayerSkinCustomSecondaryColor {
-            userDefaults.set(secondaryColor, forKey: MPVPlayerSkinSettings.customSecondaryColorKey)
-        } else {
-            userDefaults.removeObject(forKey: MPVPlayerSkinSettings.customSecondaryColorKey)
-        }
-        userDefaults.set(backup.mpvPlayerSkinAnimationsEnabled, forKey: MPVPlayerSkinSettings.animationsEnabledKey)
-        userDefaults.set(backup.mpvPlayerSkinTintControlsOnly, forKey: MPVPlayerSkinSettings.tintControlsOnlyKey)
-        userDefaults.set(backup.mpvPictureInPictureEnabled, forKey: "mpvPictureInPictureEnabled")
-        userDefaults.set(backup.mpvAppExitPictureInPictureEnabled, forKey: "mpvAppExitPictureInPictureEnabled")
-        userDefaults.set(MPVHDRMode(rawValue: backup.mpvHDRMode)?.rawValue ?? MPVHDRMode.defaultMode.rawValue, forKey: "mpvHDRMode")
-        userDefaults.set(backup.mpvSurroundSoundEnabled, forKey: "mpvSurroundSoundEnabled")
-        userDefaults.set(backup.watchTogetherEnabled, forKey: WatchTogetherSettings.enabledKey)
-        userDefaults.set(backup.smartInAppPlayerChoosingEnabled, forKey: "smartInAppPlayerChoosingEnabled")
-        if let experimentalFeaturesEnabled = backup.experimentalFeaturesEnabled {
-            userDefaults.set(experimentalFeaturesEnabled, forKey: ExperimentalFeatureState.enabledKey)
-            userDefaults.set(
-                BackupData.sanitizedExperimentalFeaturesLastChangedAt(
-                    backup.experimentalFeaturesLastChangedAt
-                ) ?? 0,
-                forKey: ExperimentalFeatureState.lastChangedAtKey
-            )
-        }
-        userDefaults.set(backup.experimentalMPVPreloadEnabled, forKey: ExperimentalFeatureState.mpvPreloadEnabledKey)
-        userDefaults.set(backup.experimentalMPVSmoothTransitionEnabled, forKey: ExperimentalFeatureState.mpvSmoothTransitionEnabledKey)
-        userDefaults.set(backup.experimentalMPVPreloadCellularEnabled, forKey: ExperimentalFeatureState.mpvPreloadCellularEnabledKey)
-        userDefaults.set(ExperimentalFeatureState.clampedMPVPreloadWifiLimitMB(backup.experimentalMPVPreloadWifiLimitMB), forKey: ExperimentalFeatureState.mpvPreloadWifiLimitMBKey)
-        userDefaults.set(ExperimentalFeatureState.clampedMPVPreloadCellularLimitMB(backup.experimentalMPVPreloadCellularLimitMB), forKey: ExperimentalFeatureState.mpvPreloadCellularLimitMBKey)
-        userDefaults.set(backup.experimentalMPVShowRemainingTime, forKey: ExperimentalFeatureState.mpvShowRemainingTimeKey)
-        userDefaults.set(backup.experimentalMPVPreciseProgress, forKey: ExperimentalFeatureState.mpvPreciseProgressKey)
-        userDefaults.set(backup.experimentalMPVIgnoreSpecialSubtitleStyles, forKey: ExperimentalFeatureState.mpvIgnoreSpecialSubtitleStylesKey)
-        userDefaults.set(backup.experimentalMPVPreloadAutoClear, forKey: ExperimentalFeatureState.mpvPreloadAutoClearKey)
-
-        if let fgColor = backup.subtitleForegroundColor {
-            userDefaults.set(fgColor, forKey: "subtitles_foregroundColor")
-        }
-        if let strokeColor = backup.subtitleStrokeColor {
-            userDefaults.set(strokeColor, forKey: "subtitles_strokeColor")
-        }
-        userDefaults.set(
-            BackupData.sanitizedSubtitleStrokeWidth(backup.subtitleStrokeWidth),
-            forKey: "subtitles_strokeWidth"
-        )
-        userDefaults.set(
-            BackupData.sanitizedSubtitleFontSize(backup.subtitleFontSize),
-            forKey: "subtitles_fontSize"
-        )
-        userDefaults.set(
-            BackupData.sanitizedSubtitleVerticalOffset(backup.subtitleVerticalOffset),
-            forKey: "playerSubtitleOverlayBottomConstant"
-        )
-        userDefaults.set(backup.subtitlesVisible, forKey: "subtitles_isVisible")
-
-        userDefaults.set(backup.showKanzen, forKey: "showKanzen")
-        if let hideSplashScreen = backup.hideSplashScreen {
-            userDefaults.set(hideSplashScreen, forKey: "hideSplashScreen")
-        }
-        userDefaults.set(backup.modeSwitchAnimationEnabled, forKey: ModeSwitchAnimationSettings.enabledKey)
-        userDefaults.set(backup.kanzenAutoUpdateModules, forKey: "kanzenAutoUpdateModules")
-        userDefaults.set(backup.seasonMenu, forKey: "seasonMenu")
-        userDefaults.set(backup.horizontalEpisodeList, forKey: "horizontalEpisodeList")
-        userDefaults.set(backup.mediaDetailTitleArtworkEnabled, forKey: MediaDetailTitleArtworkSettings.enabledKey)
-        userDefaults.set(backup.mediaDetailAlternatePosterEnabled, forKey: MediaDetailAlternatePosterSettings.enabledKey)
-        userDefaults.set(backup.mediaDetailSimilarTitlesEnabled, forKey: MediaDetailSimilarTitlesSettings.enabledKey)
-        userDefaults.set(backup.useClassicScheduleUI, forKey: "useClassicScheduleUI")
-        userDefaults.set(BackupData.sanitizedNonEmptyString(backup.heroBannerCatalogId, defaultValue: "trending"), forKey: "heroBannerCatalogId")
-        userDefaults.set(BackupData.sanitizedHeroBannerBehavior(backup.heroBannerBehavior), forKey: "heroBannerBehavior")
-        if let overridesData = backup.homeCatalogLayoutOverrides.data(using: .utf8), !backup.homeCatalogLayoutOverrides.isEmpty {
-            userDefaults.set(overridesData, forKey: HomeCatalogLayoutStore.storageKey)
-        } else {
-            userDefaults.removeObject(forKey: HomeCatalogLayoutStore.storageKey)
-        }
-
-        if appliesTopLevelPerProfileData {
-            HomeCatalogLayoutStore.shared.reloadFromStorage()
-        }
-        if let homeAnimatedBackgroundEnabled = backup.homeAnimatedBackgroundEnabled {
-            userDefaults.set(homeAnimatedBackgroundEnabled, forKey: HomeAnimatedBackgroundSettings.enabledKey)
-        }
-        userDefaults.set(BackupData.sanitizedHomeAnimatedBackgroundQuality(backup.homeAnimatedBackgroundQuality), forKey: HomeAnimatedBackgroundQuality.storageKey)
-        userDefaults.set(BackupData.sanitizedHomeAnimatedBackgroundFrameRate(backup.homeAnimatedBackgroundFrameRate), forKey: HomeAnimatedBackgroundFrameRate.storageKey)
-        userDefaults.set(backup.appPerformanceOverlayEnabled, forKey: AppPerformanceOverlaySettings.enabledKey)
-        userDefaults.set(BackupData.sanitizedExperimentalMediaDesignPreset(backup.experimentalMediaDesignPreset), forKey: ExperimentalMediaDesignPreset.storageKey)
-        userDefaults.set(BackupData.sanitizedExperimentalHeroBleedLevel(backup.experimentalHeroBleedLevel), forKey: ExperimentalHeroBleedLevel.storageKey)
-        userDefaults.set(BackupData.sanitizedExperimentalHomeCardShape(backup.experimentalHomeCardShape), forKey: ExperimentalHomeCardShape.storageKey)
-        userDefaults.set(BackupData.sanitizedExperimentalMultiGradientPalette(backup.experimentalMultiGradientPalette), forKey: ExperimentalMultiGradientPalette.storageKey)
-        userDefaults.set(BackupData.sanitizedExperimentalHeroHeightScale(backup.experimentalHeroHeightScale), forKey: ExperimentalVisualTuning.heroHeightScaleKey)
-        userDefaults.set(BackupData.sanitizedExperimentalHeroBleedStrength(backup.experimentalHeroBleedStrength), forKey: ExperimentalVisualTuning.heroBleedStrengthKey)
-        userDefaults.set(BackupData.sanitizedExperimentalHeroFadeDistanceScale(backup.experimentalHeroFadeDistanceScale), forKey: ExperimentalVisualTuning.heroFadeDistanceScaleKey)
-        userDefaults.set(BackupData.sanitizedExperimentalSectionSpacingScale(backup.experimentalSectionSpacingScale), forKey: ExperimentalVisualTuning.sectionSpacingScaleKey)
-        userDefaults.set(BackupData.sanitizedExperimentalCardRadiusScale(backup.experimentalCardRadiusScale), forKey: ExperimentalVisualTuning.cardRadiusScaleKey)
-        userDefaults.set(BackupData.sanitizedExperimentalMediaCardScale(backup.experimentalMediaCardScale), forKey: ExperimentalVisualTuning.mediaCardScaleKey)
-        userDefaults.set(BackupData.sanitizedExperimentalGlassStrength(backup.experimentalGlassStrength), forKey: ExperimentalVisualTuning.glassStrengthKey)
-        userDefaults.set(BackupData.sanitizedExperimentalGradientBaseDarkness(backup.experimentalGradientBaseDarkness), forKey: ExperimentalVisualTuning.gradientBaseDarknessKey)
-        userDefaults.set(BackupData.sanitizedExperimentalGradientAccentIntensity(backup.experimentalGradientAccentIntensity), forKey: ExperimentalVisualTuning.gradientAccentIntensityKey)
-        userDefaults.set(BackupData.sanitizedExperimentalGradientScrollMotion(backup.experimentalGradientScrollMotion), forKey: ExperimentalVisualTuning.gradientScrollMotionKey)
-        userDefaults.set(backup.experimentalGradientUseCustomColors, forKey: ExperimentalVisualTuning.gradientUseCustomColorsKey)
-        if let experimentalGradientColorA = backup.experimentalGradientColorA {
-            userDefaults.set(experimentalGradientColorA, forKey: ExperimentalVisualTuning.gradientColorAKey)
-        }
-        if let experimentalGradientColorB = backup.experimentalGradientColorB {
-            userDefaults.set(experimentalGradientColorB, forKey: ExperimentalVisualTuning.gradientColorBKey)
-        }
-        if let experimentalGradientColorC = backup.experimentalGradientColorC {
-            userDefaults.set(experimentalGradientColorC, forKey: ExperimentalVisualTuning.gradientColorCKey)
-        }
-        userDefaults.set(BackupData.sanitizedAtmosphereStyle(backup.atmosphereStyle), forKey: "atmosphereStyle")
-        userDefaults.set(BackupData.sanitizedAtmosphereSolidColorSource(backup.atmosphereSolidColorSource), forKey: "atmosphereSolidColorSource")
-        if let atmosphereSolidColor = backup.atmosphereSolidColor {
-            userDefaults.set(atmosphereSolidColor, forKey: "atmosphereSolidColor")
-        }
-        userDefaults.set(BackupData.sanitizedAtmosphereStyle(backup.readerAtmosphereStyle), forKey: "readerAtmosphereStyle")
-        userDefaults.set(BackupData.sanitizedAtmosphereSolidColorSource(backup.readerAtmosphereSolidColorSource), forKey: "readerAtmosphereSolidColorSource")
-        if let readerAtmosphereSolidColor = backup.readerAtmosphereSolidColor {
-            userDefaults.set(readerAtmosphereSolidColor, forKey: "readerAtmosphereSolidColor")
-        }
-        let restoredMediaDetailHiddenElements = BackupData.sanitizedMediaDetailHiddenElements(backup.mediaDetailHiddenElements)
-        userDefaults.set(BackupData.sanitizedMediaDetailElementOrder(backup.mediaDetailElementOrder), forKey: MediaDetailElement.orderStorageKey)
-        userDefaults.set(restoredMediaDetailHiddenElements, forKey: MediaDetailElement.hiddenStorageKey)
-        userDefaults.set(!MediaDetailElement.hiddenElements(from: restoredMediaDetailHiddenElements, legacyShowCastSection: true).contains(.cast), forKey: MediaDetailElement.legacyShowCastStorageKey)
-        userDefaults.set(BackupData.sanitizedReaderDetailElementOrder(backup.readerDetailElementOrder), forKey: ReaderDetailElement.orderStorageKey)
-        userDefaults.set(BackupData.sanitizedReaderDetailHiddenElements(backup.readerDetailHiddenElements), forKey: ReaderDetailElement.hiddenStorageKey)
-        userDefaults.set(backup.mediaColumnsPortrait, forKey: "mediaColumnsPortrait")
-        userDefaults.set(backup.mediaColumnsLandscape, forKey: "mediaColumnsLandscape")
-
-        userDefaults.set(backup.readingMode, forKey: "readingMode")
-        let restoredKanzenReaderMode = BackupData.sanitizedKanzenReaderMode(backup.kanzenReaderMode)
-        userDefaults.set(restoredKanzenReaderMode, forKey: "kanzenReaderMode")
-        BackupData.sanitizedKanzenReaderModeOverrides(backup.kanzenReaderModeOverrides).forEach { key, value in
-            userDefaults.set(value, forKey: "kanzenReaderMode.\(key)")
-        }
-        userDefaults.set(backup.readerDownsampleImages, forKey: "Reader.downsampleImages")
-        userDefaults.set(backup.readerCropBorders, forKey: "Reader.cropBorders")
-        userDefaults.set(backup.readerDisableQuickActions, forKey: "Reader.disableQuickActions")
-        userDefaults.set(backup.readerDisableDoubleTap, forKey: "Reader.disableDoubleTap")
-        userDefaults.set(backup.readerLiveText, forKey: "Reader.liveText")
-        userDefaults.set(backup.readerHideBarsOnSwipe, forKey: "Reader.hideBarsOnSwipe")
-        userDefaults.set(BackupData.sanitizedReaderBackgroundColor(backup.readerBackgroundColor), forKey: "Reader.backgroundColor")
-        userDefaults.set(BackupData.sanitizedReaderOrientation(backup.readerOrientation), forKey: "Reader.orientation")
-        userDefaults.set(BackupData.sanitizedReaderTapZones(backup.readerTapZones), forKey: "Reader.tapZones")
-        userDefaults.set(backup.readerInvertTapZones, forKey: "Reader.invertTapZones")
-        userDefaults.set(backup.readerAnimatePageTransitions, forKey: "Reader.animatePageTransitions")
-        userDefaults.set(backup.readerUpscaleImages, forKey: "Reader.upscaleImages")
-        userDefaults.set(BackupData.sanitizedReaderUpscaleMaxHeight(backup.readerUpscaleMaxHeight), forKey: "Reader.upscaleMaxHeight")
-        if let readerUpscaleModelName = BackupReaderUpscaleModelRestorePolicy.modelNameToApply(
-            incoming: backup.readerUpscaleModelName,
-            preservesDeviceLocalSelection: preservingDeviceLocalReaderModelSelection
-        ) {
-            userDefaults.set(readerUpscaleModelName, forKey: "Reader.upscaleModelName")
-        }
-        userDefaults.set(BackupData.sanitizedReaderPagesToPreload(backup.readerPagesToPreload), forKey: "Reader.pagesToPreload")
-        userDefaults.set(BackupData.sanitizedReaderPagedPageLayout(backup.readerPagedPageLayout), forKey: "Reader.pagedPageLayout")
-        userDefaults.set(backup.readerPagedPageOffset, forKey: "Reader.pagedPageOffset")
-        BackupData.sanitizedReaderPagedPageOffsetOverrides(backup.readerPagedPageOffsetOverrides).forEach { key, value in
-            userDefaults.set(value, forKey: "Reader.pagedPageOffset.\(key)")
-        }
-        userDefaults.set(backup.readerSplitWideImages, forKey: "Reader.splitWideImages")
-        userDefaults.set(backup.readerReverseSplitOrder, forKey: "Reader.reverseSplitOrder")
-        userDefaults.set(backup.readerVerticalInfiniteScroll, forKey: "Reader.verticalInfiniteScroll")
-        userDefaults.set(backup.readerPillarbox, forKey: "Reader.pillarbox")
-        userDefaults.set(BackupData.sanitizedReaderPillarboxAmount(backup.readerPillarboxAmount), forKey: "Reader.pillarboxAmount")
-        userDefaults.set(BackupData.sanitizedReaderPillarboxOrientation(backup.readerPillarboxOrientation), forKey: "Reader.pillarboxOrientation")
-        userDefaults.set(backup.readerOrientationLockEnabled, forKey: "readerOrientationLockEnabled")
-        userDefaults.set(BackupData.sanitizedReaderOrientationLockMask(backup.readerOrientationLockMask), forKey: "readerOrientationLockMask")
-        userDefaults.set(BackupData.sanitizedReaderReadThresholdPercent(backup.readerReadThresholdPercent), forKey: "readerReadThresholdPercent")
-
-        userDefaults.set(
-            BackupData.sanitizedReaderFontSize(backup.readerFontSize),
-            forKey: "readerFontSize"
-        )
-        userDefaults.set(backup.readerFontFamily, forKey: "readerFontFamily")
-        userDefaults.set(backup.readerFontWeight, forKey: "readerFontWeight")
-        userDefaults.set(BackupData.sanitizedReaderColorPreset(backup.readerColorPreset), forKey: "readerColorPreset")
-        userDefaults.set(backup.readerTextAlignment, forKey: "readerTextAlignment")
-        userDefaults.set(
-            BackupData.sanitizedReaderLineSpacing(backup.readerLineSpacing),
-            forKey: "readerLineSpacing"
-        )
-        userDefaults.set(
-            BackupData.sanitizedReaderMargin(backup.readerMargin),
-            forKey: "readerMargin"
-        )
-
-        userDefaults.set(backup.autoClearCacheEnabled, forKey: "autoClearCacheEnabled")
-        userDefaults.set(
-            BackupData.sanitizedAutoClearCacheThresholdMB(
-                backup.autoClearCacheThresholdMB
-            ),
-            forKey: "autoClearCacheThresholdMB"
-        )
-        userDefaults.set(
-            BackupData.sanitizedHighQualityThreshold(backup.highQualityThreshold),
-            forKey: "highQualityThreshold"
-        )
-        userDefaults.set(backup.backgroundHLSPipelineEnabled, forKey: "backgroundHLSPipelineEnabled")
-        userDefaults.set(backup.readerDownloadsBackgroundEnabled, forKey: "readerDownloadsBackgroundEnabled")
-        userDefaults.set(backup.readerDownloadsWifiOnly, forKey: "readerDownloadsWifiOnly")
-        userDefaults.set(BackupData.sanitizedReaderDownloadsParallelLimit(backup.readerDownloadsParallelLimit), forKey: "readerDownloadsParallelLimit")
-        userDefaults.set(backup.autoUpdateServicesEnabled, forKey: "autoUpdateServicesEnabled")
-        userDefaults.set(backup.servicesAutoModeEnabled, forKey: "servicesAutoModeEnabled")
-        userDefaults.set(backup.servicesAutoSelectEpisodesEnabled, forKey: "servicesAutoSelectEpisodesEnabled")
-        userDefaults.set(backup.servicesAutoModeErrorIntelligenceEnabled, forKey: AutoModeErrorIntelligenceSettings.enabledKey)
-        let restoredAutoModeSourceIds = ExperimentalCloudLocalSourceSelectionPolicy.membership(
-            current: currentAutoModeSourceIds,
-            incoming: backup.servicesAutoModeSourceIds,
-            preserving: preservedLocalSourceIDs
-        )
-        let orderedAutoModeSourceIds = BackupData.sanitizedStringList(backup.servicesAutoModeSourceOrderIds)
-        let restoredAutoModeSourceOrderIds = ExperimentalCloudLocalSourceSelectionPolicy.order(
-            current: currentAutoModeSourceOrderIds,
-            incoming: orderedAutoModeSourceIds + restoredAutoModeSourceIds.filter {
-                !orderedAutoModeSourceIds.contains($0)
-            },
-            preserving: preservedLocalSourceIDs
-        )
-        userDefaults.set(restoredAutoModeSourceIds, forKey: "servicesAutoModeSourceIds")
-        userDefaults.set(restoredAutoModeSourceOrderIds, forKey: "servicesAutoModeSourceOrderIds")
-        userDefaults.set(AutoModeQualityPreference.sanitizedRawValue(backup.servicesAutoModeQualityPreference), forKey: AutoModeQualityPreference.storageKey)
-
-        if appliesTopLevelSources {
-            if backup.topLevelSettingIsAuthoritative(
-                storageKey: ServicesResultRankingSettings.minimumSimilarityKey
-            ) {
-                ServicesResultRankingSettings.setMinimumSimilarity(backup.servicesResultMinimumSimilarity)
-            }
-            if backup.topLevelSettingIsAuthoritative(
-                storageKey: ServicesResultRankingSettings.dropMismatchedResultsKey
-            ) {
-                ServicesResultRankingSettings.setDropsMismatchedResults(backup.servicesDropMismatchedResults)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesIncludedStreamLanguages") {
-                StreamLanguageFilter.setIncludedLanguages(backup.servicesIncludedStreamLanguages)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesHiddenStreamLanguages") {
-                StreamLanguageFilter.setHiddenLanguages(backup.servicesHiddenStreamLanguages)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesHideStreamsWithoutLanguageData") {
-                StreamLanguageFilter.setHidesStreamsWithoutLanguageData(backup.servicesHideStreamsWithoutLanguageData)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesAssumeOriginalAudio") {
-                StreamLanguageFilter.setAssumesOriginalAudio(backup.servicesAssumeOriginalAudio)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesTreatDubbedAnimeAsEnglish") {
-                StreamLanguageFilter.setTreatsDubbedAnimeAsEnglish(backup.servicesTreatDubbedAnimeAsEnglish)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesHiddenStreamQualities") {
-                StreamLanguageFilter.setHiddenQualityHeights(backup.servicesHiddenStreamQualities)
-            }
-            if backup.topLevelSettingIsAuthoritative(storageKey: "servicesHideStreamsWithoutDetectedQuality") {
-                StreamLanguageFilter.setHidesStreamsWithoutDetectedQuality(backup.servicesHideStreamsWithoutDetectedQuality)
-            }
-        }
-        userDefaults.set(backup.servicesStremioStyleSheetEnabled, forKey: ServicesSheetPresentationSettings.stremioStyleEnabledKey)
-        let restoredExtraRulesSourceIds: [String]?
-        if backup.servicesExtraRulesSourceIds == nil,
-           currentExtraRulesSourceIds == nil {
-
-            restoredExtraRulesSourceIds = nil
-        } else {
-            let restoredBase = backup.servicesExtraRulesSourceIds
-                .map(BackupData.sanitizedStringList)
-                ?? restoredAutoModeSourceOrderIds
-            restoredExtraRulesSourceIds = ExperimentalCloudLocalSourceSelectionPolicy.membership(
-                current: preservedExtraRulesLocalSourceIds,
-                incoming: restoredBase,
-                preserving: preservedLocalSourceIDs
-            )
-        }
-        if appliesTopLevelSources,
-           backup.topLevelSettingIsAuthoritative(storageKey: "servicesExtraRulesSourceIds") {
-            StreamLanguageFilter.setExtraRulesSourceIds(restoredExtraRulesSourceIds)
-        }
-        userDefaults.set(backup.githubReleaseAutoCheckEnabled, forKey: "githubReleaseAutoCheckEnabled")
-        userDefaults.set(backup.githubReleaseUpdateAvailable, forKey: "githubReleaseUpdateAvailable")
-        userDefaults.set(backup.githubReleaseLatestVersion, forKey: "githubReleaseLatestVersion")
-        userDefaults.set(backup.githubReleaseURL, forKey: "githubReleaseURL")
-        userDefaults.set(backup.githubReleaseShowAlertPending, forKey: "githubReleaseShowAlertPending")
-        userDefaults.set(backup.githubReleaseLastPromptedVersion, forKey: "githubReleaseLastPromptedVersion")
-        userDefaults.set(backup.filterHorrorContent, forKey: "filterHorror")
-        userDefaults.set(BackupData.sanitizedSimilarityAlgorithm(backup.selectedSimilarityAlgorithm), forKey: "selectedSimilarityAlgorithm")
-        userDefaults.set(backup.kanzenHomeSelectedSourceID, forKey: "kanzenHomeSelectedSourceID")
-        userDefaults.set(backup.kanzenRecentSourceSearches, forKey: "kanzenRecentSourceSearches")
-        userDefaults.set(backup.performanceModeEnabled, forKey: PerformanceModeSettings.enabledKey)
-        userDefaults.set(backup.performanceModeSkipAniListTraversalForAnimeDetails, forKey: PerformanceModeSettings.skipAniListTraversalForAnimeDetailsKey)
-
-        if appliesTopLevelPerProfileData,
-           backup.topLevelSettingIsAuthoritative(
-                storageKey: PerformanceModeSettings.fastAnimeCatalogOverridesKey
-           ) {
-            PerformanceModeSettings.fastAnimeCatalogOverrides = backup.performanceModeFastAnimeCatalogOverrides
-        }
-
-        if appliesTopLevelPerProfileData,
-           backup.searchHistory.wasCaptured || !backup.searchHistory.queries.isEmpty,
-           let searchHistoryData = try? JSONEncoder().encode(backup.searchHistory.queries) {
-            userDefaults.set(searchHistoryData, forKey: "searchHistory")
-        }
-        performOnMainThread {
-
-            if appliesTopLevelPerProfileData,
-               backup.topLevelSettingIsAuthoritative(storageKey: "filterHorror") {
-                TMDBContentFilter.shared.filterHorror = backup.filterHorrorContent
-            }
-            if appliesTopLevelPerProfileData,
-               backup.topLevelSettingIsAuthoritative(storageKey: "selectedSimilarityAlgorithm") {
-                AlgorithmManager.shared.selectedAlgorithm = SimilarityAlgorithm(rawValue: BackupData.sanitizedSimilarityAlgorithm(backup.selectedSimilarityAlgorithm)) ?? .hybrid
-            }
-
-            let settings = Settings.shared
-            let theme = EclipseTheme.shared
-            settings.objectWillChange.send()
-            theme.objectWillChange.send()
-        }
-
-        if appliesTopLevelCollections {
-            let restoredCollections = backup.collections.map { $0.toLibraryCollection() }
-            performOnMainThread {
-
-                LibraryManager.shared.replaceCollectionsForMediaState(restoredCollections)
-            }
-        }
-
-        if appliesTopLevelProgress {
-            let progressManager = ProgressManager.shared
-            progressManager.replaceProgressDataForRestore(
-                BackupData.sanitizedProgressData(
-                    backup.progressData,
-                    preservingDeviceLocalReferences: true
-                ),
-                expectedProfileID: activeProfileID
-            )
-        }
-
-        if appliesTopLevelTracker,
-           topLevelSnapshot?.trackerCredentialsAndRosterWereCaptured != true {
-            performOnMainThread {
-                let restoredTrackerState = topLevelSnapshot?.trackerCredentialsAndRosterWereCaptured == true
-                    ? topLevelSnapshot?.trackerState ?? backup.trackerState
-                    : backup.trackerState
-                _ = trackerManager.applyRestoredTrackerState(
-                    restoredTrackerState,
-                    forProfile: activeProfileID,
-                    credentialsAndRosterAreAuthoritative:
-                        topLevelSnapshot?.trackerCredentialsAndRosterWereCaptured == true
-                )
-            }
-        }
-
-        let restoredPerformanceModeEnabled = backup.topLevelSettingIsAuthoritative(
-            storageKey: PerformanceModeSettings.enabledKey
-        ) ? backup.performanceModeEnabled : PerformanceModeSettings.isEnabled
-        if !appliesTopLevelPerProfileData {
-            performOnMainThread {
-                CatalogManager.shared.setPerformanceModeEnabled(PerformanceModeSettings.isEnabled)
-            }
-        } else if appliesTopLevelCatalogs, backup.catalogs.isEmpty {
-            performOnMainThread {
-                CatalogManager.shared.replaceCatalogsForMediaState([])
-                CatalogManager.shared.setPerformanceModeEnabled(restoredPerformanceModeEnabled)
-            }
-        } else if appliesTopLevelCatalogs {
-            var merged = backup.catalogs
-            let existingIds = Set(merged.map { $0.id })
-            var currentDefaults: [Catalog] = []
-            performOnMainThread {
-                currentDefaults = CatalogManager.shared.catalogs.filter { !existingIds.contains($0.id) }
-            }
-            merged.append(contentsOf: currentDefaults)
-            merged = merged.enumerated().map { index, catalog in
-                var updated = catalog
-                updated.order = index
-                return updated
-            }
-            performOnMainThread {
-                let catalogManager = CatalogManager.shared
-                catalogManager.setPerformanceModeEnabled(restoredPerformanceModeEnabled)
-                catalogManager.catalogs = merged
-                catalogManager.saveCatalogs()
-            }
-        } else {
-            performOnMainThread {
-                let catalogManager = CatalogManager.shared
-                catalogManager.setPerformanceModeEnabled(restoredPerformanceModeEnabled)
-                catalogManager.saveCatalogs()
-            }
-        }
-
-        applyShareServicesModeIfNeeded(backup)
-
-        let serviceStore = ServiceStore.shared
-        let appliesTopLevelServices = appliesTopLevelSources && backup.hasServices
-        let existingServices = appliesTopLevelServices ? serviceStore.getServices() : []
-        let incomingServices = (appliesTopLevelServices ? backup.services : []).sorted(by: {
-            if $0.sortIndex == $1.sortIndex {
-                return $0.id.uuidString < $1.id.uuidString
-            }
-            return $0.sortIndex < $1.sortIndex
-        })
-        let servicesToRestore: [BackupService]
-        var deviceLocalServiceIDs = Set<UUID>()
-        if refreshCloudSources {
-            let currentServices = existingServices.map { service in
-                let metadata = (try? JSONEncoder().encode(service.metadata))
-                    .flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                return BackupService(
-                    id: service.id,
-                    url: service.url,
-                    jsonMetadata: metadata,
-                    jsScript: service.jsScript,
-                    isActive: service.isActive,
-                    sortIndex: service.sortIndex
-                )
-            }
-            deviceLocalServiceIDs = Set(currentServices.compactMap { service in
-                BackupData.serviceForExperimentalCloudSync(service) == nil ? service.id : nil
-            })
-            servicesToRestore = ExperimentalCloudSourceRestorePolicy.services(
-                current: currentServices,
-                incoming: incomingServices
-            )
-        } else {
-            servicesToRestore = incomingServices
-        }
-        let servicesToRemove = refreshCloudSources
-            ? existingServices.filter { !deviceLocalServiceIDs.contains($0.id) }
-            : existingServices
-        servicesToRemove.forEach { serviceStore.remove($0) }
-        for svc in servicesToRestore where !deviceLocalServiceIDs.contains(svc.id) {
-
-            guard let script = ServiceStoreScope.securedScriptForRestore(
-                svc.jsScript,
-                serviceID: svc.id,
-                profileID: activeProfileID
-            ) else { continue }
-            serviceStore.storeService(
-                id: svc.id,
-                url: svc.url,
-                jsonMetadata: svc.jsonMetadata,
-                jsScript: script,
-                isActive: svc.isActive,
-                sortIndex: svc.sortIndex
-            )
-        }
-        if refreshCloudSources {
-            let entities = serviceStore.getEntities()
-            for (index, service) in servicesToRestore.enumerated() {
-                entities.first(where: { $0.id == service.id })?.sortIndex = Int64(index)
-            }
-            serviceStore.save()
-        }
-
-        if appliesTopLevelSources, let stremioAddons = backup.stremioAddons {
-            let stremioStore = StremioAddonStore.shared
-            let incomingAddons = stremioAddons.sorted {
-                if $0.sortIndex == $1.sortIndex {
-                    return $0.id.uuidString < $1.id.uuidString
-                }
-                return $0.sortIndex < $1.sortIndex
-            }
-            let addonsToRestore: [BackupStremioAddon]
-            var deviceLocalAddonIDs = Set<UUID>()
-            if refreshCloudSources {
-                let currentAddons = stremioStore.getAddons().map { addon in
-                    let manifestJSON = (try? JSONEncoder().encode(addon.manifest))
-                        .flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                    return BackupStremioAddon(
-                        id: addon.id,
-                        configuredURL: addon.configuredURL,
-                        manifestJSON: manifestJSON,
-                        isActive: addon.isActive,
-                        sortIndex: addon.sortIndex
-                    )
-                }
-                deviceLocalAddonIDs = Set(currentAddons.compactMap { addon in
-                    BackupData.stremioAddonForExperimentalCloudSync(addon) == nil ? addon.id : nil
-                })
-                addonsToRestore = ExperimentalCloudSourceRestorePolicy.stremioAddons(
-                    current: currentAddons,
-                    incoming: incomingAddons
-                )
-            } else {
-                addonsToRestore = incomingAddons
-            }
-
-            let resolvedURLsByAddonID: [UUID: String] = addonsToRestore.reduce(into: [:]) { result, addon in
-                let resolved = StremioConfiguredURLVault.resolve(
-                    addonID: addon.id,
-                    persistedURL: addon.configuredURL
-                )
-                guard resolved != addon.configuredURL else { return }
-                result[addon.id] = resolved
-            }
-
-            if refreshCloudSources {
-                for addon in stremioStore.getAddons() where !deviceLocalAddonIDs.contains(addon.id) {
-                    stremioStore.remove(addon)
-                }
-            } else {
-                stremioStore.removeAll()
-            }
-
-            for addon in addonsToRestore where !deviceLocalAddonIDs.contains(addon.id) {
-
-                let storedURL = resolvedURLsByAddonID[addon.id] ?? addon.configuredURL
-                let configuredURL = storedURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                if StremioConfiguredURLVault.isUnresolvedReference(configuredURL) {
-                    Logger.shared.log(
-                        "Skipping Stremio addon \(addon.id) from backup: its configured URL was stored in this device's Keychain and is not in the backup. Re-add it to restore it.",
-                        type: "Stremio"
-                    )
-                    continue
-                }
-                guard !configuredURL.isEmpty,
-                      let manifestData = addon.manifestJSON.data(using: .utf8),
-                      let manifest = try? JSONDecoder().decode(StremioManifest.self, from: manifestData),
-                      manifest.supportsInstallableResources else {
-                    Logger.shared.log("Skipping invalid Stremio addon from backup: \(addon.id)", type: "Stremio")
-                    continue
-                }
-
-                stremioStore.storeAddon(
-                    id: addon.id,
-                    configuredURL: configuredURL,
-
-                    manifestJSON: addon.manifestJSON,
-                    isActive: addon.isActive,
-                    sortIndex: addon.sortIndex
-                )
-            }
-            if refreshCloudSources {
-                let entities = stremioStore.getEntities()
-                for (index, addon) in addonsToRestore.enumerated() {
-                    entities.first(where: { $0.id == addon.id })?.sortIndex = Int64(index)
-                }
-                stremioStore.save()
-            }
-
-        }
-
-        if appliesTopLevelMangaCollections, backup.hasMangaCollections {
-            let restoredMangaCollections = backup.mangaCollections.map { bc in
-                MangaLibraryCollection(id: bc.id, name: bc.name, items: bc.items, description: bc.description)
-            }
-            performOnMainThread {
-                MangaLibraryManager.shared.collections = restoredMangaCollections
-            }
-        }
-
-        if appliesTopLevelMangaProgress, backup.hasMangaReadingProgress {
-            let mangaProgressMap = Dictionary(
-                backup.mangaReadingProgress.compactMap { key, value -> (Int, MangaProgress)? in
-                    guard let id = Int(key) else { return nil }
-                    return (id, value)
-                },
-                uniquingKeysWith: { _, incoming in incoming }
-            )
-            performOnMainThread {
-                MangaReadingProgressManager.shared.replaceProgressMapForRestore(mangaProgressMap)
-            }
-        }
-
-        if appliesTopLevelMangaCatalogs, backup.hasMangaCatalogs {
-            let mangaCatalogManager = MangaCatalogManager.shared
-            mangaCatalogManager.catalogs = backup.mangaCatalogs
-            mangaCatalogManager.saveCatalogs()
-        }
-
-        if appliesTopLevelCustomCatalogs, backup.hasCustomCatalogs {
-            let restoredCustomCatalogs = backup.customCatalogs
-            performOnMainThread {
-                KanzenCustomCatalogManager.shared.applyRestoredCatalogs(
-                    restoredCustomCatalogs,
-                    forProfile: activeProfileID
-                )
-            }
-        }
-
-        if backup.hasKanzenModules {
-            let restoredModules = backup.kanzenModules.map { mod in
-                ModuleDataContainer(
-                    id: mod.id,
-                    moduleData: mod.moduleData,
-                    localPath: mod.localPath,
-                    moduleurl: mod.moduleurl,
-                    isActive: mod.isActive
-                )
-            }
-            performOnMainThread {
-                let kanzenModuleManager = ModuleManager.shared
-                kanzenModuleManager.replaceModulesForRestore(restoredModules)
-                kanzenModuleManager.saveModules()
-            }
-        }
-
-#if !os(tvOS)
-        if appliesTopLevelSources,
-           topLevelSnapshot?.readerPrivateCloudConfigurationData == nil,
-           let readerState = backup.readerExtensionsState
-                ?? backup.aidokuState.map(BackupReaderExtensionState.migratingLegacyAidoku) {
-            _ = Self.restoreReaderExtensionStatePreservingLocalOnFailure(
-                readerState,
-                metadataStore: ProfileSettingsStore.services,
-                preferenceStore: ProfileSettingsStore.active,
-                context: "active profile"
-            )
-        }
-#endif
-
-        if appliesTopLevelPerProfileData, !backup.recommendationCache.isEmpty {
-            RecommendationEngine.shared.restoreRecommendationCache(backup.recommendationCache)
-        }
-
-        if appliesTopLevelRatings, backup.hasUserRatings {
-            UserRatingManager.shared.restoreRatingsAndNotes(
-                ratings: BackupData.sanitizedUserRatings(backup.userRatings),
-                notes: BackupData.sanitizedUserRatingNotes(backup.userRatingNotes)
-            )
-        }
-
-        if appliesTopLevelSources, let servicesSettings = backup.servicesSettings {
-            let store = ProfileSettingsStore.services
-            Self.restoreServicesSettings(
-                servicesSettings,
-                capturedCompletely: backup.servicesSettingsWereCaptured,
-                to: store,
-                preserving: refreshCloudSources ? preservedLocalSourceIDs : []
-            )
-        }
-
-        restoreSharedSourcePayloads(backup)
-
-        let privateConfigurationRestore = restoreProfileSnapshots(
-            backup,
-            preservingCanonicalMediaState: preservingCanonicalMediaState,
-            preservingDeviceLocalNuvioCloudState: refreshCloudSources
-        )
-        guard privateConfigurationRestore.wasRestored else {
-            Logger.shared.log(
-                "BackupManager: private cloud configuration did not persist durably; restore requires rollback",
-                type: "CloudSync"
-            )
-            return nil
-        }
-
-        guard ProfileManager.shared.rosterStoreIsReadable else {
-            Logger.shared.log(
-                "BackupManager: restore did not contain a valid profile roster; the unreadable local roster remains quarantined",
-                type: "Error"
-            )
-            return nil
-        }
-
-#if os(iOS)
-        Task { @MainActor in
-            await LocalNotificationManager.shared.reloadPersistedSelectionsAfterRestore()
-        }
-#endif
-
-        Logger.shared.log("Backup restored successfully", type: "Info")
-        return BackupApplicationResult(
-            authoritativeTrackerProfileIDs:
-                privateConfigurationRestore.authoritativeTrackerProfileIDs
-        )
-    }
-
-    static let maximumProfileNameUTF8Bytes = ProfileManager.maximumNameUTF8Bytes
-    static let maximumProfileAvatarSymbolUTF8Bytes = ProfileManager.maximumAvatarSymbolUTF8Bytes
-
-    static func sanitizedProfileSnapshotForRestore(
-        _ source: BackupProfileSnapshot,
-        now: Date = Date()
-    ) -> BackupProfileSnapshot? {
-        var snapshot = source
-        guard let name = ProfileManager.sanitizedName(source.name) else { return nil }
-        snapshot.name = name
-        snapshot.avatarSymbol = ProfileManager.sanitizedAvatarSymbol(source.avatarSymbol)
-        snapshot.avatarColorHex = ProfileManager.sanitizedAvatarColorHex(source.avatarColorHex)
-        if snapshot.avatarPhotoData?.isEmpty == true
-            || (snapshot.avatarPhotoData?.count ?? 0) > ProfileAvatar.maximumPhotoBytes {
-            snapshot.avatarPhotoData = nil
-        }
-
-        let sanitizedPINHash = ProfilePINHasher.sanitizedHash(source.pinHash)
-        snapshot.pinHash = sanitizedPINHash
-        snapshot.createdAt = sanitizedRequiredProfileClock(source.createdAt, now: now)
-        snapshot.pinChangedAt = sanitizedPINHash == nil && source.pinHash != nil
-            ? nil
-            : sanitizedOptionalProfileClock(source.pinChangedAt, now: now)
-        snapshot.kidsFlagChangedAt = sanitizedOptionalProfileClock(
-            source.kidsFlagChangedAt,
-            now: now
-        )
-        snapshot.readerExtensionsState = (
-            source.readerExtensionsState
-                ?? source.aidokuState.map(BackupReaderExtensionState.migratingLegacyAidoku)
-        )?.sanitized()
-        snapshot.readerPrivateCloudConfigurationData = BackupProfileSnapshot
-            .boundedReaderPrivateCloudConfigurationData(
-                source.readerPrivateCloudConfigurationData
-            )
-        snapshot.aidokuState = nil
-        snapshot.servicesSettings = BackupData.servicesSettingsForExperimentalCloudSync(
-            source.servicesSettings
-        ) ?? [:]
-        return snapshot
-    }
-
-    private static func sanitizedRequiredProfileClock(_ value: Date, now: Date) -> Date {
-        let seconds = value.timeIntervalSince1970
-        let maximum = now.timeIntervalSince1970
-            + MediaStateEnvelopeValidator.maximumFutureClockSkew
-        guard seconds.isFinite else { return now }
-        if seconds < 0 { return Date(timeIntervalSince1970: 0) }
-        if seconds > maximum { return now }
-        return value
-    }
-
-    private static func sanitizedOptionalProfileClock(_ value: Date?, now: Date) -> Date? {
-        guard let value else { return nil }
-        let seconds = value.timeIntervalSince1970
-        let maximum = now.timeIntervalSince1970
-            + MediaStateEnvelopeValidator.maximumFutureClockSkew
-        guard seconds.isFinite, seconds >= 0 else { return nil }
-        return seconds > maximum ? now : value
-    }
-
-    static func profileSnapshotsAdmittedForRestore(
-        _ snapshots: [BackupProfileSnapshot],
-        existingProfileIDs: Set<UUID>,
-        admittingUnrosteredPrivateConfiguration: Bool = false
-    ) -> [BackupProfileSnapshot] {
-        var seenIDs = Set<UUID>()
-        var candidates: [BackupProfileSnapshot] = []
-        candidates.reserveCapacity(min(snapshots.count, ProfileManager.maximumProfiles))
-
-        let now = Date()
-        for rawSnapshot in snapshots {
-            guard let snapshot = sanitizedProfileSnapshotForRestore(rawSnapshot, now: now),
-                  seenIDs.insert(snapshot.id).inserted else { continue }
-            candidates.append(snapshot)
-        }
-
-        let existingCandidateIDs = Set(
-            candidates.lazy
-                .filter { existingProfileIDs.contains($0.id) }
-                .prefix(ProfileManager.maximumProfiles)
-                .map(\.id)
-        )
-        let newcomerCapacity = max(
-            0,
-            ProfileManager.maximumProfiles - (
-                admittingUnrosteredPrivateConfiguration
-                    ? existingCandidateIDs.count
-                    : existingProfileIDs.count
-            )
-        )
-        var admittedNewcomers = 0
-        var admitted: [BackupProfileSnapshot] = []
-        admitted.reserveCapacity(min(candidates.count, ProfileManager.maximumProfiles))
-        for snapshot in candidates {
-            if existingCandidateIDs.contains(snapshot.id) {
-                admitted.append(snapshot)
-            } else if admittedNewcomers < newcomerCapacity {
-                admittedNewcomers += 1
-                admitted.append(snapshot)
-            }
-        }
-        return admitted
-    }
-
-    private func restoreProfileSnapshots(
-        _ backup: BackupData,
-        preservingCanonicalMediaState: Bool = false,
-        preservingDeviceLocalNuvioCloudState: Bool = false
-    ) -> PrivateConfigurationRestoreResult {
-        guard let snapshots = backup.profiles, !snapshots.isEmpty else {
-            if let owner = backup.activeProfileID,
-               owner != ProfileManager.shared.activeProfileID {
-                Logger.shared.log(
-                    "BackupManager: this backup holds a single profile (\(owner)) and was restored into \(ProfileManager.shared.activeProfileID)",
-                    type: "Info"
-                )
-            }
-            return PrivateConfigurationRestoreResult(
-                wasRestored: true,
-                authoritativeTrackerProfileIDs: []
-            )
-        }
-        var existingProfileIDs = Set<UUID>()
-        performOnMainThread {
-            let manager = ProfileManager.shared
-
-            existingProfileIDs = manager.rosterStoreIsReadable
-                ? Set(manager.profiles.map(\.id))
-                : []
-        }
-        let admittedSnapshots = Self.profileSnapshotsAdmittedForRestore(
-            snapshots,
-            existingProfileIDs: existingProfileIDs,
-            admittingUnrosteredPrivateConfiguration: preservingCanonicalMediaState
-        )
-        if admittedSnapshots.count != snapshots.count {
-            Logger.shared.log(
-                "BackupManager: admitted \(admittedSnapshots.count) of \(snapshots.count) unique, valid profile snapshot(s) within the roster cap",
-                type: "Error"
-            )
-        }
-
-        var acceptedProfileIDs = Set<UUID>()
-        if preservingCanonicalMediaState {
-            acceptedProfileIDs = Set(admittedSnapshots.map(\.id))
-        } else {
-            performOnMainThread {
-
-                acceptedProfileIDs = ProfileManager.shared.mergeProfilesFromBackup(
-                admittedSnapshots.map {
-                    Profile(
-                        id: $0.id,
-                        name: $0.name,
-                        avatarSymbol: $0.avatarSymbol,
-                        avatarColorHex: $0.avatarColorHex,
-                        avatarPhotoData: $0.avatarPhotoData,
-                        pinHash: $0.pinHash,
-                        isKidsProfile: $0.isKidsProfile,
-                        createdAt: $0.createdAt,
-                        pinChangedAt: $0.pinChangedAt,
-                        kidsFlagChangedAt: $0.kidsFlagChangedAt
-                    )
-                }
-                )
-
-            }
-        }
-
-        var privateConfigurationWasRestored = true
-        var authoritativeTrackerProfileIDs = Set<UUID>()
-        for snapshot in admittedSnapshots {
-            let id = snapshot.id
-            let isUnrosteredCanonicalProfile = preservingCanonicalMediaState
-                && !existingProfileIDs.contains(id)
-            guard acceptedProfileIDs.contains(id) else {
-                Logger.shared.log(
-                    "BackupManager: skipped profile \(id)'s data; the roster merge did not admit it",
-                    type: "Error"
-                )
-                continue
-            }
-
-            if !preservingCanonicalMediaState, snapshot.progressWasCaptured {
-                ProgressManager.shared.applyRestoredProgressData(
-                    BackupData.sanitizedProgressData(
-                        snapshot.progressData,
-                        preservingDeviceLocalReferences: true
-                    ),
-                    forProfile: id
-                )
-            }
-            if !preservingCanonicalMediaState, snapshot.ratingsWereCaptured {
-                UserRatingManager.shared.restoreRatingsAndNotes(
-                    ratings: BackupData.sanitizedUserRatings(snapshot.userRatings),
-                    notes: BackupData.sanitizedUserRatingNotes(snapshot.userRatingNotes),
-                    forProfile: id
-                )
-            }
-            if !preservingCanonicalMediaState, snapshot.collectionsWereCaptured {
-                performOnMainThread {
-                    LibraryManager.shared.replaceCollectionsForMediaState(
-                        snapshot.collections.map { $0.toLibraryCollection() },
-                        forProfile: id
-                    )
-                }
-            }
-            if !snapshot.progressWasCaptured
-                || !snapshot.ratingsWereCaptured
-                || !snapshot.collectionsWereCaptured
-                || !snapshot.catalogsWereCaptured
-                || !snapshot.mangaCollectionsWereCaptured
-                || !snapshot.mangaReadingProgressWasCaptured
-                || !snapshot.mangaCatalogsWereCaptured
-                || !snapshot.customCatalogsWereCaptured {
-                Logger.shared.log(
-                    "BackupManager: profile \(id) restored without unreadable domains (progress=\(snapshot.progressWasCaptured) ratings=\(snapshot.ratingsWereCaptured) collections=\(snapshot.collectionsWereCaptured) catalogs=\(snapshot.catalogsWereCaptured) readerLibrary=\(snapshot.mangaCollectionsWereCaptured) readerProgress=\(snapshot.mangaReadingProgressWasCaptured) readerCatalogs=\(snapshot.mangaCatalogsWereCaptured) readerCustomCatalogs=\(snapshot.customCatalogsWereCaptured)); the destination keeps its own copy",
-                    type: "Info"
-                )
-            }
-            if !preservingCanonicalMediaState,
-               snapshot.catalogsWereCaptured {
-                CatalogManager.shared.replaceCatalogsForMediaState(snapshot.catalogs, forProfile: id)
-            }
-            if snapshot.trackerStateWasCaptured,
-               (!isUnrosteredCanonicalProfile
-                || snapshot.trackerCredentialsAndRosterWereCaptured) {
-                var trackerStateWasRestored = false
-                performOnMainThread {
-                    trackerStateWasRestored = TrackerManager.shared.applyRestoredTrackerState(
-                        snapshot.trackerState,
-                        forProfile: id,
-                        credentialsAndRosterAreAuthoritative:
-                            snapshot.trackerCredentialsAndRosterWereCaptured,
-                        permitsUnrosteredProfile: isUnrosteredCanonicalProfile
-                    )
-                }
-                if snapshot.trackerCredentialsAndRosterWereCaptured,
-                   !trackerStateWasRestored {
-                    privateConfigurationWasRestored = false
-                } else if snapshot.trackerCredentialsAndRosterWereCaptured,
-                          trackerStateWasRestored {
-                    authoritativeTrackerProfileIDs.insert(id)
-                }
-            }
-
-            let store = ProfileSettingsStore.shared.store(for: id)
-
-            if isUnrosteredCanonicalProfile {
-                if snapshot.readerPrivateCloudConfigurationData != nil {
-                    privateConfigurationWasRestored = restoreProfileReaderConfiguration(
-                        snapshot,
-                        into: store,
-                        profileID: id,
-                        permitsUnrosteredProfile: true
-                    ) && privateConfigurationWasRestored
-                }
-                continue
-            }
-
-            if snapshot.searchHistory.wasCaptured || !snapshot.searchHistory.queries.isEmpty,
-               let searchHistoryData = try? JSONEncoder().encode(snapshot.searchHistory.queries) {
-                store.set(searchHistoryData, forKey: "searchHistory")
-            }
-            let preservesNuvioStateForThisDestination = preservingDeviceLocalNuvioCloudState
-                && existingProfileIDs.contains(id)
-                && (!ProfileSettingsStore.sharesServices
-                    || id == ProfileManager.defaultProfileID)
-            let readerConfigurationWasRestored = restoreProfileSources(
-                snapshot,
-                into: store,
-                profileID: id,
-                preservingDeviceLocalNuvioCloudState: preservesNuvioStateForThisDestination
-            )
-            if snapshot.readerPrivateCloudConfigurationData != nil,
-               !readerConfigurationWasRestored {
-                privateConfigurationWasRestored = false
-            }
-
-            var appliedSettingCount = 0
-            for (key, data) in snapshot.settings where Self.carriesProfileScopedSetting(key) {
-                if preservingCanonicalMediaState,
-                   MediaStateSettingRegistry.scope(for: key) != nil {
-                    continue
-                }
-                guard appliedSettingCount < Self.maximumProfileSettingKeys else { break }
-                guard let value = Self.validatedBackupSettingValue(
-                    from: data,
-                    forKey: key
-                ) else { continue }
-                store.set(value, forKey: key)
-                appliedSettingCount += 1
-            }
-#if !os(tvOS)
-            performOnMainThread {
-                if snapshot.mangaCollectionsWereCaptured {
-                    MangaLibraryManager.shared.applyRestoredCollections(
-                        snapshot.mangaCollections.map {
-                            MangaLibraryCollection(
-                                id: $0.id,
-                                name: $0.name,
-                                items: $0.items,
-                                description: $0.description
-                            )
-                        },
-                        forProfile: id
-                    )
-                }
-                if snapshot.mangaReadingProgressWasCaptured {
-                    MangaReadingProgressManager.shared.applyRestoredProgress(
-                        snapshot.mangaReadingProgress.reduce(into: [Int: MangaProgress]()) { result, entry in
-                            guard let key = Int(entry.key) else { return }
-                            result[key] = entry.value
-                        },
-                        forProfile: id
-                    )
-                }
-                if snapshot.mangaCatalogsWereCaptured {
-                    MangaCatalogManager.shared.applyRestoredCatalogs(snapshot.mangaCatalogs, forProfile: id)
-                }
-                if snapshot.customCatalogsWereCaptured {
-                    KanzenCustomCatalogManager.shared.applyRestoredCatalogs(
-                        snapshot.customCatalogs,
-                        forProfile: id
-                    )
-                }
-            }
-#endif
-        }
-        Logger.shared.log(
-            "BackupManager: restored \(admittedSnapshots.filter { acceptedProfileIDs.contains($0.id) }.count) of \(snapshots.count) profiles from the backup",
-            type: "Info"
-        )
-        return PrivateConfigurationRestoreResult(
-            wasRestored: privateConfigurationWasRestored,
-            authoritativeTrackerProfileIDs: authoritativeTrackerProfileIDs
-        )
-    }
-}
+            let decodedOrder = try container.decodeIfPresent(Int.self, forKey: .order) ?? 0Û8é¼­zÊ&ŠÛ^u[œÚ[ÛœÎˆYØXŞH™XY\ˆ[\Ü˜\K\XÚØYÙHÛX[\Ú[™]H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆCBˆYˆ™[[İ™YÛİ[ˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™XY\ˆ^[œÚ[ÛœÎˆ™[[İ™Y
+™[[İ™YÛİ[
+H™\šYšYYYØXŞHXÚØYÙKØØXÚHØØ][ÛŠÊH‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆCBŸCBˆÙ[™YƒBƒBœİXİ^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[ˆÛÙX›K\]X]X›HÃBˆİ]XÈ]X^[][QÛXZ[”™XÛÜ™Ûİ[HLÌÌBƒBˆ]Xœ˜\R][\Îˆ[Bˆ][İšYT›ÙÜ™\ÜÎˆ[Bˆ]\\ÛÙT›ÙÜ™\ÜÎˆ[Bˆ]X[™ØSXœ˜\R][\Îˆ[Bˆ]X[™ØT™XY[™Ô›ÙÜ™\ÜÎˆ[Bˆ]\Ù\”˜][™ÜÎˆ[Bˆ]Ù\šXÙ\Îˆ[Bˆ]İ™[Z[ĞYÛœÎˆ[Bˆ]ÚŞTİ™X[TÛİ\˜Ù\Îˆ[Bˆ]Ø[™[“[Ù[\Îˆ[Bˆ]ZYÚİTÛİ\˜Ù\Îˆ[Bˆ]ÛÛ[YÙ\İˆİš[™ÏÃBˆ]ÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]Nˆİš[™ÏÃBƒBˆ[š]
+Û˜\Úİˆ˜XÚİ\]K[˜ÛÙY]Nˆ]JHÃBˆXœ˜\R][\ÈHÙ[‹˜›İ[™Yİ[JÛ˜\Úİ˜ÛÛXİ[ÛœË›X\È	š][\Ë˜Ûİ[JCBˆ[İšYT›ÙÜ™\ÜÈHÙ[‹˜›İ[™YÛİ[
+Û˜\Úİœ›ÙÜ™\ÜÑ]K›[İšYT›ÙÜ™\ÜË˜Ûİ[
+CBˆ\\ÛÙT›ÙÜ™\ÜÈHÙ[‹˜›İ[™YÛİ[
+Û˜\Úİœ›ÙÜ™\ÜÑ]K™\\ÛÙT›ÙÜ™\ÜË˜Ûİ[
+CBˆX[™ØSXœ˜\R][\ÈHÙ[‹˜›İ[™Yİ[JÛ˜\Úİ›X[™ØPÛÛXİ[ÛœË›X\È	š][\Ë˜Ûİ[JCBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÈHÙ[‹˜›İ[™YÛİ[
+Û˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜË˜Ûİ[
+CBˆ\Ù\”˜][™ÜÈHÙ[‹˜›İ[™YÛİ[
+Û˜\Úİ\Ù\”˜][™ÜË˜Ûİ[
+CBˆÙ\šXÙ\ÈHÙ[‹˜›İ[™YÛİ[
+Û˜\ÚİœÙ\šXÙ\Ë˜Ûİ[
+CBˆİ™[Z[ĞYÛœÈHÙ[‹˜›İ[™YÛİ[
+Û˜\Úİœİ™[Z[ĞYÛœÏË˜Ûİ[ÏÈ
+CBˆÚŞTİ™X[TÛİ\˜Ù\ÈHÙ[‹˜›İ[™Yİ[JÃBˆÛ˜\ÚİœÚŞTİ™X[OËœ™\ÜÚ]ÜšY\Ë˜Ûİ[ÏÈBˆÛ˜\ÚİœÚŞTİ™X[OËœYÚ[œË˜Ûİ[ÏÈBˆJCBˆØ[™[“[Ù[\ÈHÙ[‹˜›İ[™YÛİ[
+Û˜\ÚİšØ[™[“[Ù[\Ë˜Ûİ[
+CBˆËÈÙY\H[˜ÛÙYšY[˜[YH›ÜˆÛİY\ØÚ[XHÛÛ\]Xš[]HÚ[HÛİ[[™ÈCBˆËÈ™\XÙ[Y[™XY\ˆ^[œÚ[ÛœÈÛXZ[ˆ
+[˜ÛY[™È[œ™\ÛÛ™YYØXŞH™XÛÛ›™Xİ›İÜÊKƒBˆZYÚİTÛİ\˜Ù\ÈHÙ[‹˜›İ[™YÛİ[
+BˆÛ˜\Úİœ™XY\‘^[œÚ[ÛœÔİ]OËœÛİ\˜ÙPÛİ[›ÜÛÛ\]Xš[]CBˆÏÈÛ˜\Úİ˜ZYÚİTİ]OËš[œİ[YÛİ\˜Ù\Ë˜Ûİ[BˆÏÈBˆ
+CBˆ]YÙ\İÈHÙ[‹œİX›PÛÛ[YÙ\İÊ›Üˆ[˜ÛÙY]JCBˆÛÛ[YÙ\İHYÙ\İË™[BˆÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]HHYÙ\İË™^ÛY[™ĞÛİYÚ]YYXTİ]CBˆCBƒBˆ˜\ˆYX[š[™Ù[™XÛÜ™Ûİ[ˆ[ÃBˆÙ[‹œØY™Tİ[JÛİ[ÊCBˆCBƒBˆ[˜È\Ôİ\ÜXÚ[İ\Ô™YXİ[ÛŠœ›ÛH™]š[İ\ÎˆÙ[ŠHOˆ›ÛÛÃBˆš\
+™]š[İ\Ë˜Ûİ[ËÛİ[ÊK˜ÛÛZ[œÈÈÛÛİ[™]ĞÛİ[[ƒBˆİX\™™]ĞÛİ[ÛÛİ[[ÙHÈ™]\›ˆ˜[ÙHCBˆYˆ™]ĞÛİ[OHÈ™]\›ˆYHCBˆ]™[[İ™YHÛÛİ[H™]ĞÛİ[Bˆ]XZ›Üš]U™\ÚÛHÛÛİ[Èˆ
+ÈÛÛİ[	HƒBˆ™]\›ˆ™[[İ™YHÈ	‰ˆ™[[İ™YHXZ›Üš]U™\ÚÛBˆCBˆCBƒBˆ[˜È\ÓYX[š[™Ù[S[Ü™Q]J[ˆİ\ˆÙ[ŠHOˆ›ÛÛÃBˆİ\‹š\Ôİ\ÜXÚ[İ\Ô™YXİ[ÛŠœ›ÛNˆÙ[ŠCBˆCBƒBˆ[˜È\Ğ[S[Ü™Q]J[ˆİ\ˆÙ[ŠHOˆ›ÛÛÃBˆš\
+Ûİ[Ëİ\‹˜Ûİ[ÊK˜ÛÛZ[œÈÈİ\œ™[Ûİ[İ\Ûİ[[ƒBˆİ\œ™[Ûİ[ˆİ\Ûİ[BˆCBˆCBƒBˆ[˜È\ÑY™™\™[ÛÛ[
+[ˆİ\ˆÙ[ŠHOˆ›ÛÛÃBˆYˆ]ÛÛ[YÙ\İ]İ\‘YÙ\İHİ\‹˜ÛÛ[YÙ\İÃBˆ™]\›ˆÛÛ[YÙ\İOHİ\‘YÙ\İBˆCBˆ™]\›ˆÛİ[ÈOHİ\‹˜Ûİ[ÃBˆCBƒBˆ[˜È^ÛY[™ĞÛİYÚ]YYXTİ]J
+HOˆÙ[ˆÃBˆÙ[ŠBˆXœ˜\R][\ÎˆBˆ[İšYT›ÙÜ™\ÜÎˆBˆ\\ÛÙT›ÙÜ™\ÜÎˆBˆX[™ØSXœ˜\R][\ÎˆX[™ØSXœ˜\R][\ËBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÎˆX[™ØT™XY[™Ô›ÙÜ™\ÜËBˆ\Ù\”˜][™ÜÎˆBˆÙ\šXÙ\ÎˆÙ\šXÙ\ËBˆİ™[Z[ĞYÛœÎˆİ™[Z[ĞYÛœËBˆÚŞTİ™X[TÛİ\˜Ù\ÎˆÚŞTİ™X[TÛİ\˜Ù\ËBˆØ[™[“[Ù[\ÎˆØ[™[“[Ù[\ËBˆZYÚİTÛİ\˜Ù\ÎˆZYÚİTÛİ\˜Ù\ËBˆÛÛ[YÙ\İˆÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]KBˆÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]NˆÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]CBˆ
+CBˆCBƒBˆ[š]
+BˆXœ˜\R][\Îˆ[Bˆ[İšYT›ÙÜ™\ÜÎˆ[Bˆ\\ÛÙT›ÙÜ™\ÜÎˆ[BˆX[™ØSXœ˜\R][\Îˆ[BˆX[™ØT™XY[™Ô›ÙÜ™\ÜÎˆ[Bˆ\Ù\”˜][™ÜÎˆ[BˆÙ\šXÙ\Îˆ[Bˆİ™[Z[ĞYÛœÎˆ[BˆÚŞTİ™X[TÛİ\˜Ù\Îˆ[BˆØ[™[“[Ù[\Îˆ[BˆZYÚİTÛİ\˜Ù\Îˆ[BˆÛÛ[YÙ\İˆİš[™ÏËBˆÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]Nˆİš[™ÏÃBˆ
+HÃBˆÙ[‹›Xœ˜\R][\ÈHÙ[‹˜›İ[™YÛİ[
+Xœ˜\R][\ÊCBˆÙ[‹›[İšYT›ÙÜ™\ÜÈHÙ[‹˜›İ[™YÛİ[
+[İšYT›ÙÜ™\ÜÊCBˆÙ[‹™\\ÛÙT›ÙÜ™\ÜÈHÙ[‹˜›İ[™YÛİ[
+\\ÛÙT›ÙÜ™\ÜÊCBˆÙ[‹›X[™ØSXœ˜\R][\ÈHÙ[‹˜›İ[™YÛİ[
+X[™ØSXœ˜\R][\ÊCBˆÙ[‹›X[™ØT™XY[™Ô›ÙÜ™\ÜÈHÙ[‹˜›İ[™YÛİ[
+X[™ØT™XY[™Ô›ÙÜ™\ÜÊCBˆÙ[‹\Ù\”˜][™ÜÈHÙ[‹˜›İ[™YÛİ[
+\Ù\”˜][™ÜÊCBˆÙ[‹œÙ\šXÙ\ÈHÙ[‹˜›İ[™YÛİ[
+Ù\šXÙ\ÊCBˆÙ[‹œİ™[Z[ĞYÛœÈHÙ[‹˜›İ[™YÛİ[
+İ™[Z[ĞYÛœÊCBˆÙ[‹œÚŞTİ™X[TÛİ\˜Ù\ÈHÙ[‹˜›İ[™YÛİ[
+ÚŞTİ™X[TÛİ\˜Ù\ÊCBˆÙ[‹šØ[™[“[Ù[\ÈHÙ[‹˜›İ[™YÛİ[
+Ø[™[“[Ù[\ÊCBˆÙ[‹˜ZYÚİTÛİ\˜Ù\ÈHÙ[‹˜›İ[™YÛİ[
+ZYÚİTÛİ\˜Ù\ÊCBˆÙ[‹˜ÛÛ[YÙ\İHÛÛ[YÙ\İBˆÙ[‹˜ÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]HHÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]CBˆCBƒBˆš]˜]H[[HÛÙ[™ÒÙ^\Îˆİš[™ËÛÙ[™ÒÙ^HÃBˆØ\ÙHXœ˜\R][\Ë[İšYT›ÙÜ™\ÜË\\ÛÙT›ÙÜ™\ÜËX[™ØSXœ˜\R][\ÃBˆØ\ÙHX[™ØT™XY[™Ô›ÙÜ™\ÜË\Ù\”˜][™ÜËÙ\šXÙ\Ëİ™[Z[ĞYÛœÃBˆØ\ÙHÚŞTİ™X[TÛİ\˜Ù\ËØ[™[“[Ù[\ËZYÚİTÛİ\˜Ù\ËÛÛ[YÙ\İBˆØ\ÙHÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]CBˆCBƒBˆ[š]
+œ›ÛHXÛÙ\ˆXÛÙ\ŠH›İÜÈÃBˆ]ÛÛZ[™\ˆHHXÛÙ\‹˜ÛÛZ[™\ŠÙ^YYNˆÛÙ[™ÒÙ^\ËœÙ[ŠCBˆXœ˜\R][\ÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ›Xœ˜\R][\ÊCBˆ[İšYT›ÙÜ™\ÜÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ›[İšYT›ÙÜ™\ÜÊCBˆ\\ÛÙT›ÙÜ™\ÜÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ™\\ÛÙT›ÙÜ™\ÜÊCBˆX[™ØSXœ˜\R][\ÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ›X[™ØSXœ˜\R][\ÊCBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ›X[™ØT™XY[™Ô›ÙÜ™\ÜÊCBˆ\Ù\”˜][™ÜÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ\Ù\”˜][™ÜÊCBˆÙ\šXÙ\ÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^NˆœÙ\šXÙ\ÊCBˆİ™[Z[ĞYÛœÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆœİ™[Z[ĞYÛœÊCBˆÚŞTİ™X[TÛİ\˜Ù\ÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^NˆœÚŞTİ™X[TÛİ\˜Ù\ÊCBˆØ[™[“[Ù[\ÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^NˆšØ[™[“[Ù[\ÊCBˆZYÚİTÛİ\˜Ù\ÈHHÙ[‹™XÛÙPÛİ[
+œ›ÛNˆÛÛZ[™\‹›Ü’Ù^Nˆ˜ZYÚİTÛİ\˜Ù\ÊCBˆÛÛ[YÙ\İHHÛÛZ[™\‹™XÛÙRY”™\Ù[
+İš[™ËœÙ[‹›Ü’Ù^Nˆ˜ÛÛ[YÙ\İ
+CBˆÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]HHHÛÛZ[™\‹™XÛÙRY”™\Ù[
+Bˆİš[™ËœÙ[‹Bˆ›Ü’Ù^Nˆ˜ÛÛ[YÙ\İ^ÛY[™ĞÛİYÚ]YYXTİ]CBˆ
+CBˆCBƒBˆš]˜]H˜\ˆÛİ[ÎˆÒ[HÃBˆÃBˆXœ˜\R][\ËBˆ[İšYT›ÙÜ™\ÜËBˆ\\ÛÙT›ÙÜ™\ÜËBˆX[™ØSXœ˜\R][\ËBˆX[™ØT™XY[™Ô›ÙÜ™\ÜËBˆ\Ù\”˜][™ÜËBˆÙ\šXÙ\ËBˆİ™[Z[ĞYÛœËBˆÚŞTİ™X[TÛİ\˜Ù\ËBˆØ[™[“[Ù[\ËBˆZYÚİTÛİ\˜Ù\ÃBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈXÛÙPÛİ[
+Bˆœ›ÛHÛÛZ[™\ˆÙ^YYXÛÙ[™ĞÛÛZ[™\ÛÙ[™ÒÙ^\Ï‹Bˆ›Ü’Ù^HÙ^NˆÛÙ[™ÒÙ^\ÃBˆ
+H›İÜÈOˆ[ÃBˆ]˜[YHHHÛÛZ[™\‹™XÛÙRY”™\Ù[
+[œÙ[‹›Ü’Ù^NˆÙ^JHÏÈBˆİX\™
+‹‹›X^[][QÛXZ[”™XÛÜ™Ûİ[
+K˜ÛÛZ[œÊ˜[YJH[ÙHÃBˆ›İÈXÛÙ[™Ñ\œ›Ü‹™]PÛÜœ\Y\œ›ÜŠBˆ›Ü’Ù^NˆÙ^KBˆ[ˆÛÛZ[™\‹BˆXYÑ\ØÜš\[Ûˆ”Û˜\Úİ›Ûİš[Ûİ[\È™YØ]]™HÜˆ^ÙYYÈ]È›İ[™ˆƒBˆ
+CBˆCBˆ™]\›ˆ˜[YCBˆCBƒBˆš]˜]Hİ]XÈ[˜È›İ[™YÛİ[
+È˜[YNˆ[
+HOˆ[ÃBˆZ[ŠX^
+˜[YJKX^[][QÛXZ[”™XÛÜ™Ûİ[
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È›İ[™Yİ[JÈ˜[Y\ÎˆÒ[JHOˆ[ÃBˆZ[ŠØY™Tİ[J˜[Y\ÊKX^[][QÛXZ[”™XÛÜ™Ûİ[
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØY™Tİ[JÈ˜[Y\ÎˆÒ[JHOˆ[ÃBˆ˜[Y\Ëœ™YXÙJ[Îˆ
+HÈİ[˜[YH[ƒBˆ]›Û›™YØ]]™HHX^
+˜[YJCBˆ]
+İ[Kİ™\™›İÊHHİ[˜Y[™Ô™\Ü[™Óİ™\™›İÊ›Û›™YØ]]™JCBˆİ[Hİ™\™›İÈÈ[›X^ˆİ[CBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈİX›PÛÛ[YÙ\İÊBˆ›Üˆ]Nˆ]CBˆ
+HOˆ
+[ˆİš[™ÏË^ÛY[™ĞÛİYÚ]YYXTİ]Nˆİš[™ÏÊHÃBˆÚYˆØ[’[\Ü
+Ü\ÒÚ]
+CBˆİX\™˜\ˆØš™XİHOÈ”ÓÓ”Ù\šX[^˜][Û‹šœÛÛ“Øš™Xİ
+Ú]ˆ]JH\ÏÈÔİš[™Îˆ[WH[ÙHÃBˆ™]\›ˆ
+š[š[
+CBˆCBƒBˆØš™Xİœ™[[İ™U˜[YJ›Ü’Ù^Nˆ˜Ü™X]Y]HŠCBˆØš™Xİœ™[[İ™U˜[YJ›Ü’Ù^Nˆ™\œÚ[ÛˆŠCBˆÃBˆ™Ú]X”™[X\ÙU\]P]˜Z[X›H‹Bˆ™Ú]X”™[X\ÙS]\İ™\œÚ[Ûˆ‹Bˆ™Ú]X”™[X\ÙUT“‹Bˆ™Ú]X”™[X\ÙTÚİĞ[\[™[™È‹Bˆ™Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[Ûˆ‹Bˆ›ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÈ‹Bˆ›ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÈƒBˆK™›Ü‘XXÚÈØš™Xİœ™[[İ™U˜[YJ›Ü’Ù^Nˆ	
+HCBˆYˆ˜\ˆÚŞTİ™X[HHØš™XİÈœÚŞTİ™X[H—H\ÏÈÔİš[™Îˆ[WHÃBˆÚŞTİ™X[Kœ™[[İ™U˜[YJ›Ü’Ù^Nˆ˜Ü™X]Y]ŠCBˆØš™XİÈœÚŞTİ™X[H—HHÚŞTİ™X[CBˆCBˆØš™XİHØÜX•˜[œÚY[ÛİYY]Y]JØš™Xİ
+H\ÏÈÔİš[™Îˆ[WHÏÈØš™XİBˆİX\™]›Ü›X[^™Y]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™XİˆØš™XİÜ[ÛœÎˆËœÛÜYÙ^\×JH[ÙHÃBˆ™]\›ˆ
+š[š[
+CBˆCBˆ][HÒLM‹š\Ú
+]Nˆ›Ü›X[^™Y]JCBˆ›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HCBˆš›Ú[™Y
+
+CBˆÚYˆP•QÃBˆYˆ›ØÙ\ÜÒ[™›Ëœ›ØÙ\ÜÒ[™›Ë™[š\›Û›Y[È‘PÓTÑWÑP•Q×ÑQÑTÕÑST—HOHŒH‹Bˆ]Øİ[Y[ÈHš[SX[˜YÙ\‹™Y˜][\›Ê›Üˆ™Øİ[Y[\™XİÜK[ˆ\Ù\‘ÛXZ[“X\ÚÊK™š\œİÃBˆ]İ[\H[
+]J
+K[YR[\˜[Ú[˜ÙLNMÌ
+ˆL
+CBˆOÈ›Ü›X[^™Y]KÜš]JBˆÎˆØİ[Y[Ë˜\[™[™Ô]ÛÛ\Û™[
+™YÙ\İY[\W
+İ[\
+KW
+İš[™Ê[œ™Yš^
+
+JJKšœÛÛˆŠCBˆ
+CBˆCBˆÙ[™YƒBˆ˜\ˆ^ÛY[™ÓYYXTİ]HHØš™XİBˆÃBˆ˜ÛÛXİ[ÛœÈ‹Bˆœ›ÙÜ™\ÜÑ]H‹Bˆ\Ù\”˜][™ÜÈ‹Bˆ\Ù\”˜][™Ó›İ\È‹Bˆ˜Ø][ÙÜÈ‹Bˆ›YYXTİ]TÙ][™ÜÈƒBˆK™›Ü‘XXÚÈ^ÛY[™ÓYYXTİ]Kœ™[[İ™U˜[YJ›Ü’Ù^Nˆ	
+HCBˆYˆ]›Ùš[\ÈH^ÛY[™ÓYYXTİ]VÈœ›Ùš[\È—H\ÏÈÖÔİš[™Îˆ[WWHÃBˆ]Ø[›ÛšXØ[›Ùš[RÙ^\ÎˆÙ]İš[™ÏˆHÃBƒBˆ›˜[YH‹˜]˜]\”Ş[X›Û‹˜]˜]\ÛÛÜ’^‹˜]˜]\”İÑ]H‹Bˆš\ÒÚYÔ›Ùš[H‹˜Ü™X]Y]‹œ[’\Ú‹œ[Ú[™ÙY]‹BˆšÚYÑ›YĞÚ[™ÙY]‹BƒBˆ˜ÛÛXİ[ÛœÈ‹œ›ÙÜ™\ÜÑ]H‹˜Ø][ÙÜÈ‹\Ù\”˜][™ÜÈ‹Bˆ\Ù\”˜][™Ó›İ\È‹œ›ÙÜ™\ÜÕØ\ĞØ\\™Y‹Bˆœ˜][™ÜÕÙ\™PØ\\™Y‹˜ÛÛXİ[ÛœÕÙ\™PØ\\™Y‹Bˆ˜Ø][ÙÜÕÙ\™PØ\\™YƒBˆCBˆ^ÛY[™ÓYYXTİ]VÈœ›Ùš[\È—HH›Ùš[\Ë›X\È›Ùš[H[ƒBˆ˜\ˆÛİ\˜ÙP[™™XY\“Û›HH›Ùš[K™š[\ˆÃBˆXØ[›ÛšXØ[›Ùš[RÙ^\Ë˜ÛÛZ[œÊ	šÙ^JCBˆCBˆYˆ˜\ˆÙ][™ÜÈHÛİ\˜ÙP[™™XY\“Û›VÈœÙ][™ÜÈ—H\ÏÈÔİš[™Îˆ[WHÃBˆ›ÜˆÙ^H[ˆ\œ˜^JÙ][™ÜËšÙ^\ÊCBˆÚ\™HYYXTİ]TÙ][™Ô™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHš[ÃBˆÙ][™ÜËœ™[[İ™U˜[YJ›Ü’Ù^NˆÙ^JCBˆCBˆÛİ\˜ÙP[™™XY\“Û›VÈœÙ][™ÜÈ—HHÙ][™ÜÃBˆCBˆ™]\›ˆÛİ\˜ÙP[™™XY\“Û›CBˆCBˆCBˆİX\™]YYXR[™\[™[]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JBˆÚ]”ÓÓ“Øš™Xİˆ^ÛY[™ÓYYXTİ]KBˆÜ[ÛœÎˆËœÛÜYÙ^\×CBˆ
+H[ÙHÃBˆ™]\›ˆ
+[š[
+CBˆCBˆ]^ÛY[™ÈHÒLM‹š\Ú
+]NˆYYXR[™\[™[]JCBˆ›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HCBˆš›Ú[™Y
+
+CBˆ™]\›ˆ
+[^ÛY[™ÊCBˆÙ[ÙCBˆ™]\›ˆ
+š[š[
+CBˆÙ[™YƒBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØÜX•˜[œÚY[ÛİYY]Y]JÈ˜[YNˆ[JHOˆ[HÃBˆ]˜[œÚY[Ù^\ÎˆÙ]İš[™ÏˆHÃBˆ˜Ü™X]Y]‹›\İ™Yœ™\Ú‹›\İ™Yœ™\ÚY]‹›\İ\œ›Üˆ‹›\İ\]Y‹Bˆš[œİ[Y]‹\]Y]‹œ[›™Y]‹™]˜[X]Y]‹Bˆ›\İ]]Õ\]H‹™]XİY]‹›\İÛİ\˜ÙT™Yœ™\Ú‹œÛİ\˜ÙT™Yœ™\Ú\œ›ÜˆƒBˆCBˆ][X™YY”ÓÓ›Ø’Ù^\ÎˆÙ]İš[™ÏˆHÈ›Y]Y]R”ÓÓˆ—CBˆ][›Ü™\™Yİš[™ÔÙ]Ù^\ÎˆÙ]İš[™ÏˆHÃBˆœ[[YPØ\Xš[]Y\È‹œÙXÜ™]™Y™\™[˜ÙRÙ^\È‹™XÛ\™YÛXZ[œÈ‹\Ù\\›İ™YÛXZ[œÈƒBˆCBˆYˆ]Xİ[Û˜\HH˜[YH\ÏÈÔİš[™Îˆ[WHÃBˆ™]\›ˆXİ[Û˜\Kœ™YXÙJ[ÎˆÔİš[™Îˆ[WJ
+JHÈ™\İ[[H[ƒBˆİX\™]˜[œÚY[Ù^\Ë˜ÛÛZ[œÊ[KšÙ^JH[ÙHÈ™]\›ˆCBˆYˆ[X™YY”ÓÓ›Ø’Ù^\Ë˜ÛÛZ[œÊ[KšÙ^JKBˆ]›Ü›X[^™YH›Ü›X[^™Y[X™YY”ÓÓ›Ø‘›Ü‘YÙ\İ
+[K˜[YJHÃBˆ™\İ[Ù[KšÙ^WHH›Ü›X[^™YBˆ™]\›ƒBˆCBˆYˆ[›Ü™\™Yİš[™ÔÙ]Ù^\Ë˜ÛÛZ[œÊ[KšÙ^JKBˆ]İš[™ÜÈH[K˜[YH\ÏÈÔİš[™×HÃBˆ™\İ[Ù[KšÙ^WHHİš[™ÜËœÛÜY
+
+CBˆ™]\›ƒBˆCBˆ™\İ[Ù[KšÙ^WHHØÜX•˜[œÚY[ÛİYY]Y]J[K˜[YJCBˆCBˆCBˆYˆ]\œ˜^HH˜[YH\ÏÈĞ[WHÃBˆ™]\›ˆ\œ˜^K›X\
+ØÜX•˜[œÚY[ÛİYY]Y]JCBˆCBˆ™]\›ˆ˜[YCBˆCBƒBˆš]˜]Hİ]XÈ[˜È›Ü›X[^™Y[X™YY”ÓÓ›Ø‘›Ü‘YÙ\İ
+È˜[YNˆ[JHOˆİš[™ÏÈÃBˆİX\™]˜\ÙMH˜[YH\ÏÈİš[™ËBˆ]]HH]J˜\ÙM[˜ÛÙYˆ˜\ÙM
+KBˆ]XÛÙYHOÈ”ÓÓ”Ù\šX[^˜][Û‹šœÛÛ“Øš™Xİ
+Ú]ˆ]JH[ÙHÃBˆ™]\›ˆš[BˆCBˆ]ØÜX˜™YHØÜX•˜[œÚY[ÛİYY]Y]JXÛÙY
+CBˆİX\™”ÓÓ”Ù\šX[^˜][Û‹š\Õ˜[Y”ÓÓ“Øš™Xİ
+ØÜX˜™Y
+KBˆ]Ø[›ÛšXØ[HOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JBˆÚ]”ÓÓ“Øš™XİˆØÜX˜™YBˆÜ[ÛœÎˆËœÛÜYÙ^\×CBˆ
+H[ÙHÃBˆ™]\›ˆš[BˆCBˆ™]\›ˆİš[™ÊXÛÙ[™ÎˆØ[›ÛšXØ[\ÎˆUœÙ[ŠCBˆCBŸCBƒBœİXİ^\š[Y[[ÛİYÛ˜\Úİˆ[˜ÚXÚÙYÙ[™X›HÃBˆ]]Nˆ]CBˆ]›Ûİš[ˆ^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[BŸCBƒBœİXİ^\š[Y[[ÛİY™\İÜ™T™\İ[ˆÙ[™X›HÃBˆ]]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆÙ]URQƒBŸCBƒBˆÚYˆ[ÜÊ“ÔÊCB™[[H™XY\‘^[œÚ[Û”™\İÜ™T™[ØYÛXŞHÃBˆİ]XÈ[˜È™\İÜ™Tİ\š]™\ÊÈ\œ›Üˆ\œ›ÜŠHOˆ›ÛÛÃBˆİX\™]™XY\‘\œ›ÜˆH\œ›Üˆ\ÏÈ™XY\‘^[œÚ[Û‘\œ›Üˆ[ÙHÈ™]\›ˆ˜[ÙHCBˆ™]\›ˆ™XY\‘\œ›ÜˆOHœ[[YU[˜]˜Z[X›CBˆCBŸCBˆÙ[™YƒBƒB™[[H^\š[Y[[ÛİY˜XÚİ\ÛXZ[”™XY[™\ÜÈÃBˆØ\ÙH™XYCBˆØ\ÙHØY[™ÃBˆØ\ÙH[˜]˜Z[X›CBŸCBƒB™[[HX[X[˜XÚİ\™\İÜ™TØÛÜNˆÙ[™X›HÃBˆØ\ÙH\Ñ]šXÙSÛ›CBˆØ\ÙH™\XÙQ]™\]Ú\™CBƒBˆ˜\ˆÙY\ĞÚ[™Ù\ÓÛ•\Ñ]šXÙNˆ›ÛÛÃBˆİÚ]ÚÙ[ˆÃBˆØ\ÙH\Ñ]šXÙSÛ›NƒBˆ™]\›ˆYCBˆØ\ÙHœ™\XÙQ]™\]Ú\™NƒBˆ™]\›ˆ˜[ÙCBˆCBˆCBŸCBƒB™[[H˜XÚİ\™XY\•\ØØ[S[Ù[™\İÜ™TÛXŞHÃBˆİ]XÈ[˜È[Ù[˜[YUĞ\JBˆ[˜ÛÛZ[™Îˆİš[™ËBˆ™\Ù\™\Ñ]šXÙSØØ[Ù[Xİ[Ûˆ›ÛÛBˆ
+HOˆİš[™ÏÈÃBˆ™\Ù\™\Ñ]šXÙSØØ[Ù[Xİ[ÛˆÈš[ˆ[˜ÛÛZ[™ÃBˆCBŸCBƒB™[[H^\š[Y[[ÛİYÛ˜\Úİ™\\˜][Ûˆ[˜ÚXÚÙYÙ[™X›HÃBˆØ\ÙH™XYJ^\š[Y[[ÛİYÛ˜\Úİ
+CBˆØ\ÙHY™\œ™YÚ[TÛİ\˜Ù\ÓØYBˆØ\ÙHÛİ\˜Ù\Õ[˜]˜Z[X›CBˆØ\ÙH˜Z[YBƒBˆ˜\ˆÛ˜\Úİˆ^\š[Y[[ÛİYÛ˜\ÚİÈÃBˆİX\™Ø\ÙH]œ™XYJÛ˜\Úİ
+HHÙ[ˆ[ÙHÈ™]\›ˆš[CBˆ™]\›ˆÛ˜\ÚİBˆCBŸCBƒBœİXİ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^ˆÛÙX›K\]X]X›KÙ[™X›HÃBˆ]›İšY\”˜]Õ˜[YNˆİš[™ÃBˆ]Ù[™\˜][Ûˆ[Bˆ][™[™ÒY[]Nˆİš[™ÏÃBˆ]İ]ÛÚ[™Ô›Ùš[RQÎˆÕURQCBˆ]™\İÜ™Y˜XÚÙ\”›Ùš[RQÎˆÕURQCBƒBˆ[š]
+Bˆ›İšY\”˜]Õ˜[YNˆİš[™ËBˆÙ[™\˜][Ûˆ[Bˆ[™[™ÒY[]Nˆİš[™ÏËBˆİ]ÛÚ[™Ô›Ùš[RQÎˆÕURQKBˆ™\İÜ™Y˜XÚÙ\”›Ùš[RQÎˆÕURQHH×CBˆ
+HÃBˆÙ[‹œ›İšY\”˜]Õ˜[YHH›İšY\”˜]Õ˜[YCBˆÙ[‹™Ù[™\˜][ÛˆHÙ[™\˜][ÛƒBˆÙ[‹œ[™[™ÒY[]HH[™[™ÒY[]CBˆÙ[‹›İ]ÛÚ[™Ô›Ùš[RQÈHİ]ÛÚ[™Ô›Ùš[RQÃBˆÙ[‹œ™\İÜ™Y˜XÚÙ\”›Ùš[RQÈH™\İÜ™Y˜XÚÙ\”›Ùš[RQÃBˆCBƒBˆš]˜]H[[HÛÙ[™ÒÙ^\Îˆİš[™ËÛÙ[™ÒÙ^HÃBˆØ\ÙH›İšY\”˜]Õ˜[YCBˆØ\ÙHÙ[™\˜][ÛƒBˆØ\ÙH[™[™ÒY[]CBˆØ\ÙHİ]ÛÚ[™Ô›Ùš[RQÃBˆØ\ÙH™\İÜ™Y˜XÚÙ\”›Ùš[RQÃBˆCBƒBˆ[š]
+œ›ÛHXÛÙ\ˆXÛÙ\ŠH›İÜÈÃBˆ]ÛÛZ[™\ˆHHXÛÙ\‹˜ÛÛZ[™\ŠÙ^YYNˆÛÙ[™ÒÙ^\ËœÙ[ŠCBˆ›İšY\”˜]Õ˜[YHHHÛÛZ[™\‹™XÛÙJİš[™ËœÙ[‹›Ü’Ù^Nˆœ›İšY\”˜]Õ˜[YJCBˆÙ[™\˜][ÛˆHHÛÛZ[™\‹™XÛÙJ[œÙ[‹›Ü’Ù^Nˆ™Ù[™\˜][ÛŠCBˆ[™[™ÒY[]HHHÛÛZ[™\‹™XÛÙRY”™\Ù[
+İš[™ËœÙ[‹›Ü’Ù^Nˆœ[™[™ÒY[]JCBˆİ]ÛÚ[™Ô›Ùš[RQÈHHÛÛZ[™\‹™XÛÙJÕURQKœÙ[‹›Ü’Ù^Nˆ›İ]ÛÚ[™Ô›Ùš[RQÊCBˆ™\İÜ™Y˜XÚÙ\”›Ùš[RQÈHHÛÛZ[™\‹™XÛÙRY”™\Ù[
+BˆÕURQKœÙ[‹Bˆ›Ü’Ù^Nˆœ™\İÜ™Y˜XÚÙ\”›Ùš[RQÃBˆ
+HÏÈ×CBˆCBŸCBƒB™[[H^\š[Y[[ÛİY˜XÚÙ\XØÛİ[›İ[™\TÛXŞHÃBˆİ]XÈ[˜È›Ùš[RQÕĞÛX\ŠBˆİ]ÛÚ[™Ô›Ùš[RQÎˆÙ]URQ‹Bˆ™\İÜ™Y˜XÚÙ\”›Ùš[RQÎˆÙ]URQƒBˆ
+HOˆÙ]URQˆÃBˆİ]ÛÚ[™Ô›Ùš[RQËœİX˜Xİ[™Ê™\İÜ™Y˜XÚÙ\”›Ùš[RQÊCBˆCBŸCBƒB™[[H^\š[Y[[ÛİY™\İÜ™T™XÛİ™\RÚ[™ˆİš[™ËÛÙX›KÙ[™X›HÃBˆØ\ÙHÜ™[˜\PÛİY™\İÜ™CBˆØ\ÙHXØÛİ[›İ[™\CBŸCBƒB™[[H^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û”İ]Nˆİš[™ËÛÙX›KÙ[™X›HÃBƒBˆØ\ÙH™\\š[™ÃBˆØ\ÙH™\\™YBƒBˆØ\ÙHÙY\ØØ[Üš]P]]Üš^™YBƒBˆØ\ÙHÛÛ[Z]]]Üš^™YBƒBˆØ\ÙHÛÛ\]YBŸCBƒBœİXİ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İˆÛÙX›KÙ[™X›HÃBˆ]ØÚ[XU™\œÚ[Ûˆ[Bˆ]˜[œØXİ[Û’QˆURQBˆ˜\ˆİ]Nˆ^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û”İ]CBˆ]™XÛİ™\RÚ[™ˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\RÚ[™Bˆ˜\ˆXØÛİ[›İ[™\PÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^ÃBˆ]\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\Nˆ›ÛÛBˆ]\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Ûˆ›ÛÛBˆ]ÙY\ØØ[˜[œÜÜ^[ØY]PÛİ[ˆ[ÃBˆ]ÙY\ØØ[˜[œÜÜ^[ØYÒLMˆİš[™ÏÃBƒBˆ[š]
+Bˆ˜[œØXİ[Û’QˆURQBˆİ]Nˆ^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û”İ]KBˆXØÛİ[›İ[™\PÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^ËBˆ\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\Nˆ›ÛÛBˆ\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Ûˆ›ÛÛBˆÙY\ØØ[˜[œÜÜ^[ØYˆ]OÈHš[Bˆ
+HÃBˆØÚ[XU™\œÚ[ÛˆHƒBˆÙ[‹˜[œØXİ[Û’QH˜[œØXİ[Û’QBˆÙ[‹œİ]HHİ]CBˆ™XÛİ™\RÚ[™HXØÛİ[›İ[™\PÛÛ^OHš[BˆÈ›Ü™[˜\PÛİY™\İÜ™CBˆˆ˜XØÛİ[›İ[™\CBˆÙ[‹˜XØÛİ[›İ[™\PÛÛ^HXØÛİ[›İ[™\PÛÛ^BˆÙ[‹š\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\HH\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\CBˆÙ[‹š\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[ÛˆH\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[ÛƒBˆÙY\ØØ[˜[œÜÜ^[ØY]PÛİ[HÙY\ØØ[˜[œÜÜ^[ØYË˜Ûİ[BˆÚYˆØ[’[\Ü
+Ü\ÒÚ]
+CBˆÙY\ØØ[˜[œÜÜ^[ØYÒLMˆHÙY\ØØ[˜[œÜÜ^[ØY›X\ÃBˆÒLM‹š\Ú
+]Nˆ	
+CBˆ›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HCBˆš›Ú[™Y
+
+CBˆCBˆÙ[ÙCBˆÙY\ØØ[˜[œÜÜ^[ØYÒLMˆHÙY\ØØ[˜[œÜÜ^[ØYOHš[Èš[ˆˆƒBˆÙ[™YƒBˆCBƒBˆ˜\ˆ\ÒÙY\ØØ[˜[œÜÜ^[ØYˆ›ÛÛÃBˆÙY\ØØ[˜[œÜÜ^[ØY]PÛİ[OHš[Bˆ	‰ˆÙY\ØØ[˜[œÜÜ^[ØYÒLMˆOHš[BˆCBƒBˆ[˜È˜[Y]\ÒÙY\ØØ[˜[œÜÜ^[ØY
+È^[ØYˆ]JHOˆ›ÛÛÃBˆİX\™]^XİY]PÛİ[HÙY\ØØ[˜[œÜÜ^[ØY]PÛİ[Bˆ]^XİYYÙ\İHÙY\ØØ[˜[œÜÜ^[ØYÒLM‹Bˆ^[ØY˜Ûİ[OH^XİY]PÛİ[[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆÚYˆØ[’[\Ü
+Ü\ÒÚ]
+CBˆ]YÙ\İHÒLM‹š\Ú
+]Nˆ^[ØY
+CBˆ›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HCBˆš›Ú[™Y
+
+CBˆ™]\›ˆYÙ\İOH^XİYYÙ\İBˆÙ[ÙCBˆ™]\›ˆ^XİYYÙ\İš\Ñ[\CBˆÙ[™YƒBˆCBŸCBƒBœİXİ^\š[Y[[ÛİYÙY\ØØ[™\^Nˆ[˜ÚXÚÙYÙ[™X›HÃBˆ]˜[œØXİ[Û’QˆURQBˆ]ÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ]Û˜\Úİˆ^\š[Y[[ÛİYÛ˜\ÚİBŸCBƒB™[[H^\š[Y[[ÛİY˜XÚÙ\ÛX[\]]Üš]NˆÙ[™X›HÃBˆØ\ÙH›Û™CBˆØ\ÙH]]Üš^™Y
+^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+CBˆØ\ÙH›ØÚÙYBŸCBƒBœİXİ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SİÛ™\œÚ\ˆÛÙX›KÙ[™X›HÃBˆ]ØÚ[XU™\œÚ[Ûˆ[Bˆ]˜[œØXİ[Û’QˆURQBˆ]™XÛİ™\RÚ[™ˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\RÚ[™Bˆ]^[ØY]PÛİ[ˆ[Bˆ]^[ØYÒLMˆİš[™ÃBƒBˆ[š]
+Bˆ˜[œØXİ[Û’QˆURQBˆ™XÛİ™\RÚ[™ˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\RÚ[™Bˆ^[ØYˆ]CBˆ
+HÃBˆØÚ[XU™\œÚ[ÛˆHCBˆÙ[‹˜[œØXİ[Û’QH˜[œØXİ[Û’QBˆÙ[‹œ™XÛİ™\RÚ[™H™XÛİ™\RÚ[™Bˆ^[ØY]PÛİ[H^[ØY˜Ûİ[BˆÚYˆØ[’[\Ü
+Ü\ÒÚ]
+CBˆ^[ØYÒLMˆHÒLM‹š\Ú
+]Nˆ^[ØY
+CBˆ›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HCBˆš›Ú[™Y
+
+CBˆÙ[ÙCBˆ^[ØYÒLMˆHˆƒBˆÙ[™YƒBˆCBƒBˆ[˜È˜[Y]\ÊBˆ˜[œØXİ[Û’Q^XİY˜[œØXİ[Û’QˆURQBˆ™XÛİ™\RÚ[™^XİY™XÛİ™\RÚ[™ˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\RÚ[™Bˆ^[ØYˆ]CBˆ
+HOˆ›ÛÛÃBˆİX\™ØÚ[XU™\œÚ[ÛˆOHKBˆ˜[œØXİ[Û’QOH^XİY˜[œØXİ[Û’QBˆ™XÛİ™\RÚ[™OH^XİY™XÛİ™\RÚ[™Bˆ^[ØY]PÛİ[OH^[ØY˜Ûİ[[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆÚYˆØ[’[\Ü
+Ü\ÒÚ]
+CBˆ]YÙ\İHÒLM‹š\Ú
+]Nˆ^[ØY
+CBˆ›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HCBˆš›Ú[™Y
+
+CBˆ™]\›ˆ^[ØYÒLMˆOHYÙ\İBˆÙ[ÙCBˆ™]\›ˆ^[ØYÒLM‹š\Ñ[\CBˆÙ[™YƒBˆCBŸCBƒB™^[œÚ[Ûˆ›İYšXØ][Û‹“˜[YHÃBˆİ]XÈ]^\š[Y[[ÛİY™\İÜ™T™XÛİ™\QYÛÛ\]HH›İYšXØ][Û‹“˜[YJBˆ™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\QYÛÛ\]HƒBˆ
+CBŸCBƒBœİXİ˜XÚİ\ÛÛXİ[ÛˆÛÙX›HÃBˆš]˜]Hİ]XÈ]X^[][R][PÛİ[HLÌBƒBˆ]YˆURQBˆ]˜[YNˆİš[™ÃBˆ]][\ÎˆÓXœ˜\R][WCBˆ]\ØÜš\[Ûˆİš[™ÏÃBƒBˆš]˜]H[[HÛÙ[™ÒÙ^\Îˆİš[™ËÛÙ[™ÒÙ^HÃBˆØ\ÙHY˜[YK][\Ë\ØÜš\[ÛƒBˆCBƒBˆËËÈÛÛœİ[YHXXÚ\œ˜^H[[Y[›İYÚ]ÈİÛˆXÛÙ\ˆÛÈÛ™HÜİ[HYYXCBˆËËÈY[]HØ[››İXZÙHH™\Ù[ÛÛXİ[Ûˆ
+Üˆ™ZYÚ›Üš[™È˜[Y][\ÊCBˆËËÈ\Ø\X\‹ˆHÛÛXİ[Û‰ÜÈ][\ØÙ^H™[XZ[œÈ™\]Z\™YˆZ\ÜÚ[™ËÛ[BˆËËÈİ[˜Z[ÈHÛÛXİ[ÛˆXÛÙH[™\™Y›Ü™HØ[››İXÜ]Z\™H[\CBˆËËÈ™\XÙ[Y[]]Üš]KƒBˆš]˜]HİXİÜÜŞSXœ˜\R][\ÎˆXÛÙX›HÃBˆ]˜[Y\ÎˆÓXœ˜\R][WCBƒBˆ[š]
+œ›ÛHXÛÙ\ˆXÛÙ\ŠH›İÜÈÃBˆ˜\ˆÛÛZ[™\ˆHHXÛÙ\‹[šÙ^YYÛÛZ[™\Š
+CBˆYˆ]Ûİ[HÛÛZ[™\‹˜Ûİ[BˆÛİ[ˆ˜XÚİ\ÛÛXİ[Û‹›X^[][R][PÛİ[ÃBˆ›İÈXÛÙ[™Ñ\œ›Ü‹™]PÛÜœ\Y\œ›ÜŠBˆ[ˆÛÛZ[™\‹BˆXYÑ\ØÜš\[Ûˆ˜XÚİ\ÛÛXİ[ÛˆÛÛZ[œÈÛÈX[H][\ËˆƒBˆ
+CBˆCBˆ˜\ˆXÛÙYˆÓXœ˜\R][WHH×CBˆXÛÙYœ™\Ù\™PØ\XÚ]JBˆZ[ŠÛÛZ[™\‹˜Ûİ[ÏÈ˜XÚİ\ÛÛXİ[Û‹›X^[][R][PÛİ[
+CBˆ
+CBˆ˜\ˆÛÛœİ[YYÛİ[HBˆÚ[HXÛÛZ[™\‹š\Ğ][™ÃBˆİX\™ÛÛœİ[YYÛİ[˜XÚİ\ÛÛXİ[Û‹›X^[][R][PÛİ[[ÙHÃBˆ›İÈXÛÙ[™Ñ\œ›Ü‹™]PÛÜœ\Y\œ›ÜŠBˆ[ˆÛÛZ[™\‹BˆXYÑ\ØÜš\[Ûˆ˜XÚİ\ÛÛXİ[ÛˆÛÛZ[œÈÛÈX[H][\ËˆƒBˆ
+CBˆCBˆ]Ø[™Y]HHHÛÛZ[™\‹™XÛÙJÜÜŞSXœ˜\R][KœÙ[ŠCBˆÛÛœİ[YYÛİ[
+ÏHCBˆYˆ]˜[YHHØ[™Y]K˜[YHÃBˆXÛÙY˜\[™
+˜[YJCBˆCBˆCBˆ˜[Y\ÈHXÛÙYBˆCBˆCBƒBˆš]˜]HİXİÜÜŞSXœ˜\R][NˆXÛÙX›HÃBˆ]˜[YNˆXœ˜\R][OÃBƒBˆ[š]
+œ›ÛHXÛÙ\ˆXÛÙ\ŠH›İÜÈÃBˆ˜[YHHOÈXœ˜\R][Jœ›ÛNˆXÛÙ\ŠCBˆCBˆCBƒBˆ[š]
+YˆURQ˜[YNˆİš[™Ë][\ÎˆÓXœ˜\R][WK\ØÜš\[Ûˆİš[™ÏÊHÃBˆÙ[‹šYHYBˆÙ[‹›˜[YHH˜[YCBˆÙ[‹š][\ÈHÙ[‹œØ[š]^™Y][\Ê][\ÊCBˆÙ[‹™\ØÜš\[ÛˆH\ØÜš\[ÛƒBˆCBƒBˆ[š]
+œ›ÛHÛÛXİ[ÛˆXœ˜\PÛÛXİ[ÛŠHÃBˆÙ[‹š[š]
+BˆYˆÛÛXİ[Û‹šYBˆ˜[YNˆÛÛXİ[Û‹›˜[YKBˆ][\ÎˆÛÛXİ[Û‹š][\ËBˆ\ØÜš\[ÛˆÛÛXİ[Û‹™\ØÜš\[ÛƒBˆ
+CBˆCBƒBˆ[š]
+œ›ÛHXÛÙ\ˆXÛÙ\ŠH›İÜÈÃBˆ]ÛÛZ[™\ˆHHXÛÙ\‹˜ÛÛZ[™\ŠÙ^YYNˆÛÙ[™ÒÙ^\ËœÙ[ŠCBˆÙ[‹š[š]
+BˆYˆHÛÛZ[™\‹™XÛÙJURQœÙ[‹›Ü’Ù^NˆšY
+KBˆ˜[YNˆHÛÛZ[™\‹™XÛÙJİš[™ËœÙ[‹›Ü’Ù^Nˆ›˜[YJKBˆ][\ÎˆHÛÛZ[™\‹™XÛÙJÜÜŞSXœ˜\R][\ËœÙ[‹›Ü’Ù^Nˆš][\ÊK˜[Y\ËBˆ\ØÜš\[ÛˆHÛÛZ[™\‹™XÛÙRY”™\Ù[
+İš[™ËœÙ[‹›Ü’Ù^Nˆ™\ØÜš\[ÛŠCBˆ
+CBˆCBƒBˆ[˜È[˜ÛÙJÈ[˜ÛÙ\ˆ[˜ÛÙ\ŠH›İÜÈÃBˆ˜\ˆÛÛZ[™\ˆH[˜ÛÙ\‹˜ÛÛZ[™\ŠÙ^YYNˆÛÙ[™ÒÙ^\ËœÙ[ŠCBˆHÛÛZ[™\‹™[˜ÛÙJY›Ü’Ù^NˆšY
+CBˆHÛÛZ[™\‹™[˜ÛÙJ˜[YK›Ü’Ù^Nˆ›˜[YJCBˆHÛÛZ[™\‹™[˜ÛÙJÙ[‹œØ[š]^™Y][\Ê][\ÊK›Ü’Ù^Nˆš][\ÊCBˆHÛÛZ[™\‹™[˜ÛÙRY”™\Ù[
+\ØÜš\[Û‹›Ü’Ù^Nˆ™\ØÜš\[ÛŠCBˆCBƒBˆ˜\ˆØ[š]^™Y›Ü”\œÚ\İ[˜ÙNˆ˜XÚİ\ÛÛXİ[ÛˆÃBˆ˜XÚİ\ÛÛXİ[ÛŠYˆY˜[YNˆ˜[YK][\Îˆ][\Ë\ØÜš\[Ûˆ\ØÜš\[ÛŠCBˆCBƒBˆ[˜ÈÓXœ˜\PÛÛXİ[ÛŠ
+HOˆXœ˜\PÛÛXİ[ÛˆÃBˆXœ˜\PÛÛXİ[ÛŠBˆYˆYBˆ˜[YNˆ˜[YKBˆ][\ÎˆÙ[‹œØ[š]^™Y][\Ê][\ÊKBˆ\ØÜš\[Ûˆ\ØÜš\[ÛƒBˆ
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ[š]^™Y][\ÊÈ][\ÎˆÓXœ˜\R][WJHOˆÓXœ˜\R][WHÃBˆ\œ˜^J][\Ë˜ÛÛ\XİX\È][HOˆXœ˜\R][OÈ[ƒBˆİX\™]™\İ[H][KœÙX\˜Ú™\İ[œØ[š]^™Y›Ü”\œÚ\İ[˜ÙH[ÙHÈ™]\›ˆš[CBˆ™]\›ˆXœ˜\R][JÙX\˜Ú™\İ[ˆ™\İ[]PYYˆ][K™]PYY
+CBˆKœ™Yš^
+X^[][R][PÛİ[
+JCBˆCBŸCBƒB˜Û\ÜÈ˜XÚİ\X[˜YÙ\ˆÂˆİ]XÈ]Ú\™YH˜XÚİ\X[˜YÙ\Š
+CBƒBˆİ]XÈ[˜ÈÜ]™[ÛXZ[’\Ğ]]Üš]]]™JBˆ^[ØYØ\ÑXÛÙYˆ›ÛÛBˆ›Ùš[PØ\\™Q›YÎˆ›ÛÛÃBˆ
+HOˆ›ÛÛÃBˆ^[ØYØ\ÑXÛÙY	‰ˆ
+›Ùš[PØ\\™Q›YÈÏÈYJCBˆCBƒBˆš]˜]H]X[X[˜XÚİ\˜Z[\™SØÚÈH”ÓØÚÊ
+Bˆš]˜]H˜\ˆX[X[˜XÚİ\˜Z[\™T™X\ÛÛˆİš[™ÏÂˆš]˜]H]X[X[™\İÜ™T™\İ[ØÚÈH”ÓØÚÊ
+Bˆš]˜]H˜\ˆX[X[™\İÜ™Q˜Z[\™T™X\ÛÛˆİš[™ÏÂˆš]˜]H˜\ˆX[X[™\İÜ™R[\ÜY™XÛÜ™Ûİ[Hˆš]˜]H˜\ˆX[X[™\İÜ™T™\]Z\™\Ô™[][˜ÚH˜[ÙBƒBˆ˜\ˆ\İX[X[˜XÚİ\˜Z[\™T™X\ÛÛˆİš[™ÏÈÂˆX[X[˜XÚİ\˜Z[\™SØÚË›ØÚÊ
+CBˆY™\ˆÈX[X[˜XÚİ\˜Z[\™SØÚË[›ØÚÊ
+HCBˆ™]\›ˆX[X[˜XÚİ\˜Z[\™T™X\ÛÛƒBˆB‚ˆ˜\ˆ\İX[X[™\İÜ™Q˜Z[\™T™X\ÛÛˆİš[™ÏÈÂˆX[X[™\İÜ™T™\İ[ØÚË›ØÚÊ
+BˆY™\ˆÈX[X[™\İÜ™T™\İ[ØÚË[›ØÚÊ
+HBˆ™]\›ˆX[X[™\İÜ™Q˜Z[\™T™X\ÛÛ‚ˆB‚ˆ˜\ˆ\İX[X[™\İÜ™R[\ÜY™XÛÜ™Ûİ[ˆ[ÂˆX[X[™\İÜ™T™\İ[ØÚË›ØÚÊ
+BˆY™\ˆÈX[X[™\İÜ™T™\İ[ØÚË[›ØÚÊ
+HBˆ™]\›ˆX[X[™\İÜ™R[\ÜY™XÛÜ™Ûİ[ˆB‚ˆ˜\ˆ\İX[X[™\İÜ™T™\]Z\™\Ô™[][˜Úˆ›ÛÛÂˆX[X[™\İÜ™T™\İ[ØÚË›ØÚÊ
+BˆY™\ˆÈX[X[™\İÜ™T™\İ[ØÚË[›ØÚÊ
+HBˆ™]\›ˆX[X[™\İÜ™T™\]Z\™\Ô™[][˜ÚˆB‚ˆš]˜]H[˜È™XÛÜ™X[X[™\İÜ™T™\İ[
+ˆ˜Z[\™T™X\ÛÛˆİš[™ÏËˆ[\ÜY™XÛÜ™Ûİ[ˆ[Hˆ™\]Z\™\Ô™[][˜Úˆ›ÛÛH˜[ÙBˆ
+HÂˆX[X[™\İÜ™T™\İ[ØÚË›ØÚÊ
+BˆY™\ˆÈX[X[™\İÜ™T™\İ[ØÚË[›ØÚÊ
+HBˆX[X[™\İÜ™Q˜Z[\™T™X\ÛÛˆH˜Z[\™T™X\ÛÛ‚ˆX[X[™\İÜ™R[\ÜY™XÛÜ™Ûİ[H[\ÜY™XÛÜ™Ûİ[ˆX[X[™\İÜ™T™\]Z\™\Ô™[][˜ÚH™\]Z\™\Ô™[][˜ÚˆBƒBˆš]˜]H[˜È™XÛÜ™X[X[˜XÚİ\˜Z[\™T™X\ÛÛŠÈ™X\ÛÛˆİš[™ÏÊHÃBˆX[X[˜XÚİ\˜Z[\™SØÚË›ØÚÊ
+CBˆY™\ˆÈX[X[˜XÚİ\˜Z[\™SØÚË[›ØÚÊ
+HCBˆX[X[˜XÚİ\˜Z[\™T™X\ÛÛˆH™X\ÛÛƒBˆCBƒBˆš]˜]H[[H˜XÚİ\Ü™X][Û‘\œ›ÜˆØØ[^™Y\œ›ÜˆÃBˆØ\ÙHÚ\™YÛİ\˜ÙT^[ØYYÙ]^ÙYYY
+[
+CBˆØ\ÙHXİ]™T›Ùš[PÚ[™ÙYBˆØ\ÙH›Ùš[T›Üİ\•[œ™XYX›CBˆØ\ÙHXİ]™T›Ùš[PÛÛ\]Xš[]QÛXZ[œÕ[œ™XYX›JÔİš[™×JCBˆØ\ÙHš]˜]PÛİYÛÛ™šYİ\˜][Û’[˜ÛÛ\]CBƒBˆ˜\ˆ\œ›Ü‘\ØÜš\[Ûˆİš[™ÏÈÃBˆİÚ]ÚÙ[ˆÃBˆØ\ÙHœÚ\™YÛİ\˜ÙT^[ØYYÙ]^ÙYYY
+]Ûİ[
+NƒBˆ™]\›ˆ˜XÚİ\™YYÈ
+Ûİ[
+HY][Û˜[[˜Xİ]™K\›Ùš[HÛİ\˜ÙH^[ØY
+ÊKˆ™[[İ™H[\ÙYXÚØYÙ\ÈÜˆ™YXÙHZ\ˆÚ^™H™Y›Ü™H^Ü[™ËˆƒBˆØ\ÙH˜Xİ]™T›Ùš[PÚ[™ÙYƒBˆ™]\›ˆ•HXİ]™H›Ùš[HÜˆ›Ùš[H›Üİ\ˆÚ[™ÙYÚ[HH˜XÚİ\Ø\È™Z[™ÈØ\\™YˆH^Ü[™ÈYØZ[‹ˆƒBˆØ\ÙHœ›Ùš[T›Üİ\•[œ™XYX›NƒBˆ™]\›ˆ•HØ]™Y›Ùš[H›Üİ\ˆÛİ[›İ™H™XYÛÈXÛ\ÙH™Y\ÙYÈ^Ü[ˆ]]Üš]]]™H˜[˜XÚÈ›Üİ\‹ˆ™\İÜ™HH˜[Y˜XÚİ\ÜˆY]H›Ùš[H›Üİ\‹[ˆHYØZ[‹ˆƒBˆØ\ÙH˜Xİ]™T›Ùš[PÛÛ\]Xš[]QÛXZ[œÕ[œ™XYX›J]ÛXZ[œÊNƒBˆ™]\›ˆ•HXİ]™H›Ùš[IÜÈ
+ÛXZ[œËš›Ú[™Y
+Ù\\˜]Üˆ‹ŠJH]HÛİ[›İ™H™XYˆXÛ\ÙH™Y\ÙYÈÜ™X]HH˜XÚİ\ÚÜÙHYØXŞHÛÛ\]Xš[]HÛÜHÛİ[\˜\ÙHX[H]HÚ[ˆ™\İÜ™YH[ˆÛ\ˆ™\œÚ[Û‹ˆƒBˆØ\ÙHœš]˜]PÛİYÛÛ™šYİ\˜][Û’[˜ÛÛ\]NƒBˆ™]\›ˆHš]˜]HÛİYÛÛ™šYİ\˜][ÛˆÛXZ[ˆÛİ[›İ™HØ\\™YÛÛ\][KÛÈXÛ\ÙHYH^\İ[™ÈÛİYÛ˜\Úİ[˜Ú[™ÙYˆƒBˆCBˆCBˆCBƒBˆš]˜]H[[H˜XÚİ\™\İÜ™Q\œ›ÜˆØØ[^™Y\œ›ÜˆÂˆØ\ÙHXİ]™T›Ùš[PÚ[™ÙYˆØ\ÙH[˜[YØİ[Y[ˆØ\ÙHZ\ÜÚ[™Ğ˜XÚİ\^[ØYˆØ\ÙH[œİ\ÜY™\œÚ[ÛŠİš[™ÊBƒBˆ˜\ˆ\œ›Ü‘\ØÜš\[Ûˆİš[™ÏÈÂˆİÚ]ÚÙ[ˆÂˆØ\ÙH˜Xİ]™T›Ùš[PÚ[™ÙY‚ˆ™]\›ˆ•HXİ]™H›Ùš[HÜˆ›Ùš[H›Üİ\ˆÚ[™ÙYÚ[HH™\İÜ™HØ\Èİ\[™ËˆH[\Ü[™ÈYØZ[‹ˆ‚ˆØ\ÙHš[˜[YØİ[Y[‚ˆ™]\›ˆ•\Èš[H\È›İH˜[YXÛ\ÙH˜XÚİ\”ÓÓˆØİ[Y[ˆ‚ˆØ\ÙH›Z\ÜÚ[™Ğ˜XÚİ\^[ØY‚ˆ™]\›ˆ•\È˜XÚİ\\È[˜ÛÛ\]Nˆ]Ù\È›İÛÛZ[ˆÙ][™ÜË›Ùš[\ËÛÛXİ[ÛœËÜˆØ]Ú\İÜKˆ‚ˆØ\ÙH[œİ\ÜY™\œÚ[ÛŠ]™\œÚ[ÛŠN‚ˆ™]\›ˆ•\È˜XÚİ\\Ù\È›Ü›X]™\œÚ[Ûˆ
+™\œÚ[ÛŠKÚXÚ\ÈXÛ\ÙH™\œÚ[ÛˆØ[››İ™XYˆ\]HXÛ\ÙH[™HYØZ[‹ˆ‚ˆBˆBˆB‚ˆš]˜]HİXİX[X[™\İÜ™T™Y›YÚÂˆ]Ø]Ú™XÛÜ™Ûİ[ˆ[ˆ]™Y™\œ™YXİ]™T›Ùš[RQˆURQÂˆBƒBˆš]˜]HİXİXİ]™T›Ùš[TØÛÜUÚÙ[ˆ\]X]X›HÃBˆ]›Ùš[RQˆURQBˆ]Ù\šXÙ\ÑÙ[™\˜][Ûˆ[Bˆ]›Üİ\‘Ù[™\˜][ÛˆR[BˆCBƒBˆš]˜]HİXİ˜XÚİ\\XØ][Û”™\İ[ÃBˆ]]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆÙ]URQƒBˆCBƒBˆš]˜]HİXİØÛÜY˜XÚİ\\XØ][Û”™\İ[ÃBˆ]ØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆ]]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆÙ]URQƒBˆCBƒBˆš]˜]HİXİš]˜]PÛÛ™šYİ\˜][Û”™\İÜ™T™\İ[ÃBˆ]Ø\Ô™\İÜ™Yˆ›ÛÛBˆ]]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆÙ]URQƒBˆCBƒBˆš]˜]HİXİÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛˆÃBˆ]™]š[İ\Õ˜[YNˆ›ÛÛBˆ]™\]Y\İY˜[YNˆ›ÛÛBˆ]Xİ]™T›Ùš[RQˆURQBˆ]\™Ù]\Ù\ÔÚ\™YY˜][Îˆ›ÛÛBˆ]\™Ù]İÜ™TÛ˜\ÚİˆÙ\šXÙTİÜ™TØÛÜK”İÜ™Qš[TÛ˜\ÚİÃBˆ]\™Ù]Ù][™ÜĞ™Y›Ü™U˜[œÚ][ÛˆÔİš[™Îˆ]WCBƒBˆ˜\ˆYİÚ]Úˆ›ÛÛÈ™]š[İ\Õ˜[YHOH™\]Y\İY˜[YHCBˆCBƒBˆš]˜]HİXİÚ\™TÙ\šXÙ\Ô™\İÜ™Tİ\ÃBˆ]˜[œØXİ[ÛˆÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛƒBˆ]ØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆCBƒBˆš]˜]HİXİ˜XÚİ\Ø\\™PÛÛ^ÃBˆ]ØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆ]›Ùš[\ÎˆÔ›Ùš[WCBˆCBƒBˆİ]XÈ]X^[][SX[X[˜XÚİ\š[P]\ÈHL
+ˆWÌ
+ˆWÌBƒBˆš]˜]Hİ]XÈ]X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÈHLÌÌBƒBˆš]˜]Hİ]XÈ]X^[][TÚ\™YÛİ\˜ÙT^[ØY]\ÈHÌˆ
+ˆWÌ
+ˆWÌBƒBˆš]˜]Hİ]XÈ]X^[][TÚŞTİ™X[TØÜš\]\ÈHL
+ˆWÌ
+ˆWÌBˆš]˜]Hİ]XÈ]X^[][TÚŞTİ™X[P\˜Ú]™P]\ÈHŒ
+ˆWÌ
+ˆWÌBƒBƒBˆš]˜]H]š[SX[˜YÙ\ˆHš[SX[˜YÙ\‹™Y˜][Bˆš]˜]H]]Q›Ü›X]\ˆHTÓÎŒQ]Q›Ü›X]\Š
+CBƒBˆš]˜]H˜\ˆÜ\]YTÚŞTİ™X[TİÜ˜YÙT›ÛİT“ˆT“ÈÃBˆİX\™]›ÛİHš[SX[˜YÙ\‹\›ÊBˆ›Üˆ˜\XØ][Û”İ\Ü\™XİÜKBˆ[ˆ\Ù\‘ÛXZ[“X\ÚÃBˆ
+K™š\œİ[ÙHÈ™]\›ˆš[CBˆ™]\›ˆ›ÛİBˆ˜\[™[™Ô]ÛÛ\Û™[
+‘XÛ\ÙH‹\Ñ\™XİÜNˆYJCBˆ˜\[™[™Ô]ÛÛ\Û™[
+”ÚŞTİ™X[H‹\Ñ\™XİÜNˆYJCBˆCBƒBˆš]˜]H˜\ˆX[X[Ü\]YTÚŞTİ™X[TÛ˜\ÚİT“ˆT“ÈÃBˆÜ\]YTÚŞTİ™X[TİÜ˜YÙT›ÛİT“Ë˜\[™[™Ô]ÛÛ\Û™[
+BˆÚŞTİ™X[SÜ\]YTİÜ˜YÙS^[İ]›X[X[˜XÚİ\š[[˜[YKBˆ\Ñ\™XİÜNˆ˜[ÙCBˆ
+CBˆCBƒBˆš]˜]H˜\ˆÛİYÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“ˆT“ÈÃBˆÜ\]YTÚŞTİ™X[TİÜ˜YÙT›ÛİT“Ë˜\[™[™Ô]ÛÛ\Û™[
+BˆÚŞTİ™X[SÜ\]YTİÜ˜YÙS^[İ]™^\š[Y[[ÛİY˜XÚİ\š[[˜[YKBˆ\Ñ\™XİÜNˆ˜[ÙCBˆ
+CBˆCBƒBˆš]˜]H˜\ˆYØXŞSÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“ˆT“ÈÃBˆÜ\]YTÚŞTİ™X[TİÜ˜YÙT›ÛİT“Ë˜\[™[™Ô]ÛÛ\Û™[
+BˆÚŞTİ™X[SÜ\]YTİÜ˜YÙS^[İ]›YØXŞTÚ\™Yš[[˜[YKBˆ\Ñ\™XİÜNˆ˜[ÙCBˆ
+CBˆCBƒBˆš]˜]H[˜ÈØYÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+™Y™\œš[™ÔØY™PÛİYˆ›ÛÛ
+HOˆÚŞTİ™X[P˜XÚİ\Û˜\ÚİÈÃBˆ]XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆXÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ]X[X[Ø[™Y]\ÈHÛX[X[Ü\]YTÚŞTİ™X[TÛ˜\ÚİT“YØXŞSÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“CBˆ˜ÛÛ\XİX\È	CBˆ›X\È
+	Ù[‹›X^[][SX[X[˜XÚİ\š[P]\Ë˜[ÙJHCBˆ]ÛİYØ[™Y]\ÈHØÛİYÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“CBˆ˜ÛÛ\XİX\È	CBˆ›X\È
+	Ù[‹›X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ËYJHCBˆ]Ø[™Y]\ÈH™Y™\œš[™ÔØY™PÛİYBˆÈÛİYØ[™Y]\È
+ÈX[X[Ø[™Y]\ÃBˆˆX[X[Ø[™Y]\È
+ÈÛİYØ[™Y]\ÃBˆ›Üˆ
+\›X^[][P]\Ë™\]Z\™\ÔØY™PÛİY›YÊH[ˆØ[™Y]\ÈÃBˆİX\™]˜[Y\ÈHOÈ\›œ™\Ûİ\˜ÙU˜[Y\Ê›Ü’Ù^\ÎˆËš\Ô™Yİ[\‘š[RÙ^K™š[TÚ^™RÙ^WJKBˆ˜[Y\Ëš\Ô™Yİ[\‘š[HOHYKBˆ
+˜[Y\Ë™š[TÚ^™HÏÈ
+HHX^[][P]\ËBˆ]]HHOÈ]JÛÛ[ÓÙˆ\›Ü[ÛœÎˆË›X\YY”ØY™WJKBˆ]K˜Ûİ[HX^[][P]\ËBˆ]Û˜\ÚİHOÈXÛÙ\‹™XÛÙJÚŞTİ™X[P˜XÚİ\Û˜\ÚİœÙ[‹œ›ÛNˆ]JKBˆ\™\]Z\™\ÔØY™PÛİY›YÈÛ˜\Úİš\ÔØY™PÛİYÛ˜\Úİ[ÙHÃBˆÛÛ[YCBˆCBˆ™]\›ˆÛ˜\ÚİBˆCBˆ™]\›ˆš[BˆCBƒBˆš]˜]H[˜È\œÚ\İÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+ÈÛ˜\ÚİˆÚŞTİ™X[P˜XÚİ\Û˜\Úİ
+H›İÜÈÃBˆ]Ø[›ÛšXØ[Û˜\ÚİˆÚŞTİ™X[P˜XÚİ\Û˜\ÚİBˆ]X^[][P]\Îˆ[Bˆ]\›ˆT“BˆYˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÃBˆİX\™]Ø[š]^™YH˜XÚİ\]KœÚŞTİ™X[TÛ˜\Úİ›Ü‘^\š[Y[[ÛİYŞ[˜ÊÛ˜\Úİ
+KBˆ]ÛİYT“HÛİYÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[T™XYÛÜœ\š[JCBˆCBˆØ[›ÛšXØ[Û˜\ÚİHØ[š]^™YBˆX^[][P]\ÈHÙ[‹›X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÃBˆ\›HÛİYT“BˆH[ÙHÃBˆİX\™]X[X[T“HX[X[Ü\]YTÚŞTİ™X[TÛ˜\ÚİT“[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[S›ÔİXÚš[JCBˆCBˆØ[›ÛšXØ[Û˜\ÚİHÛ˜\ÚİBˆX^[][P]\ÈHÙ[‹›X^[][SX[X[˜XÚİ\š[P]\ÃBˆ\›HX[X[T“BˆCBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœÛÜYÙ^\×CBˆ]]HHH[˜ÛÙ\‹™[˜ÛÙJØ[›ÛšXØ[Û˜\Úİ
+CBˆİX\™]K˜Ûİ[HX^[][P]\È[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[UÜš]Sİ]Ù”ÜXÙJCBˆCBˆHš[SX[˜YÙ\‹˜Ü™X]Q\™XİÜJBˆ]ˆ\›™[][™Ó\İ]ÛÛ\Û™[
+
+KBˆÚ][\›YYX]Q\™XİÜšY\ÎˆYKBˆ]šX]\ÎˆËœÜÚ^\›Z\ÜÚ[ÛœÎˆ”Ó[X™\Š˜[YNˆ[MŠÍÌ
+JWCBˆ
+CBˆH]KÜš]JÎˆ\›Ü[ÛœÎˆ˜]ÛZXÊCBˆ›Üˆš[[˜[YH[ˆÚŞTİ™X[SÜ\]YTİÜ˜YÙS^[İ]™š[[˜[Y\Ò[˜[Y]YY\•Üš]JBˆ\ÔØY™PÛİYÛ˜\ÚİˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİBˆ
+HÃBˆ]İ[UT“H\›™[][™Ó\İ]ÛÛ\Û™[
+
+K˜\[™[™Ô]ÛÛ\Û™[
+š[[˜[YJCBˆYˆš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆİ[UT“œ]
+HÃBˆHš[SX[˜YÙ\‹œ™[[İ™R][J]ˆİ[UT“
+CBˆCBˆCBˆCBƒBˆš]˜]H[˜ÈÛX\YÜYÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+\ÔØY™PÛİYÛ˜\Úİˆ›ÛÛ
+HÃBˆ]Ø[™Y]\ÎˆÕT“×CBˆYˆ\ÔØY™PÛİYÛ˜\ÚİÃBˆØ[™Y]\ÈHØÛİYÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“CBˆH[ÙHÃBˆØ[™Y]\ÈHÃBˆX[X[Ü\]YTÚŞTİ™X[TÛ˜\ÚİT“BˆYØXŞSÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“BˆÛİYÜ\]YTÚŞTİ™X[TÛ˜\ÚİT“BˆCBˆCBˆ›Üˆ\›[ˆØ[™Y]\Ë˜ÛÛ\XİX\
+È	JHÚ\™Hš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆ\›œ]
+HÃBˆÈÃBˆHš[SX[˜YÙ\‹œ™[[İ™R][J]ˆ\›
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘˜Z[YÈÛX\ˆYÜYÜ\]YHÚŞTİ™X[HÛ˜\Úİ\œ›Ü•\OW
+İš[™Ê™Y›Xİ[™Îˆ\JÙˆ\œ›ÜŠJJH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBˆCBˆCBƒBˆš]˜]H[˜È\™›Ü›SÛ“XZ[•™XY
+ÈÛÜšÎˆ
+
+HOˆ›ÚY
+HÃBˆYˆ™XYš\ÓXZ[•™XYÃBˆÛÜšÊ
+CBˆH[ÙHÃBˆ\Ü]Ú]Y]YK›XZ[‹œŞ[˜Ê^Xİ]NˆÛÜšÊCBˆCBˆCBƒBˆš]˜]H[˜ÈXİ]™T›Ùš[TØÛÜUÚÙ[Š
+HOˆXİ]™T›Ùš[TØÛÜUÚÙ[ˆÃBˆ˜\ˆÚÙ[ˆHXİ]™T›Ùš[TØÛÜUÚÙ[ŠBˆ›Ùš[RQˆ›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQBˆÙ\šXÙ\ÑÙ[™\˜][ÛˆLKBˆ›Üİ\‘Ù[™\˜][ÛˆBˆ
+CBˆ\™›Ü›SÛ“XZ[•™XYÃBˆÚÙ[ˆHXİ]™T›Ùš[TØÛÜUÚÙ[ŠBˆ›Ùš[RQˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆÙ\šXÙ\ÑÙ[™\˜][ÛˆÙ\šXÙTİÜ™TØÛÜK™Ù[™\˜][Û‹Bˆ›Üİ\‘Ù[™\˜][Ûˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛƒBˆ
+CBˆCBˆ™]\›ˆÚÙ[ƒBˆCBƒBˆš]˜]H[˜È˜XÚİ\Ø\\™PÛÛ^
+
+HOˆ˜XÚİ\Ø\\™PÛÛ^ÈÃBˆ˜\ˆÛÛ^ˆ˜XÚİ\Ø\\™PÛÛ^ÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]X[˜YÙ\ˆH›Ùš[SX[˜YÙ\‹œÚ\™YBˆİX\™]›Ùš[\ÈHX[˜YÙ\‹œ›Ùš[\Ñ›Ü“YYXTİ]TŞ[˜È[ÙHÈ™]\›ˆCBˆÛÛ^H˜XÚİ\Ø\\™PÛÛ^
+BˆØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ŠBˆ›Ùš[RQˆX[˜YÙ\‹˜Xİ]™T›Ùš[RQBˆÙ\šXÙ\ÑÙ[™\˜][ÛˆÙ\šXÙTİÜ™TØÛÜK™Ù[™\˜][Û‹Bˆ›Üİ\‘Ù[™\˜][ÛˆX[˜YÙ\‹œ›Üİ\‘Ù[™\˜][ÛƒBˆ
+KBˆ›Ùš[\Îˆ›Ùš[\ÃBˆ
+CBˆCBˆ™]\›ˆÛÛ^BˆCBƒBˆš]˜]H[˜ÈXİ]™T›Ùš[TØÛÜR\Ğİ\œ™[
+BˆÈÚÙ[ˆXİ]™T›Ùš[TØÛÜUÚÙ[‹Bˆ[˜ÛY[™Ô›Üİ\ˆ›ÛÛHYCBˆ
+HOˆ›ÛÛÃBˆ˜\ˆ\Ğİ\œ™[H˜[ÙCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ\Ğİ\œ™[H›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOHÚÙ[‹œ›Ùš[RQBˆ	‰ˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+ÚÙ[‹œÙ\šXÙ\ÑÙ[™\˜][ÛŠCBˆ	‰ˆ
+Z[˜ÛY[™Ô›Üİ\ƒBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOHÚÙ[‹œ›Üİ\‘Ù[™\˜][ÛŠCBˆCBˆ™]\›ˆ\Ğİ\œ™[BˆCBƒBˆš]˜]Hİ]XÈ[˜È\œÙU\Ù\”˜][™ÜÊÈ˜][™ÜÎˆÔİš[™Îˆ[WJHOˆÔİš[™ÎˆİX›WHÃBˆXİ[Û˜\J[š\]YRÙ^\ÕÚ]˜[Y\Îˆ˜][™ÜË˜ÛÛ\XİX\ÈÙ^K˜[YHOˆ
+İš[™ËİX›JOÈ[ƒBˆ][Y\šXÕ˜[YNˆİX›OÃBˆYˆ][X™\ˆH˜[YH\ÏÈ”Ó[X™\ˆÃBˆ[Y\šXÕ˜[YHH[X™\‹™İX›U˜[YCBˆH[ÙHYˆ]˜[YHH˜[YH\ÏÈİX›HÃBˆ[Y\šXÕ˜[YHH˜[YCBˆH[ÙHYˆ]˜[YHH˜[YH\ÏÈ[ÃBˆ[Y\šXÕ˜[YHHİX›J˜[YJCBˆH[ÙHÃBˆ[Y\šXÕ˜[YHHš[BˆCBƒBˆİX\™][Y\šXÕ˜[YH[ÙHÈ™]\›ˆš[CBˆ]š[š]U˜[YHH[Y\šXÕ˜[YKš\Ñš[š]HÈ[Y\šXÕ˜[YHˆCBˆ][”İ\˜[YHH
+š[š]U˜[YH
+ˆŠKœ›İ[™Y
+
+HÈƒBˆ™]\›ˆ
+Ù^KX^
+KZ[ŠL[”İ\˜[YJJJCBˆJCBˆCBƒBˆİ]XÈ[˜È˜XÚÙ\”İ]UÚ]İ]Ü™Y[X[ÊÈİ]Nˆ˜XÚÙ\”İ]JHOˆ˜XÚÙ\”İ]HÃBˆ˜\ˆØ[š]^™YHİ]CBˆØ[š]^™Y˜XØÛİ[ÈHİ]K˜XØÛİ[Ë›X\ÈXØÛİ[[ƒBˆ˜\ˆY]Y]SÛ›HHXØÛİ[BˆY]Y]SÛ›K˜XØÙ\ÜÕÚÙ[ˆHˆƒBˆY]Y]SÛ›Kœ™Yœ™\ÚÚÙ[ˆHš[BˆY]Y]SÛ›K™^\™\Ğ]Hš[Bˆ™]\›ˆY]Y]SÛ›CBˆCBˆ™]\›ˆØ[š]^™YBˆCBƒBˆš]˜]HİXİYØXŞPÛİYYYXTİ]P]]Üš]HÃBˆ]›Ùš[RQˆURQBˆ]Ù][™ÜÎˆYYXTİ]SYØXŞT™\İÜ™TÙ][™ÔÛ˜\ÚİBƒBˆ]ÛÛXİ[ÛœÎˆÓXœ˜\PÛÛXİ[Û—OÃBˆ]›ÙÜ™\ÜÎˆ›ÙÜ™\ÜÑ]OÃBˆ]˜][™ÜÎˆ
+˜[Y\ÎˆÔİš[™ÎˆİX›WK›İ\ÎˆÔİš[™Îˆİš[™×JOÃBˆ]Ø][ÙÜÎˆĞØ][Ù×OÃBˆCBƒBˆš]˜]H[˜ÈØ\\™SYØXŞPÛİYYYXTİ]P]]Üš]J
+HOˆYØXŞPÛİYYYXTİ]P]]Üš]HÃBˆ]Y˜][ÈH\Ù\‘Y˜][Ëœİ[™\™Bˆ]\œÚ\İ[ÛXZ[ˆÔİš[™Îˆ[WCBˆYˆ][™RY[YšY\ˆH[™K›XZ[‹˜[™RY[YšY\ˆÃBˆ\œÚ\İ[ÛXZ[ˆHY˜][Ëœ\œÚ\İ[ÛXZ[Š›Ü“˜[YNˆ[™RY[YšY\ŠHÏÈÎ—CBˆH[ÙHÃBƒBˆ\œÚ\İ[ÛXZ[ˆHY˜][Ë™Xİ[Û˜\T™\™\Ù[][ÛŠ
+CBˆCBƒBˆ˜\ˆÛÛXİ[ÛœÎˆÓXœ˜\PÛÛXİ[Û—OÃBˆ˜\ˆ›ÙÜ™\ÜÎˆ›ÙÜ™\ÜÑ]OÃBˆ˜\ˆ˜][™ÜÎˆ
+˜[Y\ÎˆÔİš[™ÎˆİX›WK›İ\ÎˆÔİš[™Îˆİš[™×JOÃBˆ˜\ˆØ][ÙÜÎˆĞØ][Ù×OÃBˆ\™›Ü›SÛ“XZ[•™XYÃBƒBˆ]›Ùš[SX[˜YÙ\ˆH›Ùš[SX[˜YÙ\‹œÚ\™YBˆİX\™›Ùš[SX[˜YÙ\‹œ›Üİ\”İÜ™R\Ô™XYX›H[ÙHÈ™]\›ˆCBˆ]İÛ™\ˆH›Ùš[SX[˜YÙ\‹˜Xİ]™T›Ùš[RQBˆÛÛXİ[ÛœÈHXœ˜\SX[˜YÙ\‹œÚ\™Y˜ÛÛXİ[ÛœÊ›Ü”›Ùš[NˆİÛ™\ŠCBˆ›ÙÜ™\ÜÈH›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Yœ›ÙÜ™\ÜÑ]J›Ü”›Ùš[NˆİÛ™\ŠCBˆYˆ]Z\ˆH\Ù\”˜][™ÓX[˜YÙ\‹œÚ\™Yœ˜][™ÜĞ[™›İ\Ê›Ü”›Ùš[NˆİÛ™\ŠHÃBˆ˜][™ÜÈH
+˜[Y\ÎˆZ\‹œ˜][™ÜË›İ\ÎˆZ\‹››İ\ÊCBˆCBˆØ][ÙÜÈHØ][ÙÓX[˜YÙ\‹œÚ\™Y˜Ø][ÙÜÑ›Ü˜XÚİ\
+›Ü”›Ùš[NˆİÛ™\ŠCBˆCBƒBˆ™]\›ˆYØXŞPÛİYYYXTİ]P]]Üš]JBˆ›Ùš[RQˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆÙ][™ÜÎˆYYXTİ]SYØXŞT™\İÜ™TÙ][™ÔÛ˜\Úİ
+\œÚ\İ[ÛXZ[ˆ\œÚ\İ[ÛXZ[ŠKBˆÛÛXİ[ÛœÎˆÛÛXİ[ÛœËBˆ›ÙÜ™\ÜÎˆ›ÙÜ™\ÜËBˆ˜][™ÜÎˆ˜][™ÜËBˆØ][ÙÜÎˆØ][ÙÜÃBˆ
+CBˆCBƒBˆš]˜]H[˜È™\İÜ™SYØXŞPÛİYYYXTİ]P]]Üš]JÈ]]Üš]NˆYØXŞPÛİYYYXTİ]P]]Üš]JHÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]Y˜][ÈH\Ù\‘Y˜][Ëœİ[™\™Bˆ]]Üš]KœÙ][™ÜËœ™\İÜ™JÎˆY˜][ÊCBƒBˆYˆ]ÛÛXİ[ÛœÈH]]Üš]K˜ÛÛXİ[ÛœÈÃBˆXœ˜\SX[˜YÙ\‹œÚ\™Yœ™\XÙPÛÛXİ[ÛœÑ›Ü“YYXTİ]JÛÛXİ[ÛœÊCBˆCBˆYˆ]›ÙÜ™\ÜÈH]]Üš]Kœ›ÙÜ™\ÜÈÃBˆ›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Yœ™\XÙT›ÙÜ™\ÜÑ]Q›Ü”™\İÜ™JBˆ›ÙÜ™\ÜËBˆ^XİY›Ùš[RQˆ]]Üš]Kœ›Ùš[RQBˆ
+CBˆCBˆYˆ]˜][™ÜÈH]]Üš]Kœ˜][™ÜÈÃBˆ\Ù\”˜][™ÓX[˜YÙ\‹œÚ\™Yœ™\İÜ™T˜][™ÜĞ[™›İ\ÊBˆ˜][™ÜÎˆ˜][™ÜË˜[Y\ËBˆ›İ\Îˆ˜][™ÜË››İ\ÃBˆ
+CBˆCBƒBˆYˆ]Ø][ÙÜÈH]]Üš]K˜Ø][ÙÜÈÃBˆ]Ø][ÙÓX[˜YÙ\ˆHØ][ÙÓX[˜YÙ\‹œÚ\™YBˆØ][ÙÓX[˜YÙ\‹œÙ]\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+BˆY˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™[˜X›YÙ^JCBˆ
+CBˆØ][ÙÓX[˜YÙ\‹˜Ø][ÙÜÈHØ][ÙÜÃBˆØ][ÙÓX[˜YÙ\‹œØ]™PØ][ÙÜÊ
+CBˆCBƒBˆÛYPØ][ÙÓ^[İ]İÜ™KœÚ\™Yœ™[ØYœ›ÛTİÜ˜YÙJ
+CBˆ\ÚÈÈXZ[XİÜˆ[ƒBˆXÛ\ÙU[YKœÚ\™Yœ™[ØYYYXP\X\˜[˜ÙQœ›ÛQY˜][Ê
+CBˆCBˆCBˆCBƒBˆ[˜ÈÜ™X]P˜XÚİ\
+
+HOˆT“ÈÃBˆ™XÛÜ™X[X[˜XÚİ\˜Z[\™T™X\ÛÛŠš[
+CBˆİX\™\ÔÚŞTİ™X[P˜XÚİ\ÛXZ[”™XYJ
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\Y™\œ™Y™XØ]\ÙHHÚŞTİ™X[HYÚ[ˆX[˜YÙ\ˆ\Èİ[ØY[™ÎÈ›È\X[˜XÚİ\Ø\ÈÜš][ˆ‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆ™XÛÜ™X[X[˜XÚİ\˜Z[\™T™X\ÛÛŠBˆ”Ûİ\˜Ù\È\™Hİ[ØY[™ËˆØZ]H[ÛY[[™HYØZ[‹ˆƒBˆ
+CBˆ™]\›ˆš[BˆCBˆÈÃBˆ]˜XÚİ\]HHHØ]\˜XÚİ\]J
+CBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœ™]Tš[YœÛÜYÙ^\×CBƒBˆ]œÛÛ‘]HHH[˜ÛÙ\‹™[˜ÛÙJ˜XÚİ\]JCBˆİX\™œÛÛ‘]K˜Ûİ[HÙ[‹›X^[][SX[X[˜XÚİ\š[P]\È[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\Ø\È›İÜš][ˆ™XØ]\ÙHH[˜ÛÙYØİ[Y[^ÙYYYHLPˆØY™]H[Z]‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ™XÛÜ™X[X[˜XÚİ\˜Z[\™T™X\ÛÛŠBˆ•H˜XÚİ\^ÙYYYHLPˆØY™]H[Z]ˆ™[[İ™H\™ÙHÛİ\˜ÙHXÚØYÙ\È[™HYØZ[‹ˆƒBˆ
+CBˆ™]\›ˆš[BˆCBƒBˆ][Y\İ[\H]J
+CBˆ]›Ü›X]\ˆH]Q›Ü›X]\Š
+CBˆ›Ü›X]\‹™]Q›Ü›X]H^^^KSSKYÒ[[K\ÜÈƒBˆ]š[[˜[YHH‘XÛ\ÙWĞ˜XÚİ\×
+›Ü›X]\‹œİš[™Êœ›ÛNˆ[Y\İ[\
+JKšœÛÛˆƒBƒBˆ]Øİ[Y[Ñ\ˆHš[SX[˜YÙ\‹\›Ê›Üˆ™Øİ[Y[\™XİÜK[ˆ\Ù\‘ÛXZ[“X\ÚÊVÌCBˆ]˜XÚİ\T“HØİ[Y[Ñ\‹˜\[™[™Ô]ÛÛ\Û™[
+š[[˜[YJCBƒBˆHœÛÛ‘]KÜš]JÎˆ˜XÚİ\T“Ü[ÛœÎˆ˜]ÛZXÊCBˆÙÙÙ\‹œÚ\™Y›ÙÊ˜XÚİ\Ü™X]Y]ˆ
+˜XÚİ\T“œ]
+H‹\Nˆ’[™›ÈŠCBƒBˆ™]\›ˆ˜XÚİ\T“BˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ‘˜Z[YÈÜ™X]H˜XÚİ\ˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹\Nˆ‘\œ›ÜˆŠCBˆ™XÛÜ™X[X[˜XÚİ\˜Z[\™T™X\ÛÛŠ\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠCBˆ™]\›ˆš[BˆCBˆCBƒBˆ[˜ÈÜ™X]Q^\š[Y[[ÛİYÛ˜\Úİ]J
+H\Ş[˜ÈOˆ]OÈÃBˆ]ØZ]Ü™X]Q^\š[Y[[ÛİYÛ˜\Úİ
+
+OË™]CBˆCBƒBˆXZ[XİÜƒBˆ[˜ÈÜ™X]PXØÛİ[›İ[™\T™XÛİ™\TÛ˜\Úİ
+
+HOˆ^\š[Y[[ÛİYÛ˜\ÚİÈÃBˆ™\\™PXØÛİ[›İ[™\T™XÛİ™\TÛ˜\Úİ
+
+KœÛ˜\ÚİBˆCBƒBˆXZ[XİÜƒBˆ[˜È™\\™PXØÛİ[›İ[™\T™XÛİ™\TÛ˜\Úİ
+
+HOˆ^\š[Y[[ÛİYÛ˜\Úİ™\\˜][ÛˆÃBˆİÚ]ÚÚŞTİ™X[P˜XÚİ\ÛXZ[”™XY[™\ÜÊ
+HÃBˆØ\ÙHœ™XYNƒBˆœ™XZÃBˆØ\ÙH›ØY[™ÎƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆXØÛİ[X›İ[™\H™XÛİ™\HÛ˜\ÚİY™\œ™YÚ[HÚŞTİ™X[Hİ]H\ÈØY[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ™Y™\œ™YÚ[TÛİ\˜Ù\ÓØYBˆØ\ÙH[˜]˜Z[X›NƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆXØÛİ[X›İ[™\H™XÛİ™\HÛ˜\Úİ™Y\ÙY™XØ]\ÙHÚŞTİ™X[Hİ]H˜Z[YÈØY‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆœÛİ\˜Ù\Õ[˜]˜Z[X›CBˆCBˆÈÃBˆ]Û˜\ÚİHHØ]\˜XÚİ\]JBˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİˆYKBˆ[˜ÛYTš]˜]PÛİY™XÛİ™\T^[ØYÎˆYCBˆ
+CBˆİX\™Û˜\Úİœš]˜]PÛİYÛÛ™šYİ\˜][Û•Ø\ĞØ\\™YÛÛ\][H[ÙHÃBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹œš]˜]PÛİYÛÛ™šYİ\˜][Û’[˜ÛÛ\]CBˆCBƒBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœ™]Tš[YœÛÜYÙ^\×CBˆ]]HHH[˜ÛÙ\‹™[˜ÛÙJÛ˜\Úİ
+CBˆİX\™]K˜Ûİ[HÙ[‹›X^[][SX[X[˜XÚİ\š[P]\È[ÙHÃBˆ›İÈ›İ[™YT“Ù\ÜÚ[Û‘\œ›Ü‹œ™\ÜÛœÙUÛÓ\™ÙJBˆX^[][P]\ÎˆÙ[‹›X^[][SX[X[˜XÚİ\š[P]\ÃBˆ
+CBˆCBˆ™]\›ˆœ™XYJBˆ^\š[Y[[ÛİYÛ˜\Úİ
+Bˆ]Nˆ]KBˆ›Ûİš[ˆ^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[
+BˆÛ˜\ÚİˆÛ˜\ÚİBˆ[˜ÛÙY]Nˆ]CBˆ
+CBˆ
+CBˆ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘˜Z[YÈÜ™X]H›İXİYXØÛİ[X›İ[™\H™XÛİ™\HÛ˜\Úİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ™˜Z[YBˆCBˆCBƒBˆ˜\ˆ˜XÚİ\ÛXZ[”™XY[™\ÜÎˆ^\š[Y[[ÛİY˜XÚİ\ÛXZ[”™XY[™\ÜÈÃBˆÚŞTİ™X[P˜XÚİ\ÛXZ[”™XY[™\ÜÊ
+CBˆCBƒBˆ˜\ˆ\Ğ˜XÚİ\ÛXZ[”™XYQ›Ü”Û˜\ÚİÎˆ›ÛÛÃBˆ\ÔÚŞTİ™X[P˜XÚİ\ÛXZ[”™XYJ
+CBˆCBƒBˆ[˜ÈÜ™X]Q^\š[Y[[ÛİYÛ˜\Úİ
+
+H\Ş[˜ÈOˆ^\š[Y[[ÛİYÛ˜\ÚİÈÃBˆ]ØZ]™\\™Q^\š[Y[[ÛİYÛ˜\Úİ
+
+KœÛ˜\ÚİBˆCBƒBˆ[˜È™\\™Q^\š[Y[[ÛİYÛ˜\Úİ
+
+H\Ş[˜ÈOˆ^\š[Y[[ÛİYÛ˜\Úİ™\\˜][ÛˆÃBˆİÚ]ÚÚŞTİ™X[P˜XÚİ\ÛXZ[”™XY[™\ÜÊ
+HÃBˆØ\ÙHœ™XYNƒBˆœ™XZÃBˆØ\ÙH›ØY[™ÎƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘^\š[Y[[ÛİYÛ˜\ÚİY™\œ™YÚ[HÚŞTİ™X[Hİ]H\ÈØY[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ™Y™\œ™YÚ[TÛİ\˜Ù\ÓØYBˆØ\ÙH[˜]˜Z[X›NƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘^\š[Y[[ÛİYÛ˜\Úİ™Y\ÙY™XØ]\ÙHÚŞTİ™X[Hİ]H˜Z[YÈØY‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆœÛİ\˜Ù\Õ[˜]˜Z[X›CBˆCBˆÈÃBˆ]Û˜\ÚİHHØ]\˜XÚİ\]J\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİˆYJCBˆœ™YXİY›Ü‘^\š[Y[[ÛİYŞ[˜Êİš\ÚŞTİ™X[P\˜Ú]™\ÎˆYJCBˆİX\™Û˜\Úİœš]˜]PÛİYÛÛ™šYİ\˜][Û•Ø\ĞØ\\™YÛÛ\][H[ÙHÃBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹œš]˜]PÛİYÛÛ™šYİ\˜][Û’[˜ÛÛ\]CBˆCBˆ™]\›ˆœ™XYJH]ØZ]\ÚË™]XÚY
+š[Üš]Nˆ][]JHÃBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœÛÜYÙ^\×CBˆ˜\ˆ›İ[™YÛ˜\ÚİHÛ˜\ÚİBˆ˜\ˆ]HHH[˜ÛÙ\‹™[˜ÛÙJ›İ[™YÛ˜\Úİ
+CBƒBˆYˆ]K˜Ûİ[ˆÙ[‹›X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ËBˆ˜\ˆÚŞTİ™X[HH›İ[™YÛ˜\ÚİœÚŞTİ™X[HÃBˆ]\˜Ú]™R[™^\ÈHÚŞTİ™X[KœYÚ[œËš[™XÙ\ÃBˆ™š[\ˆÈÚŞTİ™X[KœYÚ[œÖÉK˜\˜Ú]™T^[ØYOHš[CBˆœÛÜYÃBˆ
+ÚŞTİ™X[KœYÚ[œÖÉK˜\˜Ú]™T^[ØYË˜Ûİ[ÏÈ
+CBˆˆ
+ÚŞTİ™X[KœYÚ[œÖÉWK˜\˜Ú]™T^[ØYË˜Ûİ[ÏÈ
+CBˆCBˆ›Üˆ[™^[ˆ\˜Ú]™R[™^\ÈÃBˆÚŞTİ™X[KœYÚ[œÖÚ[™^K˜\˜Ú]™T^[ØYHš[BˆÚŞTİ™X[KœYÚ[œÖÚ[™^Kœ^[ØYØ\Ô™YXİYHYCBˆ›İ[™YÛ˜\ÚİœÚŞTİ™X[HHÚŞTİ™X[CBˆ]HHH[˜ÛÙ\‹™[˜ÛÙJ›İ[™YÛ˜\Úİ
+CBˆYˆ]K˜Ûİ[HÙ[‹›X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÈÈœ™XZÈCBˆCBˆCBƒBˆİX\™]K˜Ûİ[HÙ[‹›X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\È[ÙHÃBˆ›İÈ›İ[™YT“Ù\ÜÚ[Û‘\œ›Ü‹œ™\ÜÛœÙUÛÓ\™ÙJBˆX^[][P]\ÎˆÙ[‹›X^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÃBˆ
+CBˆCBˆ™]\›ˆ^\š[Y[[ÛİYÛ˜\Úİ
+Bˆ]Nˆ]KBˆ›Ûİš[ˆ^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[
+BˆÛ˜\Úİˆ›İ[™YÛ˜\ÚİBˆ[˜ÛÙY]Nˆ]CBˆ
+CBˆ
+CBˆK˜[YJCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ‘˜Z[YÈÜ™X]H^\š[Y[[PÛİYÛ˜\Úİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹\NˆšPÛİYŠCBˆ™]\›ˆ™˜Z[YBˆCBˆCBƒBˆ[˜È^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[
+œ›ÛH]Nˆ]JHOˆ^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[ÈÃBˆÈÃBˆİX\™Ù[‹™^\š[Y[[ÛİYÛ˜\ÚİØÚ[XR\Ôİ\ÜY
+]JH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊÛİYÛ˜\Úİ\Ù\ÈH™]Ù\ˆ[œİ\ÜYØÚ[XH‹\NˆÛİYŞ[˜ÈŠCBˆ™]\›ˆš[BˆCBˆ]XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆXÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ]Û˜\ÚİHHXÛÙ\‹™XÛÙJ˜XÚİ\]KœÙ[‹œ›ÛNˆ]JKœ™YXİY›Ü‘^\š[Y[[ÛİYŞ[˜Ê
+CBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœÛÜYÙ^\×CBˆ]Ø[›ÛšXØ[]HHH[˜ÛÙ\‹™[˜ÛÙJÛ˜\Úİ
+CBˆ™]\›ˆ^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[
+Û˜\ÚİˆÛ˜\Úİ[˜ÛÙY]NˆØ[›ÛšXØ[]JCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ‘˜Z[YÈ[œÜXİ^\š[Y[[ÛİYÛ˜\Úİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹\NˆÛİYŞ[˜ÈŠCBˆ™]\›ˆš[BˆCBˆCBƒBˆ[˜È™\İÜ™Q^\š[Y[[ÛİYÛ˜\Úİ
+Bˆœ›ÛH]Nˆ]KBˆ™\Ù\™SYYXTİ]Q›ÜÛİYÚ]ˆ›ÛÛHYCBˆ
+H\Ş[˜ÈOˆ^\š[Y[[ÛİY™\İÜ™T™\İ[ÈÃBˆ˜\ˆÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛˆÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛÃBˆÈÃBˆİX\™Ù[‹™^\š[Y[[ÛİYÛ˜\ÚİØÚ[XR\Ôİ\ÜY
+]JH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ”™Y\ÙYÈ™\İÜ™HH™]Ù\ˆ[œİ\ÜYÛİYØÚ[XH‹\NˆÛİYŞ[˜ÈŠCBˆ™]\›ˆš[BˆCBˆ]XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆXÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ˜\ˆÛ˜\ÚİHHXÛÙ\‹™XÛÙJ˜XÚİ\]KœÙ[‹œ›ÛNˆ]JKœ™YXİY›Ü‘^\š[Y[[ÛİYŞ[˜Ê
+CBˆÛ˜\Úİœ™[[İ™T™XY\‘ÛXZ[œÕÚ]İ]ÛÛ\]Tš]˜]PÛİY]]Üš]J
+CBˆ][[™YØÛÜHHXİ]™T›Ùš[TØÛÜUÚÙ[Š
+CBˆ]™\İÜ™Tİ\HH]ØZ]™YÚ[”Ú\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠBˆ›ÜˆÛ˜\ÚİBˆ^XİYØÛÜNˆ[[™YØÛÜCBˆ
+CBˆ]˜[œØXİ[ÛˆH™\İÜ™Tİ\˜[œØXİ[ÛƒBˆÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛˆH˜[œØXİ[ÛƒBˆ]™\İÜ™TØÛÜHH™\İÜ™Tİ\œØÛÜCBˆÛ˜\Úİœ›ÙÜ™\ÜÑ]HHÙ[‹›Y\™Ú[™Ñ]šXÙSØØ[›İšY\”™Y™\™[˜Ù\ÊBˆ[ÎˆÛ˜\Úİœ›ÙÜ™\ÜÑ]KBˆİ\œ™[ˆ›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Y™Ù]›ÙÜ™\ÜÑ]J
+CBˆ
+CBˆ]İÛœÕÜ]™[Ûİ\˜Ù\ÈH\Y\ÕÜ]™[Ûİ\˜ÙQ]JBˆÛ˜\ÚİBˆXİ]™T›Ùš[RQˆ™\İÜ™TØÛÜKœ›Ùš[RQBˆ
+CBˆİX\™]ØZ]™\İÜ™TÚŞTİ™X[TÛ˜\Úİ[™ØZ]Y”İ\ÜY
+BˆİÛœÕÜ]™[Ûİ\˜Ù\ÈÈÛ˜\ÚİœÚŞTİ™X[Hˆš[Bˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™J˜[œØXİ[ÛŠCBˆ™]\›ˆš[BˆCBˆİX\™]ØZ]™\İÜ™S]š[ÔÛ˜\ÚİY”İ\ÜY
+BˆİÛœÕÜ]™[Ûİ\˜Ù\ÈÈÛ˜\Úİ›]š[ÔYÚ[œÈˆš[Bˆ^XİYØÛÜNˆ™\İÜ™TØÛÜKBˆ™\Ù\š[™Ñ]šXÙSØØ[ÛİYİ]NˆYCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™J˜[œØXİ[ÛŠCBˆ™]\›ˆš[BˆCBˆİX\™]Üİ\HH]ØZ]\P˜XÚİ\]RY”ØÛÜR\Ğİ\œ™[
+BˆÛ˜\ÚİBˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÎˆYKBˆ™\Ù\š[™ÓYØXŞPÛİYYYXTİ]Nˆ™\Ù\™SYYXTİ]Q›ÜÛİYÚ]Bˆ™\Ù\š[™Ñ]šXÙSØØ[™XY\“[Ù[Ù[Xİ[ÛˆYKBˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™J˜[œØXİ[ÛŠCBˆ™]\›ˆš[BˆCBˆ]Üİ\TØÛÜHHÜİ\KœØÛÜCBƒBˆ]ØZ]ÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™Y˜Ø\\™TÛİ\˜ÙQY˜][Ôİ]JBˆ^XİYØÛÜQÙ[™\˜][ÛˆÜİ\TØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛƒBˆ
+CBƒBˆ]ØZ]™\Z\Xİ]™T›Ùš[TÚŞTİ™X[Tİ]RY“™YYY
+BˆÛ˜\ÚİBˆ^XİYØÛÜNˆÜİ\TØÛÜCBˆ
+CBˆİX\™]ØZ]™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\”™\İÜ™JBˆ^XİYØÛÜNˆÜİ\TØÛÜKBˆÛ\˜]\Ò[™\™XY\”[[YNˆYCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™J˜[œØXİ[ÛŠCBˆ™]\›ˆš[BˆCBˆÛÛ\]TÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠ˜[œØXİ[ÛŠCBˆ™]\›ˆ^\š[Y[[ÛİY™\İÜ™T™\İ[
+Bˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆÜİ\K˜]]Üš]]]™U˜XÚÙ\”›Ùš[RQÃBˆ
+CBˆHØ]ÚÃBˆYˆ]Ú\™TÙ\šXÙ\Õ˜[œØXİ[ÛˆÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊ‘˜Z[YÈ™\İÜ™H^\š[Y[[PÛİYÛ˜\Úİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹\NˆšPÛİYŠCBˆ™]\›ˆš[BˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜È^\š[Y[[ÛİYÛ˜\ÚİØÚ[XR\Ôİ\ÜY
+È]Nˆ]JHOˆ›ÛÛÃBˆİX\™]Øš™XİHOÈ”ÓÓ”Ù\šX[^˜][Û‹šœÛÛ“Øš™Xİ
+Ú]ˆ]JH\ÏÈÔİš[™Îˆ[WKBˆ]™\œÚ[ÛˆHØš™XİÈ™\œÚ[Ûˆ—H\ÏÈİš[™È[ÙHÃBˆ™]\›ˆYCBˆCBˆ™]\›ˆÛÛ\\™TØÚ[XU™\œÚ[ÛŠ™\œÚ[Û‹Îˆ˜XÚİ\]K˜İ\œ™[ÛİYØÚ[XU™\œÚ[ÛŠHOH›Ü™\™Y\ØÙ[™[™ÃBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÛÛ\\™TØÚ[XU™\œÚ[ÛŠÈÎˆİš[™ËÈšÎˆİš[™ÊHOˆÛÛ\\š\ÛÛ”™\İ[ÃBˆ]YHËœÜ]
+Ù\\˜]Üˆ‹ˆŠK›X\È[
+	
+HÏÈCBˆ]šYÚHšËœÜ]
+Ù\\˜]Üˆ‹ˆŠK›X\È[
+	
+HÏÈCBˆ›Üˆ[™^[ˆ‹X^
+Y˜Ûİ[šYÚ˜Ûİ[
+HÃBˆ]Y˜[YHH[™^Y˜Ûİ[ÈYÚ[™^HˆBˆ]šYÚ˜[YHH[™^šYÚ˜Ûİ[ÈšYÚÚ[™^HˆBˆYˆY˜[YHšYÚ˜[YHÈ™]\›ˆ›Ü™\™Y\ØÙ[™[™ÈCBˆYˆY˜[YHˆšYÚ˜[YHÈ™]\›ˆ›Ü™\™Y\ØÙ[™[™ÈCBˆCBˆ™]\›ˆ›Ü™\™YØ[YCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈY\™Ú[™Ñ]šXÙSØØ[›İšY\”™Y™\™[˜Ù\ÊBˆ[È[˜ÛÛZ[™Îˆ›ÙÜ™\ÜÑ]KBˆİ\œ™[ˆ›ÙÜ™\ÜÑ]CBˆ
+HOˆ›ÙÜ™\ÜÑ]HÃBˆ]İ\œ™[[İšY\ÈHXİ[Û˜\JBˆİ\œ™[›[İšYT›ÙÜ™\ÜË›X\È
+	šY	
+HKBˆ[š\]Z[™ÒÙ^\ÕÚ]ˆÈ^\İ[™ËØ[™Y]H[ƒBˆØ[™Y]K›\İ\]YH^\İ[™Ë›\İ\]YÈØ[™Y]Hˆ^\İ[™ÃBˆCBˆ
+CBˆ]İ\œ™[\\ÛÙ\ÈHXİ[Û˜\JBˆİ\œ™[™\\ÛÙT›ÙÜ™\ÜË›X\È
+	šY	
+HKBˆ[š\]Z[™ÒÙ^\ÕÚ]ˆÈ^\İ[™ËØ[™Y]H[ƒBˆØ[™Y]K›\İ\]YH^\İ[™Ë›\İ\]YÈØ[™Y]Hˆ^\İ[™ÃBˆCBˆ
+CBƒBˆ˜\ˆY\™ÙYH[˜ÛÛZ[™ÃBˆY\™ÙY›[İšYT›ÙÜ™\ÜÈH[˜ÛÛZ[™Ë›[İšYT›ÙÜ™\ÜË›X\È[H[ƒBˆİX\™]ØØ[Hİ\œ™[[İšY\ÖÙ[KšYH[ÙHÈ™]\›ˆ[HCBˆ˜\ˆ™\İ[H[CBˆ™\İ[›\İ™YˆHØØ[›\İ™YƒBˆ™\İ[›\İÛÛ[™Y™\™[˜ÙHHØØ[›\İÛÛ[™Y™\™[˜ÙCBˆ™\İ[›\İÙ\šXÙRYHØØ[›\İÙ\šXÙRYÏÈ[K›\İÙ\šXÙRYBˆ™\İ[›\İÛİ\˜ÙRYHØØ[›\İÛİ\˜ÙRYÏÈ[K›\İÛİ\˜ÙRYBˆ™]\›ˆ™\İ[BˆCBˆY\™ÙY™\\ÛÙT›ÙÜ™\ÜÈH[˜ÛÛZ[™Ë™\\ÛÙT›ÙÜ™\ÜË›X\È[H[ƒBˆİX\™]ØØ[Hİ\œ™[\\ÛÙ\ÖÙ[KšYH[ÙHÈ™]\›ˆ[HCBˆ˜\ˆ™\İ[H[CBˆ™\İ[›\İ™YˆHØØ[›\İ™YƒBˆ™\İ[›\İÛÛ[™Y™\™[˜ÙHHØØ[›\İÛÛ[™Y™\™[˜ÙCBˆ™\İ[›\İÙ\šXÙRYHØØ[›\İÙ\šXÙRYÏÈ[K›\İÙ\šXÙRYBˆ™\İ[›\İÛİ\˜ÙRYHØØ[›\İÛİ\˜ÙRYÏÈ[K›\İÛİ\˜ÙRYBˆ™]\›ˆ™\İ[BˆCBˆ™]\›ˆY\™ÙYBˆCBƒBˆš]˜]Hİ]XÈ]^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^HH™^\š[Y[[ÛİY™\İÜ™T[™[™ÕŒHƒBˆš]˜]Hİ]XÈ]^\š[Y[[ÛİY™\İÜ™T™XÛİ™\T™Yš^HÛİYŞ[˜Ô™\İÜ™T™XÛİ™\KˆƒBˆš]˜]Hİ]XÈ]^\š[Y[[ÛİY™\İÜ™T™XÛİ™\TİY™š^H‹šœÛÛˆƒBˆš]˜]Hİ]XÈ]^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\İY™š^H‹›İÛ™\‹šœÛÛˆƒBˆš]˜]Hİ]XÈ]^\š[Y[[ÛİY™\İÜ™U˜[œÜÜİY™š^H‹˜[œÜÜšœÛÛˆƒBˆš]˜]Hİ]XÈ]YØXŞQ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\Qš[[˜[YHHÛİYŞ[˜Ô™\İÜ™T™XÛİ™\KšœÛÛˆƒBˆš]˜]Hİ]XÈ]X^[][Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ]\ÈH
+ˆWÌBˆš]˜]Hİ]XÈ]X^[][Q^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\]\ÈHMˆ
+ˆWÌBˆš]˜]Hİ]XÈ]X^[][Q^\š[Y[[ÛİY™\İÜ™RY[]P]\ÈH
+ˆWÌBƒBˆš]˜]H[[H^\š[Y[[ÛİY™\İÜ™SX[šY™\İØY™\İ[ÃBˆØ\ÙHZ\ÜÚ[™ÃBˆØ\ÙH[˜]˜Z[X›Jİš[™ÊCBˆØ\ÙH[˜[Y
+İš[™ÊCBˆØ\ÙHØYY
+^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İ
+CBˆCBƒBˆš]˜]H[[HYØXŞQ^\š[Y[[ÛİY™\İÜ™SØY™\İ[ÃBˆØ\ÙHZ\ÜÚ[™ÃBˆØ\ÙH[˜]˜Z[X›Jİš[™ÊCBˆØ\ÙH[˜[Y
+İš[™ÊCBˆØ\ÙHØYY
+]JCBˆCBƒBˆš]˜]H[[H]]Üš^™YXØÛİ[›İ[™\T™\^Q\ÜÜÚ][ÛˆÃBˆØ\ÙHYÜ[™[™ÊÛİYŞ[˜Ô›İšY\ŠCBˆØ\ÙH[™XYPYÜY
+ÛİYŞ[˜Ô›İšY\ŠCBˆØ\ÙHİ\\œÙYYÛÛ›™Xİ[ÛŠÛİYŞ[˜Ô›İšY\ŠCBˆØ\ÙH[˜]˜Z[X›CBˆØ\ÙH[˜[YBˆCBƒBˆš]˜]H˜\ˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QˆURQÃBˆš]˜]H˜\ˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÎˆ\ÚÏ›ÚY™]™\ÃBƒBˆš]˜]Hİ]XÈ˜\ˆ^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“ˆT“ÈÃBˆİX\™]\XØ][Û”İ\ÜHš[SX[˜YÙ\‹™Y˜][\›ÊBˆ›Üˆ˜\XØ][Û”İ\Ü\™XİÜKBˆ[ˆ\Ù\‘ÛXZ[“X\ÚÃBˆ
+K™š\œİ[ÙHÈ™]\›ˆš[CBˆ]\™XİÜHH\XØ][Û”İ\Ü˜\[™[™Ô]ÛÛ\Û™[
+‘XÛ\ÙH‹\Ñ\™XİÜNˆYJCBˆOÈš[SX[˜YÙ\‹™Y˜][˜Ü™X]Q\™XİÜJ]ˆ\™XİÜKÚ][\›YYX]Q\™XİÜšY\ÎˆYJCBˆ™]\›ˆ\™XİÜCBˆCBƒBˆš]˜]Hİ]XÈ˜\ˆYØXŞQ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“ˆT“ÈÃBˆ^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“Ë˜\[™[™Ô]ÛÛ\Û™[
+BˆYØXŞQ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\Qš[[˜[YCBˆ
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“
+˜[œØXİ[Û’QˆURQ
+HOˆT“ÈÃBˆ^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“Ë˜\[™[™Ô]ÛÛ\Û™[
+Bˆ—
+^\š[Y[[ÛİY™\İÜ™T™XÛİ™\T™Yš^
+W
+˜[œØXİ[Û’Q]ZYİš[™ÊW
+^\š[Y[[ÛİY™\İÜ™T™XÛİ™\TİY™š^
+HƒBˆ
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\T“
+˜[œØXİ[Û’QˆURQ
+HOˆT“ÈÃBˆ^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“Ë˜\[™[™Ô]ÛÛ\Û™[
+Bˆ—
+^\š[Y[[ÛİY™\İÜ™T™XÛİ™\T™Yš^
+W
+˜[œØXİ[Û’Q]ZYİš[™ÊW
+^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\İY™š^
+HƒBˆ
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+˜[œØXİ[Û’QˆURQ
+HOˆT“ÈÃBˆ^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“Ë˜\[™[™Ô]ÛÛ\Û™[
+Bˆ—
+^\š[Y[[ÛİY™\İÜ™T™XÛİ™\T™Yš^
+W
+˜[œØXİ[Û’Q]ZYİš[™ÊW
+^\š[Y[[ÛİY™\İÜ™U˜[œÜÜİY™š^
+HƒBˆ
+CBˆCBƒBˆš]˜]Hİ]XÈ˜\ˆ^\š[Y[[ÛİY™\İÜ™SX[šY™\İT“ˆT“ÈÃBˆ^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“ÃBˆ˜\[™[™Ô]ÛÛ\Û™[
+ÛİYŞ[˜Ô™\İÜ™T™XÛİ™\K›X[šY™\İšœÛÛˆŠCBˆCBƒBˆš]˜]Hİ]XÈ[˜È\Õ˜[Y^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+BˆÈÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ
+HOˆ›ÛÛÃBˆİX\™]›İšY\ˆHÛİYŞ[˜Ô›İšY\Š˜]Õ˜[YNˆÛÛ^œ›İšY\”˜]Õ˜[YJKBˆ›İšY\‹œ™\]Z\™\ĞXØÛİ[ÛÛ›™Xİ[Û‹BˆÛÛ^™Ù[™\˜][ÛˆHBˆ
+ÛÛ^œ[™[™ÒY[]OË]˜Ûİ[ÏÈ
+CBˆHX^[][Q^\š[Y[[ÛİY™\İÜ™RY[]P]\ËBˆÛÛ^›İ]ÛÚ[™Ô›Ùš[RQË˜Ûİ[H›Ùš[SX[˜YÙ\‹›X^[][T›Ùš[\ËBˆÙ]
+ÛÛ^›İ]ÛÚ[™Ô›Ùš[RQÊK˜Ûİ[BˆOHÛÛ^›İ]ÛÚ[™Ô›Ùš[RQË˜Ûİ[BˆÛÛ^œ™\İÜ™Y˜XÚÙ\”›Ùš[RQË˜Ûİ[H›Ùš[SX[˜YÙ\‹›X^[][T›Ùš[\ËBˆÙ]
+ÛÛ^œ™\İÜ™Y˜XÚÙ\”›Ùš[RQÊK˜Ûİ[BˆOHÛÛ^œ™\İÜ™Y˜XÚÙ\”›Ùš[RQË˜Ûİ[[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ™]\›ˆYCBˆCBƒBˆš]˜]Hİ]XÈ[˜È^\š[Y[[ÛİY™\İÜ™P›İ[™\P]]Üš]SX]Ú\ÊBˆÈ™\\™Yˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^BˆÈÛÛ[Z][™Îˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ
+HOˆ›ÛÛÃBˆ™\\™Yœ›İšY\”˜]Õ˜[YHOHÛÛ[Z][™Ëœ›İšY\”˜]Õ˜[YCBˆ	‰ˆ™\\™Y™Ù[™\˜][ÛˆOHÛÛ[Z][™Ë™Ù[™\˜][ÛƒBˆ	‰ˆ™\\™Yœ[™[™ÒY[]HOHÛÛ[Z][™Ëœ[™[™ÒY[]CBˆ	‰ˆ™\\™Y›İ]ÛÚ[™Ô›Ùš[RQÈOHÛÛ[Z][™Ë›İ]ÛÚ[™Ô›Ùš[RQÃBˆCBƒBˆš]˜]Hİ]XÈ[˜È›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]\›ˆT“BˆX^[][P]\Îˆ[Bˆ
+H›İÜÈOˆ]HÃBˆ]˜[Y\ÈHH\›œ™\Ûİ\˜ÙU˜[Y\Ê›Ü’Ù^\ÎˆËš\Ô™Yİ[\‘š[RÙ^WJCBˆİX\™˜[Y\Ëš\Ô™Yİ[\‘š[HOHYH[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[T™XYÛÜœ\š[JCBˆCBˆ][™HHHš[R[™J›Ü”™XY[™Ñœ›ÛNˆ\›
+CBˆY™\ˆÈ[™K˜ÛÜÙQš[J
+HCBˆ]]HH[™Kœ™XY]JÙ“[™İˆX^[][P]\È
+ÈJCBˆİX\™]K˜Ûİ[HX^[][P]\È[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[T™XYÛÜœ\š[JCBˆCBˆ™]\›ˆ]CBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+CBˆOˆ^\š[Y[[ÛİY™\İÜ™SX[šY™\İØY™\İ[ÃBˆİX\™]\›H^\š[Y[[ÛİY™\İÜ™SX[šY™\İT“[ÙHÃBˆ™]\›ˆ[˜]˜Z[X›J\XØ][Ûˆİ\Ü\È[˜]˜Z[X›HŠCBˆCBˆİX\™š[SX[˜YÙ\‹™Y˜][™š[Q^\İÊ]]ˆ\›œ]
+H[ÙHÃBˆ™]\›ˆ›Z\ÜÚ[™ÃBˆCBˆ]]Nˆ]CBˆÈÃBˆ]HHH›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]ˆ\›BˆX^[][P]\ÎˆX^[][Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ]\ÃBˆ
+CBˆHØ]ÚÃBˆ™]\›ˆ[˜]˜Z[X›Jİš[™Ê™Y›Xİ[™Îˆ\JÙˆ\œ›ÜŠJJCBˆCBˆ]X[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆÈÃBˆX[šY™\İHH”ÓÓ‘XÛÙ\Š
+K™XÛÙJBˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İœÙ[‹Bˆœ›ÛNˆ]CBˆ
+CBˆHØ]ÚÃBˆ™]\›ˆš[˜[Y
+›X[šY™\İXÛÙH˜Z[YŠCBˆCBˆİX\™X[šY™\İœØÚ[XU™\œÚ[ÛˆOHˆ[ÙHÃBˆ™]\›ˆš[˜[Y
+[œİ\ÜYX[šY™\İØÚ[XHŠCBˆCBˆİÚ]Ú
+X[šY™\İœ™XÛİ™\RÚ[™X[šY™\İ˜XØÛİ[›İ[™\PÛÛ^
+HÃBˆØ\ÙH
+›Ü™[˜\PÛİY™\İÜ™Kš[
+NƒBˆİX\™[X[šY™\İš\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\H[ÙHÃBˆ™]\›ˆš[˜[Y
+›Ü™[˜\H™XÛİ™\HÛZ[YYHØ[›ÛšXØ[ÚYXØ\ˆŠCBˆCBˆØ\ÙH
+˜XØÛİ[›İ[™\KœÛÛYJ]ÛÛ^
+JNƒBˆİX\™\Õ˜[Y^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+ÛÛ^
+H[ÙHÃBˆ™]\›ˆš[˜[Y
+˜XØÛİ[X›İ[™\HÛÛ^\È[˜[YŠCBˆCBˆØ\ÙH
+›Ü™[˜\PÛİY™\İÜ™KœÛÛYJK
+˜XØÛİ[›İ[™\Kš[
+NƒBˆ™]\›ˆš[˜[Y
+›X[šY™\İÚ[™[™ÛÛ^\ØYÜ™YHŠCBˆCBˆİX\™[X[šY™\İš\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\CBˆX[šY™\İš\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Ûˆ[ÙHÃBˆ™]\›ˆš[˜[Y
+˜Ø[›ÛšXØ[™XÛİ™\H\ÈZ\ÜÚ[™È]ÈYYXK\İ]H˜[œØXİ[ÛˆŠCBˆCBˆYˆX[šY™\İœ™XÛİ™\RÚ[™OH˜XØÛİ[›İ[™\KBˆX[šY™\İš\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\HOHX[šY™\İš\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[ÛˆÃBˆ™]\›ˆš[˜[Y
+˜XØÛİ[X›İ[™\HYYXK\İ]H›YÜÈ\ØYÜ™YHŠCBˆCBˆYˆX[šY™\İœİ]HOH˜ÛÛ[Z]]]Üš^™YBˆX[šY™\İœ™XÛİ™\RÚ[™OH˜XØÛİ[›İ[™\HÃBˆ™]\›ˆš[˜[Y
+›Ü™[˜\H™XÛİ™\HØ[››İ]]Üš^™H[ˆXØÛİ[X›İ[™\HÛÛ[Z]ŠCBˆCBˆ]\ÒÙY\ØØ[]PÛİ[HX[šY™\İšÙY\ØØ[˜[œÜÜ^[ØY]PÛİ[OHš[Bˆ]\ÒÙY\ØØ[YÙ\İHX[šY™\İšÙY\ØØ[˜[œÜÜ^[ØYÒLMˆOHš[BˆİX\™\ÒÙY\ØØ[]PÛİ[OH\ÒÙY\ØØ[YÙ\İ[ÙHÃBˆ™]\›ˆš[˜[Y
+šÙY\[ØØ[^[ØYİÛ™\œÚ\\È[˜ÛÛ\]HŠCBˆCBˆYˆ]]PÛİ[HX[šY™\İšÙY\ØØ[˜[œÜÜ^[ØY]PÛİ[ÃBˆİX\™X[šY™\İœ™XÛİ™\RÚ[™OH˜XØÛİ[›İ[™\KBˆ]PÛİ[ˆBˆ]PÛİ[HX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ËBˆ]YÙ\İHX[šY™\İšÙY\ØØ[˜[œÜÜ^[ØYÒLM‹BˆYÙ\İ]˜Ûİ[HLBˆX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^Ë›İ]ÛÚ[™Ô›Ùš[RQËš\Ñ[\HOHYH[ÙHÃBˆ™]\›ˆš[˜[Y
+šÙY\[ØØ[^[ØYİÛ™\œÚ\\È[˜[YŠCBˆCBˆCBˆYˆX[šY™\İœİ]HOHšÙY\ØØ[Üš]P]]Üš^™YBˆ[X[šY™\İš\ÒÙY\ØØ[˜[œÜÜ^[ØYÃBˆ™]\›ˆš[˜[Y
+˜]]Üš^™YÙY\[ØØ[™XÛİ™\H\È›È˜[œÜÜ^[ØYŠCBˆCBˆ™]\›ˆ›ØYY
+X[šY™\İ
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È]]Üš^™Y™\^Q\ÜÜÚ][ÛŠBˆ›ÜˆÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ
+HOˆ]]Üš^™YXØÛİ[›İ[™\T™\^Q\ÜÜÚ][ÛˆÃBˆİX\™]›İšY\ˆHÛİYŞ[˜Ô›İšY\Š˜]Õ˜[YNˆÛÛ^œ›İšY\”˜]Õ˜[YJKBˆ›İšY\‹œ™\]Z\™\ĞXØÛİ[ÛÛ›™Xİ[Ûˆ[ÙHÃBˆ™]\›ˆš[˜[YBˆCBˆ]Y˜][ÈH\Ù\‘Y˜][Ëœİ[™\™Bˆ]İ\œ™[Ù[™\˜][ÛˆHY˜][Ëš[YÙ\Š›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Ù[™\˜][Û’Ù^JCBˆYˆİ\œ™[Ù[™\˜][ÛˆˆÛÛ^™Ù[™\˜][ÛˆÃBˆ™]\›ˆœİ\\œÙYYÛÛ›™Xİ[ÛŠ›İšY\ŠCBˆCBˆİX\™İ\œ™[Ù[™\˜][ÛˆOHÛÛ^™Ù[™\˜][Ûˆ[ÙHÃBˆ™]\›ˆš[˜[YBˆCBƒBˆ]›İ[™\R\Ô[™[™ÈHY˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[›İ[™\T[™[™ÒÙ^JCBˆ]\šÙYY[]HHY˜][Ëœİš[™Ê›Ü’Ù^Nˆ›İšY\‹œ[™[™ĞXØÛİ[Y[]RÙ^JCBˆ]İ\œ™[Y[]HHY˜][Ëœİš[™Ê›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Y[]RÙ^JCBˆ]Y[]R\Õ[œ™\ÛÛ™YHY˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Y[]U[œ™\ÛÛ™YÙ^JCBˆ]\Ñ[PYÜYˆ›ÛÛBˆYˆ][™[™ÒY[]HHÛÛ^œ[™[™ÒY[]HÃBˆ\Ñ[PYÜYHX›İ[™\R\Ô[™[™ÃBˆ	‰ˆ\šÙYY[]HOHš[Bˆ	‰ˆİ\œ™[Y[]HOH[™[™ÒY[]CBˆ	‰ˆZY[]R\Õ[œ™\ÛÛ™YBˆH[ÙHÃBˆ\Ñ[PYÜYHX›İ[™\R\Ô[™[™ÃBˆ	‰ˆ\šÙYY[]HOHš[Bˆ	‰ˆY[]R\Õ[œ™\ÛÛ™YBˆCBˆYˆ\Ñ[PYÜYÃBˆ™]\›ˆ˜[™XYPYÜY
+›İšY\ŠCBˆCBƒBˆ]\ÓX]Ú[™Ô[™[™Ñ]šY[˜ÙNˆ›ÛÛBˆYˆ][™[™ÒY[]HHÛÛ^œ[™[™ÒY[]HÃBˆ\ÓX]Ú[™Ô[™[™Ñ]šY[˜ÙHH\šÙYY[]HOH[™[™ÒY[]CBˆİ\œ™[Y[]HOH[™[™ÒY[]CBˆH[ÙHÃBˆ\ÓX]Ú[™Ô[™[™Ñ]šY[˜ÙHH›İ[™\R\Ô[™[™ÈY[]R\Õ[œ™\ÛÛ™YBˆCBˆİX\™
+\šÙYY[]HOHš[\šÙYY[]HOHÛÛ^œ[™[™ÒY[]JKBˆ\ÓX]Ú[™Ô[™[™Ñ]šY[˜ÙH[ÙHÃBˆ™]\›ˆš[˜[YBˆCBƒBˆİX\™RP\XØ][Û‹œÚ\™Yš\Ô›İXİY]P]˜Z[X›H[ÙHÃBˆ™]\›ˆ[˜]˜Z[X›CBˆCBˆİX\™ÛİYŞ[˜ÕÚÙ[”İÜ™Kš\ÕÚÙ[Š›Üˆ›İšY\ŠH[ÙHÃBˆ™]\›ˆš[˜[YBˆCBˆ™]\›ˆ˜YÜ[™[™Ê›İšY\ŠCBˆCBƒBˆİ]XÈ[˜ÈXØÛİ[›İ[™\U˜XÚÙ\ÛX[\]]Üš]J
+CBˆOˆ^\š[Y[[ÛİY˜XÚÙ\ÛX[\]]Üš]HÃBˆİÚ]ÚØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+HÃBˆØ\ÙH›Z\ÜÚ[™ÎƒBƒBˆ™]\›ˆ\Ù\‘Y˜][Ëœİ[™\™˜›ÛÛ
+Bˆ›Ü’Ù^Nˆ^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^CBˆ
+HÈ˜›ØÚÙYˆ››Û™CBˆØ\ÙH[˜]˜Z[X›Kš[˜[YƒBƒBˆ™]\›ˆ˜›ØÚÙYBˆØ\ÙH›ØYY
+]X[šY™\İ
+NƒBˆİÚ]ÚX[šY™\İœİ]HÃBˆØ\ÙHœ™\\š[™Ë˜ÛÛ\]YƒBˆ™]\›ˆ››Û™CBˆØ\ÙHœ™\\™YƒBƒBˆ™]\›ˆX[šY™\İš\ÒÙY\ØØ[˜[œÜÜ^[ØYÈ››Û™Hˆ˜›ØÚÙYBˆØ\ÙHšÙY\ØØ[Üš]P]]Üš^™YƒBˆ™]\›ˆ››Û™CBˆØ\ÙH˜ÛÛ[Z]]]Üš^™YƒBˆœ™XZÃBˆCBˆİX\™]ÛÛ^HX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^[ÙHÃBˆ™]\›ˆ˜›ØÚÙYBˆCBƒBˆ™]\›ˆ˜]]Üš^™Y
+ÛÛ^
+CBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØYYØXŞQ^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+
+CBˆOˆYØXŞQ^\š[Y[[ÛİY™\İÜ™SØY™\İ[ÃBˆİX\™]\›HYØXŞQ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“[ÙHÃBˆ™]\›ˆ[˜]˜Z[X›J\XØ][Ûˆİ\Ü\È[˜]˜Z[X›HŠCBˆCBˆİX\™š[SX[˜YÙ\‹™Y˜][™š[Q^\İÊ]]ˆ\›œ]
+H[ÙHÃBˆ™]\›ˆ›Z\ÜÚ[™ÃBˆCBˆÈÃBˆ]˜[Y\ÈHH\›œ™\Ûİ\˜ÙU˜[Y\Ê›Ü’Ù^\ÎˆËš\Ô™Yİ[\‘š[RÙ^K™š[TÚ^™RÙ^WJCBˆİX\™˜[Y\Ëš\Ô™Yİ[\‘š[HOHYH[ÙHÃBˆ™]\›ˆš[˜[Y
+›YØXŞH™XÛİ™\H\È›İH™Yİ[\ˆš[HŠCBˆCBˆYˆ]š[TÚ^™HH˜[Y\Ë™š[TÚ^™KBˆš[TÚ^™HˆX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÈÃBˆ™]\›ˆš[˜[Y
+›YØXŞH™XÛİ™\H^ÙYYÈHÛİYÛ˜\Úİ[Z]ŠCBˆCBˆ]]HHH›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]ˆ\›BˆX^[][P]\ÎˆX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÃBˆ
+CBˆİX\™^\š[Y[[ÛİYÛ˜\ÚİØÚ[XR\Ôİ\ÜY
+]JH[ÙHÃBˆ™]\›ˆš[˜[Y
+›YØXŞH™XÛİ™\H\Ù\È[ˆ[œİ\ÜYØÚ[XHŠCBˆCBˆ]XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆXÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ]XÛÙYHHXÛÙ\‹™XÛÙJ˜XÚİ\]KœÙ[‹œ›ÛNˆ]JCBƒBˆ]ØY™TÛ˜\ÚİHXÛÙYœ™YXİY›Ü‘^\š[Y[[ÛİYŞ[˜Ê
+CBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœÛÜYÙ^\×CBˆ]ØY™Q]HHH[˜ÛÙ\‹™[˜ÛÙJØY™TÛ˜\Úİ
+CBˆİX\™ØY™Q]K˜Ûİ[HX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\È[ÙHÃBˆ™]\›ˆš[˜[Y
+œØ[š]^™YYØXŞH™XÛİ™\H^ÙYYÈHÛİYÛ˜\Úİ[Z]ŠCBˆCBˆ™]\›ˆ›ØYY
+ØY™Q]JCBˆHØ]Ú]\œ›Üˆ\ÈÛØÛØQ\œ›ÜˆÚ\™H\œ›Ü‹˜ÛÙHOH™š[T™XY›Ô\›Z\ÜÚ[ÛˆÃBˆ™]\›ˆ[˜]˜Z[X›Jœ›İXİY]H\È[˜]˜Z[X›HŠCBˆHØ]ÚÃBˆ™]\›ˆš[˜[Y
+›YØXŞH™XÛİ™\H˜[Y][Ûˆ˜Z[YŠCBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÜš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+BˆÈX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+H›İÜÈÃBˆİX\™]\›H^\š[Y[[ÛİY™\İÜ™SX[šY™\İT“[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[S›ÔİXÚš[JCBˆCBˆ]]HHH”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJX[šY™\İ
+CBˆİX\™]K˜Ûİ[HX^[][Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ]\È[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[UÜš]Sİ]Ù”ÜXÙJCBˆCBˆH]KÜš]JÎˆ\›Ü[ÛœÎˆË˜]ÛZXË˜ÛÛ\]Qš[T›İXİ[Û—JCBˆCBƒBˆš]˜]Hİ]XÈ[˜È›İ[™^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+Bˆ›ÜˆX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+HOˆ
+\›ˆT“]Nˆ]JOÈÃBˆİX\™]\›H^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“
+Bˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+KBˆ]İÛ™\œÚ\T“H^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\T“
+Bˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+KBˆ]]HHOÈ›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]ˆ\›BƒBˆX^[][P]\ÎˆX^[][SX[X[˜XÚİ\š[P]\ÃBˆ
+KBˆ]İÛ™\œÚ\]HHOÈ›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]ˆİÛ™\œÚ\T“BˆX^[][P]\ÎˆX^[][Q^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\]\ÃBˆ
+KBˆ]İÛ™\œÚ\HOÈ”ÓÓ‘XÛÙ\Š
+K™XÛÙJBˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SİÛ™\œÚ\œÙ[‹Bˆœ›ÛNˆİÛ™\œÚ\]CBˆ
+KBˆİÛ™\œÚ\˜[Y]\ÊBˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ™XÛİ™\RÚ[™ˆX[šY™\İœ™XÛİ™\RÚ[™Bˆ^[ØYˆ]CBˆ
+H[ÙHÃBˆ™]\›ˆš[BˆCBˆ™]\›ˆ
+\›]JCBˆCBƒBˆš]˜]Hİ]XÈ[˜È›Ü›X[^™YÙY\ØØ[˜[œÜÜ^[ØY
+œ›ÛH]Nˆ]JH›İÜÈOˆ]HÃBˆİX\™Y]Kš\Ñ[\KBˆ]K˜Ûİ[HX^[][SX[X[˜XÚİ\š[P]\ËBˆ^\š[Y[[ÛİYÛ˜\ÚİØÚ[XR\Ôİ\ÜY
+]JH[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[T™XYÛÜœ\š[JCBˆCBˆ]XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆXÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ]XÛÙYHHXÛÙ\‹™XÛÙJ˜XÚİ\]KœÙ[‹œ›ÛNˆ]JCBˆ]ØY™TÛ˜\ÚİHXÛÙYœ™YXİY›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆİš\ÚŞTİ™X[P\˜Ú]™\ÎˆYCBˆ
+CBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœ™]Tš[YœÛÜYÙ^\×CBˆ]ØY™Q]HHH[˜ÛÙ\‹™[˜ÛÙJØY™TÛ˜\Úİ
+CBˆİX\™\ØY™Q]Kš\Ñ[\KBˆØY™Q]K˜Ûİ[HX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\È[ÙHÃBˆ›İÈ›İ[™YT“Ù\ÜÚ[Û‘\œ›Ü‹œ™\ÜÛœÙUÛÓ\™ÙJBˆX^[][P]\ÎˆX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÃBˆ
+CBˆCBˆ™]\›ˆØY™Q]CBˆCBƒBˆš]˜]Hİ]XÈ[˜È›İ[™ÙY\ØØ[˜[œÜÜ^[ØY
+Bˆ›ÜˆX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+HOˆ]OÈÃBˆİX\™X[šY™\İš\ÒÙY\ØØ[˜[œÜÜ^[ØYBˆ]\›H^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+Bˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+KBˆ]]HHOÈ›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]ˆ\›BˆX^[][P]\ÎˆX^[][Q^\š[Y[[ÛİYÛ˜\Úİ]\ÃBˆ
+KBˆX[šY™\İ˜[Y]\ÒÙY\ØØ[˜[œÜÜ^[ØY
+]JKBˆ^\š[Y[[ÛİYÛ˜\ÚİØÚ[XR\Ôİ\ÜY
+]JH[ÙHÃBˆ™]\›ˆš[BˆCBˆ™]\›ˆ]CBˆCBƒBˆXZ[XİÜƒBˆ[˜È]]Üš^™Y^\š[Y[[ÛİYÙY\ØØ[™\^J
+CBˆOˆ^\š[Y[[ÛİYÙY\ØØ[™\^OÈÃBˆİX\™Ø\ÙH›ØYY
+]X[šY™\İ
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆX[šY™\İœİ]HOHšÙY\ØØ[Üš]P]]Üš^™YBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QBˆ]ÛÛ^HX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^Bˆ]]HHÙ[‹˜›İ[™ÙY\ØØ[˜[œÜÜ^[ØY
+›ÜˆX[šY™\İ
+KBˆ]›Ûİš[H^\š[Y[[ÛİYÛ˜\Úİ›Ûİš[
+œ›ÛNˆ]JH[ÙHÃBˆ™]\›ˆš[BˆCBˆ™]\›ˆ^\š[Y[[ÛİYÙY\ØØ[™\^JBˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆÛÛ^ˆÛÛ^BˆÛ˜\Úİˆ^\š[Y[[ÛİYÛ˜\Úİ
+]Nˆ]K›Ûİš[ˆ›Ûİš[
+CBˆ
+CBˆCBƒBˆXZ[XİÜƒBˆ[˜È™Xš[™]]Üš^™Y^\š[Y[[ÛİYÙY\ØØ[™\^JBˆ›İšY\”˜]Õ˜[YNˆİš[™ËBˆÙ[™\˜][Ûˆ[Bˆ™\šYšYY[™[™ÒY[]Nˆİš[™ÃBˆ
+HOˆ^\š[Y[[ÛİYÙY\ØØ[™\^OÈÃBˆİX\™]™\šYšYY[™[™ÒY[]Kš\Ñ[\KBˆ™\šYšYY[™[™ÒY[]K]˜Ûİ[BˆHÙ[‹›X^[][Q^\š[Y[[ÛİY™\İÜ™RY[]P]\ËBˆØ\ÙH›ØYY
+˜\ˆX[šY™\İ
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆX[šY™\İœİ]HOHšÙY\ØØ[Üš]P]]Üš^™YBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QBˆ]™]š[İ\ĞÛÛ^HX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^Bˆ™]š[İ\ĞÛÛ^œ›İšY\”˜]Õ˜[YHOH›İšY\”˜]Õ˜[YKBˆ™]š[İ\ĞÛÛ^œ[™[™ÒY[]HOH™\šYšYY[™[™ÒY[]KBˆ™]š[İ\ĞÛÛ^›İ]ÛÚ[™Ô›Ùš[RQËš\Ñ[\KBˆÙ[™\˜][ÛˆH™]š[İ\ĞÛÛ^™Ù[™\˜][Û‹Bˆ]›İšY\ˆHÛİYŞ[˜Ô›İšY\Š˜]Õ˜[YNˆ›İšY\”˜]Õ˜[YJKBˆ›İšY\‹œ™\]Z\™\ĞXØÛİ[ÛÛ›™Xİ[Û‹BˆÙ[‹˜›İ[™ÙY\ØØ[˜[œÜÜ^[ØY
+›ÜˆX[šY™\İ
+HOHš[[ÙHÃBˆ™]\›ˆš[BˆCBƒBˆ]Y˜][ÈH\Ù\‘Y˜][Ëœİ[™\™BˆİX\™Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[›İ[™\T[™[™ÒÙ^JKBˆY˜][Ëš[YÙ\Š›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Ù[™\˜][Û’Ù^JHOHÙ[™\˜][Û‹BˆY˜][Ëœİš[™Ê›Ü’Ù^Nˆ›İšY\‹œ[™[™ĞXØÛİ[Y[]RÙ^JCBˆOH™\šYšYY[™[™ÒY[]KBˆÛİYŞ[˜ÕÚÙ[”İÜ™Kš\ÕÚÙ[Š›Üˆ›İšY\ŠKBˆY˜][ËœŞ[˜Ú›Ûš^™J
+H[ÙHÃBˆ™]\›ˆš[BˆCBƒBˆ]™X›İ[™ÛÛ^H^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+Bˆ›İšY\”˜]Õ˜[YNˆ›İšY\”˜]Õ˜[YKBˆÙ[™\˜][ÛˆÙ[™\˜][Û‹Bˆ[™[™ÒY[]Nˆ™\šYšYY[™[™ÒY[]KBˆİ]ÛÚ[™Ô›Ùš[RQÎˆ×CBˆ
+CBˆİX\™Ù[‹š\Õ˜[Y^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+™X›İ[™ÛÛ^
+H[ÙHÃBˆ™]\›ˆš[BˆCBˆYˆX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^OH™X›İ[™ÛÛ^ÃBˆX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^H™X›İ[™ÛÛ^BˆÈÃBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+X[šY™\İ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ™Xš[™ÙY\[ØØ[™XÛİ™\HÈH™\šYšYYXØÛİ[ÛÛ›™Xİ[Ûˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆš[BˆCBˆCBˆ™]\›ˆ]]Üš^™Y^\š[Y[[ÛİYÙY\ØØ[™\^J
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È›İ[™^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\\Õ˜[Y›ÜÛX[\
+BˆÈX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+HOˆ›ÛÛÃBˆİX\™]™XÛİ™\UT“H^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“
+Bˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+KBˆ]İÛ™\œÚ\T“H^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\T“
+Bˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]š[SX[˜YÙ\ˆHš[SX[˜YÙ\‹™Y˜][Bˆ]Û˜\Úİ^\İÈHš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆ™XÛİ™\UT“œ]
+CBˆ]İÛ™\œÚ\^\İÈHš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆİÛ™\œÚ\T“œ]
+CBˆYˆÛ˜\Úİ^\İËBˆ›İ[™^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+›ÜˆX[šY™\İ
+HOHš[ÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆX[šY™\İš\ÒÙY\ØØ[˜[œÜÜ^[ØYBˆ]˜[œÜÜT“H^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+Bˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+KBˆš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆ˜[œÜÜT“œ]
+KBˆ›İ[™ÙY\ØØ[˜[œÜÜ^[ØY
+›ÜˆX[šY™\İ
+HOHš[ÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆÛ˜\Úİ^\İÈÃBˆ™]\›ˆYCBˆCBˆİX\™İÛ™\œÚ\^\İÈ[ÙHÈ™]\›ˆYHCBˆİX\™]İÛ™\œÚ\]HHOÈ›İ[™Y^\š[Y[[ÛİY™\İÜ™Q]JBˆ]ˆİÛ™\œÚ\T“BˆX^[][P]\ÎˆX^[][Q^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\]\ÃBˆ
+KBˆ]İÛ™\œÚ\HOÈ”ÓÓ‘XÛÙ\Š
+K™XÛÙJBˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SİÛ™\œÚ\œÙ[‹Bˆœ›ÛNˆİÛ™\œÚ\]CBˆ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ™]\›ˆİÛ™\œÚ\œØÚ[XU™\œÚ[ÛˆOHCBˆ	‰ˆİÛ™\œÚ\˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QBˆ	‰ˆİÛ™\œÚ\œ™XÛİ™\RÚ[™OHX[šY™\İœ™XÛİ™\RÚ[™BˆCBƒBˆXZ[XİÜƒBˆ[˜È™\\™Q^\š[Y[[ÛİY™\İÜ™T™XÛİ™\JBˆ\Ú[™ÈÛ˜\Úİˆ^\š[Y[[ÛİYÛ˜\ÚİBˆXØÛİ[›İ[™\PÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^ÈHš[BˆÙY\ØØ[˜[œÜÜÛ˜\Úİˆ^\š[Y[[ÛİYÛ˜\ÚİÈHš[Bˆ
+HOˆ›ÛÛÃBˆİX\™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈOHš[BˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHš[[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™Y\ÙYÈİ™\Üš]H[ˆ[™š[š\ÚYÛİY™\İÜ™H˜[œØXİ[Ûˆ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBƒBˆİÚ]ÚÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+HÃBˆØ\ÙH›ØYY
+]X[šY™\İ
+HÚ\™HX[šY™\İœİ]HOH˜ÛÛ\]YƒBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QHX[šY™\İ˜[œØXİ[Û’QBˆİX\™\˜X›PÛX\‘^\š[Y[[ÛİY™\İÜ™T[™[™ÓZ\œ›ÜŠ
+KBˆÛX[\^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ›ÜˆX[šY™\İ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆØ\ÙH›Z\ÜÚ[™ÎƒBˆİX\™U\Ù\‘Y˜][Ëœİ[™\™˜›ÛÛ
+›Ü’Ù^NˆÙ[‹™^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^JKBˆÛX[\Üœ[™Y^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™Y\ÙYÈ™\XÙHHÛİY™\İÜ™HÚÜÙHX[šY™\İ\ÈZ\ÜÚ[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆØ\ÙH›ØYY[˜]˜Z[X›Kš[˜[YƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™Y\ÙYÈİ™\Üš]H[ˆ[™š[š\ÚYÜˆ[œ™XYX›HÛİY™\İÜ™H˜[œØXİ[Ûˆ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBƒBˆ]ÙY\ØØ[˜[œÜÜ^[ØYˆ]OÃBˆÈÃBˆÙY\ØØ[˜[œÜÜ^[ØYHHÙY\ØØ[˜[œÜÜÛ˜\Úİ›X\ÃBˆHÙ[‹››Ü›X[^™YÙY\ØØ[˜[œÜÜ^[ØY
+œ›ÛNˆ	™]JCBˆCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™Y\ÙY[ˆ[˜[YÙY\[ØØ[˜[œÜÜ™XÛİ™\H^[ØYˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBƒBˆ]˜[œØXİ[Û’QHURQ
+
+CBˆİX\™]\›HÙ[‹™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“
+˜[œØXİ[Û’Qˆ˜[œØXİ[Û’Q
+KBˆ]İÛ™\œÚ\T“HÙ[‹™^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\T“
+Bˆ˜[œØXİ[Û’Qˆ˜[œØXİ[Û’QBˆ
+KBˆÙY\ØØ[˜[œÜÜ^[ØYOHš[BˆÙ[‹™^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+˜[œØXİ[Û’Qˆ˜[œØXİ[Û’Q
+HOHš[[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]™XÛİ™\RÚ[™ˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\RÚ[™HXØÛİ[›İ[™\PÛÛ^OHš[BˆÈ›Ü™[˜\PÛİY™\İÜ™CBˆˆ˜XØÛİ[›İ[™\CBˆİX\™Û˜\Úİ™]K˜Ûİ[HÙ[‹›X^[][SX[X[˜XÚİ\š[P]\ËBˆXØÛİ[›İ[™\PÛÛ^›X\
+Ù[‹š\Õ˜[Y^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+CBˆÏÈYKBˆÙY\ØØ[˜[œÜÜ^[ØYOHš[Bˆ
+XØÛİ[›İ[™\PÛÛ^Ë›İ]ÛÚ[™Ô›Ùš[RQËš\Ñ[\HOHYJH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™Y\ÙY[ˆİ™\œÚ^™YÜˆ[˜[YÛİY™\İÜ™H™XÛİ™\HÚ[‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBƒBˆ˜\ˆ[[™ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\HH˜[ÙCBˆ˜\ˆ[[™ÓYYXTİ]T™XÛİ™\HH˜[ÙCBˆÚYˆÜÊSÔÊCBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆ[[™ÓYYXTİ]T™XÛİ™\HHYCBˆ[[™ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\HHXØÛİ[›İ[™\PÛÛ^OHš[BˆCBˆÙ[ÙCBˆİX\™XØÛİ[›İ[™\PÛÛ^OHš[[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[™YƒBˆ˜\ˆX[šY™\İH^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İ
+Bˆ˜[œØXİ[Û’Qˆ˜[œØXİ[Û’QBˆİ]Nˆœ™\\š[™ËBˆXØÛİ[›İ[™\PÛÛ^ˆXØÛİ[›İ[™\PÛÛ^Bˆ\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\Nˆ[[™ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\KBˆ\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Ûˆ[[™ÓYYXTİ]T™XÛİ™\KBˆÙY\ØØ[˜[œÜÜ^[ØYˆÙY\ØØ[˜[œÜÜ^[ØYBˆ
+CBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QH˜[œØXİ[Û’QBˆ˜\ˆX[šY™\İØ\Ô\œÚ\İYH˜[ÙCBˆ˜\ˆYYXTİ]T™XÛİ™\UØ\Ğ][\YH˜[ÙCBˆÈÃBˆHÛ˜\Úİ™]KÜš]JÎˆ\›Ü[ÛœÎˆË˜]ÛZXË˜ÛÛ\]Qš[T›İXİ[Û—JCBˆ]İÛ™\œÚ\H^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SİÛ™\œÚ\
+Bˆ˜[œØXİ[Û’Qˆ˜[œØXİ[Û’QBˆ™XÛİ™\RÚ[™ˆ™XÛİ™\RÚ[™Bˆ^[ØYˆÛ˜\Úİ™]CBˆ
+CBˆ]İÛ™\œÚ\]HHH”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJİÛ™\œÚ\
+CBˆHİÛ™\œÚ\]KÜš]JBˆÎˆİÛ™\œÚ\T“BˆÜ[ÛœÎˆË˜]ÛZXË˜ÛÛ\]Qš[T›İXİ[Û—CBˆ
+CBˆYˆ]ÙY\ØØ[˜[œÜÜ^[ØYBˆ]˜[œÜÜT“HÙ[‹™^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+Bˆ˜[œØXİ[Û’Qˆ˜[œØXİ[Û’QBˆ
+HÃBˆHÙY\ØØ[˜[œÜÜ^[ØYÜš]JBˆÎˆ˜[œÜÜT“BˆÜ[ÛœÎˆË˜]ÛZXË˜ÛÛ\]Qš[T›İXİ[Û—CBˆ
+CBˆCBƒBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+X[šY™\İ
+CBˆX[šY™\İØ\Ô\œÚ\İYHYCBˆ\Ù\‘Y˜][Ëœİ[™\™œÙ]
+YK›Ü’Ù^NˆÙ[‹™^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^JCBˆİX\™\Ù\‘Y˜][Ëœİ[™\™œŞ[˜Ú›Ûš^™J
+H[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[UÜš]U[šÛ›İÛŠCBˆCBˆÚYˆÜÊSÔÊCBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆYYXTİ]T™XÛİ™\UØ\Ğ][\YHYCBˆYˆXØÛİ[›İ[™\PÛÛ^OHš[ÃBˆİX\™YYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆœ™\\™T™[[İPXØÛİ[›İ[™\P\˜Ú]™T™XÛİ™\J˜[œØXİ[Û’Qˆ˜[œØXİ[Û’Q
+H[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[UÜš]U[šÛ›İÛŠCBˆCBˆH[ÙHÃBˆİX\™YYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆœİ\Ü[™YYXTİ]TŞ[˜Ñ›Ü”™\\™Y™XÛİ™\J˜[œØXİ[Û’Qˆ˜[œØXİ[Û’Q
+H[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ™š[UÜš]U[šÛ›İÛŠCBˆCBˆCBˆCBˆÙ[™YƒBˆX[šY™\İœİ]HHœ™\\™YBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+X[šY™\İ
+CBˆ™]\›ˆYCBˆHØ]ÚÃBƒBˆ˜\ˆYYXTİ]T™[X\ÙTİXØÙYYYHZ[[™ÓYYXTİ]T™XÛİ™\CBˆÚYˆÜÊSÔÊCBˆYˆYYXTİ]T™XÛİ™\UØ\Ğ][\YØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆYˆ[[™ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\HÃBˆYYXTİ]T™[X\ÙTİXØÙYYYHYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆ˜ÛÛ\]T™[[İPXØÛİ[›İ[™\P\˜Ú]™T™XÛİ™\JBˆ˜[œØXİ[Û’Qˆ˜[œØXİ[Û’QBˆ
+CBˆH[ÙHÃBˆYYXTİ]T™[X\ÙTİXØÙYYYHYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆ˜ÛÛ\]SYYXTİ]TŞ[˜Ô™\\™Y™XÛİ™\J˜[œØXİ[Û’Qˆ˜[œØXİ[Û’Q
+CBˆCBˆCBˆÙ[™YƒBˆYˆX[šY™\İØ\Ô\œÚ\İYÃBƒBˆÈH\ØØ\™™\\š[™Ñ^\š[Y[[ÛİY™\İÜ™JBˆX[šY™\İBˆYYXTİ]T™[X\ÙP[™XYTİXØÙYYYˆYYXTİ]T™[X\ÙTİXØÙYYYBˆ
+CBˆH[ÙHÃBˆOÈš[SX[˜YÙ\‹™Y˜][œ™[[İ™R][J]ˆ\›
+CBˆOÈš[SX[˜YÙ\‹™Y˜][œ™[[İ™R][J]ˆİÛ™\œÚ\T“
+CBˆYˆ]˜[œÜÜT“HÙ[‹™^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+Bˆ˜[œØXİ[Û’Qˆ˜[œØXİ[Û’QBˆ
+HÃBˆOÈš[SX[˜YÙ\‹™Y˜][œ™[[İ™R][J]ˆ˜[œÜÜT“
+CBˆCBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QHš[BˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ\œÚ\İÛİY™\İÜ™H™XÛİ™\HÛ˜\Úİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È\ØØ\™™\\š[™Ñ^\š[Y[[ÛİY™\İÜ™JBˆÈX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆYYXTİ]T™[X\ÙP[™XYTİXØÙYYYˆ›ÛÛH˜[ÙCBˆ
+HOˆ›ÛÛÃBˆİX\™Ø\ÙH›ØYY
+˜\ˆİ\œ™[
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆİ\œ™[˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QBˆİ\œ™[œİ]HOHœ™\\š[™ËBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHİ\œ™[˜[œØXİ[Û’Q[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆİ\œ™[š\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Û‹Bˆ[YYXTİ]T™[X\ÙP[™XYTİXØÙYYYBˆ\™[X\ÙSYYXTİ]T™XÛİ™\U˜[œØXİ[ÛŠ›Üˆİ\œ™[
+HÃBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™\˜X›PÛX\‘^\š[Y[[ÛİY™\İÜ™T[™[™ÓZ\œ›ÜŠ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆİ\œ™[œİ]HH˜ÛÛ\]YBˆÈÃBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+İ\œ™[
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İX˜[™Ûˆ[ˆ[˜ÛÛ\]HÛİY™\İÜ™H™\\˜][Ûˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆ™]\›ˆÛX[\^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ›Üˆİ\œ™[
+CBˆCBƒBˆXZ[XİÜƒBˆ[˜È]]Üš^™Q^\š[Y[[ÛİYÙY\ØØ[Üš]JBˆÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ
+HOˆ›ÛÛÃBˆİX\™Ø\ÙH›ØYY
+˜\ˆX[šY™\İ
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆX[šY™\İœİ]HOHœ™\\™YBˆX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^OHÛÛ^BˆX[šY™\İš\ÒÙY\ØØ[˜[œÜÜ^[ØYBˆÙ[‹˜›İ[™ÙY\ØØ[˜[œÜÜ^[ØY
+›ÜˆX[šY™\İ
+HOHš[BˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’Q[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆX[šY™\İœİ]HHšÙY\ØØ[Üš]P]]Üš^™YBˆÈÃBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+X[šY™\İ
+CBˆ™]\›ˆYCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ]]Üš^™HÙY\[ØØ[›İšY\ˆ™\^Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBƒBˆXZ[XİÜƒBˆ[˜È]]Üš^™Q^\š[Y[[ÛİY™\İÜ™PÛÛ[Z]
+BˆÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ
+HOˆ›ÛÛÃBˆİX\™Ø\ÙH›ØYY
+˜\ˆX[šY™\İ
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆX[šY™\İœİ]HOHœ™\\™YX[šY™\İœİ]HOHšÙY\ØØ[Üš]P]]Üš^™YBˆ]™\\™YÛÛ^HX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^BˆÙ[‹™^\š[Y[[ÛİY™\İÜ™P›İ[™\P]]Üš]SX]Ú\ÊBˆ™\\™YÛÛ^BˆÛÛ^Bˆ
+KBˆÙ[‹š\Õ˜[Y^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^
+ÛÛ^
+KBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’Q[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆX[šY™\İœİ]HOHšÙY\ØØ[Üš]P]]Üš^™YÃBˆİX\™]›İšY\ˆHÛİYŞ[˜Ô›İšY\Š˜]Õ˜[YNˆÛÛ^œ›İšY\”˜]Õ˜[YJKBˆ\Ù\‘Y˜][Ëœİ[™\™˜›ÛÛ
+Bˆ›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[›İ[™\T[™[™ÒÙ^CBˆ
+KBˆ\Ù\‘Y˜][Ëœİ[™\™š[YÙ\ŠBˆ›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Ù[™\˜][Û’Ù^CBˆ
+HOHÛÛ^™Ù[™\˜][Û‹Bˆ\Ù\‘Y˜][Ëœİ[™\™œİš[™ÊBˆ›Ü’Ù^Nˆ›İšY\‹œ[™[™ĞXØÛİ[Y[]RÙ^CBˆ
+HOHÛÛ^œ[™[™ÒY[]H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆCBˆX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^HÛÛ^BˆX[šY™\İœİ]HH˜ÛÛ[Z]]]Üš^™YBˆÈÃBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+X[šY™\İ
+CBˆ™]\›ˆYCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ]]Üš^™HHXØÛİ[X›İ[™\H™XÛİ™\HÛÛ[Z]ˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBƒBˆXZ[XİÜƒBˆ\ØØ\™X›T™\İ[Bˆ[˜ÈÛÛ\]Q^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+HOˆ›ÛÛÃBˆİX\™Ø\ÙH›ØYY
+˜\ˆX[šY™\İ
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QBˆX[šY™\İœİ]HOHœ™\\š[™ËBˆX[šY™\İœİ]HOHšÙY\ØØ[Üš]P]]Üš^™Y[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆX[šY™\İœİ]HOH˜ÛÛ[Z]]]Üš^™YÃBˆÚYˆÜÊSÔÊCBˆİX\™]ÛÛ^HX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^BˆÛÛ\]P]]Üš^™YXØÛİ[›İ[™\JÛÛ^
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ]]Üš^™YXØÛİ[X›İ[™\H™XÛİ™\H™[XZ[œÈ[™[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[ÙCBˆ™]\›ˆ˜[ÙCBˆÙ[™YƒBˆCBˆİX\™\˜X›PÛX\‘^\š[Y[[ÛİY™\İÜ™T[™[™ÓZ\œ›ÜŠ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆX[šY™\İœİ]HOH˜ÛÛ\]YÃBˆX[šY™\İœİ]HH˜ÛÛ\]YBˆÈÃBˆHÙ[‹Üš]Q^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+X[šY™\İ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İX\šÈÛİY™\İÜ™H™XÛİ™\HÛÛ\]Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBˆ™]\›ˆÛX[\^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ›ÜˆX[šY™\İ
+CBˆCBƒBˆXZ[XİÜƒBˆ[˜È™XÛİ™\’[\œ\Y^\š[Y[[ÛİY™\İÜ™RY“™YYY
+
+HÃBˆİX\™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈOHš[[ÙHÈ™]\›ˆCBˆ]Y˜][ÈH\Ù\‘Y˜][Ëœİ[™\™BˆİÚ]ÚÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+HÃBˆØ\ÙH›Z\ÜÚ[™ÎƒBˆYˆY˜][Ë˜›ÛÛ
+›Ü’Ù^NˆÙ[‹™^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^JHÃBˆİÚ]ÚÙ[‹›ØYYØXŞQ^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+
+HÃBˆØ\ÙH›ØYY
+]ØY™PÛİY]JNƒBˆ™XÛİ™\“YØXŞQ^\š[Y[[ÛİY™\İÜ™JØY™PÛİY]JCBˆØ\ÙH[˜]˜Z[X›J]™X\ÛÛŠNƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“YØXŞHÛİY™\İÜ™H™XÛİ™\H\ÈØZ][™È›Üˆ›İXİY]H
+
+™X\ÛÛŠJH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆØ\ÙHš[˜[Y
+]™X\ÛÛŠNƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“YØXŞHÛİY™\İÜ™H™XÛİ™\H\È›ØÚÙYH[ˆ[˜[YÛ˜\Úİ
+
+™X\ÛÛŠJH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆØ\ÙH›Z\ÜÚ[™ÎƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİY™\İÜ™H™XÛİ™\H\È›ØÚÙY™XØ]\ÙH›İ]ÈX[šY™\İ[™YØXŞHÛ˜\Úİ\™HZ\ÜÚ[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆ™]\›ƒBˆCBˆYˆÛX[\Üœ[™Y^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ
+HÃBˆ™\İ[YTŞ[˜ĞY\‘^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+CBˆCBˆØ\ÙH[˜]˜Z[X›J]™X\ÛÛŠNƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİY™\İÜ™H™XÛİ™\H\ÈØZ][™È›Üˆ›İXİY]H
+
+™X\ÛÛŠJH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆØ\ÙHš[˜[Y
+]™X\ÛÛŠNƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİY™\İÜ™H™XÛİ™\H\È›ØÚÙYH[ˆ[˜[YX[šY™\İ
+
+™X\ÛÛŠJH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆØ\ÙH›ØYY
+]X[šY™\İ
+NƒBˆYˆ]Xİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİY™\İÜ™H™XÛİ™\H™Y\ÙYHZ\ÛX]ÚYXİ]™H˜[œØXİ[Ûˆ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ƒBˆCBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QHX[šY™\İ˜[œØXİ[Û’QBˆİÚ]ÚX[šY™\İœİ]HÃBˆØ\ÙHœ™\\š[™ÎƒBƒBˆYˆ\ØØ\™™\\š[™Ñ^\š[Y[[ÛİY™\İÜ™JX[šY™\İ
+HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘\ØØ\™Y[ˆ[\œ\YÛİY™\İÜ™H™\\˜][Ûˆ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆØ\ÙH˜ÛÛ\]YƒBˆİX\™\˜X›PÛX\‘^\š[Y[[ÛİY™\İÜ™T[™[™ÓZ\œ›ÜŠ
+H[ÙHÈ™]\›ˆCBˆÈHÛX[\^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ›ÜˆX[šY™\İ
+CBˆØ\ÙH˜ÛÛ[Z]]]Üš^™YƒBƒBˆYˆÛÛ\]Q^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘š[˜[^™Y[ˆ[\œ\YÛÛ[Z]YXØÛİ[X›İ[™\H™\İÜ™H‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆØ\ÙHšÙY\ØØ[Üš]P]]Üš^™YƒBƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ]]Üš^™YÙY\[ØØ[ÛİY™XÛİ™\H\ÈØZ][™È›Üˆ›İšY\ˆ™\^H‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆØ\ÙHœ™\\™YƒBˆ™XÛİ™\”™\\™Y^\š[Y[[ÛİY™\İÜ™JX[šY™\İ
+CBˆCBˆCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™XÛİ™\“YØXŞQ^\š[Y[[ÛİY™\İÜ™JÈØY™PÛİY]Nˆ]JHÃBˆİX\™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈOHš[[ÙHÈ™]\›ˆCBˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈH\ÚÈÈXZ[XİÜˆİÙXZÈÙ[—H[ƒBˆİX\™]Ù[ˆ[ÙHÈ™]\›ˆCBˆY™\ˆÈÙ[‹™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈHš[CBˆİX\™]ØZ]Ù[‹œ™\İÜ™Q^\š[Y[[ÛİYÛ˜\Úİ
+Bˆœ›ÛNˆØY™PÛİY]KBˆ™\Ù\™SYYXTİ]Q›ÜÛİYÚ]ˆ˜[ÙCBˆ
+HOHš[[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“YØXŞHÛİY™\İÜ™H™XÛİ™\H™[XZ[œÈ[™[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ƒBˆCBƒBˆİX\™Ù[‹™\˜X›PÛX\‘^\š[Y[[ÛİY™\İÜ™T[™[™ÓZ\œ›ÜŠ
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“YØXŞHÛİY™\İÜ™H™XÛİ™\HÛİ[›İ\˜X›HÛÛ[Z]‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ƒBˆCBˆİX\™Ù[‹˜ÛX[\Üœ[™Y^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“YØXŞHÛİY™\İÜ™HÛÛ\]Y]]Èİ[H\Y˜XİÛİ[›İ™H™[[İ™Y‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ƒBˆCBˆÙ[‹œ™\İ[YTŞ[˜ĞY\‘^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+CBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™XÛİ™\™YØØ[İ]Hœ›ÛHH™[X\ÙYÛİY™\İÜ™H›Ü›X]‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™XÛİ™\”™\\™Y^\š[Y[[ÛİY™\İÜ™JBˆÈX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+HÃBˆİX\™Ù[‹˜›İ[™^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+›ÜˆX[šY™\İ
+HOHš[[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™\\™YÛİY™\İÜ™H™XÛİ™\HÛ˜\ÚİİÛ™\œÚ\\ÈZ\ÜÚ[™ÈÜˆ[˜[Y‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ƒBˆCBˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈH\ÚÈÈXZ[XİÜˆİÙXZÈÙ[—H[ƒBˆİX\™]Ù[ˆ[ÙHÈ™]\›ˆCBˆY™\ˆÈÙ[‹™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\U\ÚÈHš[CBˆ]™\İÜ™YH]ØZ]Ù[‹œ™\İÜ™T™\\™Y^\š[Y[[ÛİY™\İÜ™JX[šY™\İ
+CBˆYˆ™\İÜ™YÙ[‹˜ÛÛ\]Q^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”™XÛİ™\™YØØ[İ]HY\ˆ[ˆ[\œ\YÛİY™\İÜ™H‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ’[\œ\YÛİY™\İÜ™H™XÛİ™\H™[XZ[œÈ[™[™È‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™\İÜ™T™\\™Y^\š[Y[[ÛİY™\İÜ™JBˆÈX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+H\Ş[˜ÈOˆ›ÛÛÃBˆİX\™]›İ[™Û˜\ÚİHÙ[‹˜›İ[™^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+Bˆ›ÜˆX[šY™\İBˆ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆİÚ]ÚX[šY™\İœ™XÛİ™\RÚ[™ÃBˆØ\ÙH˜XØÛİ[›İ[™\NƒBˆİX\™]ÛÛ^HX[šY™\İ˜XØÛİ[›İ[™\PÛÛ^[ÙHÈ™]\›ˆ˜[ÙHCBˆ]›İXİY›Ùš[RQÈHÙ]
+ÛÛ^›İ]ÛÚ[™Ô›Ùš[RQÊCBˆ˜XÚÙ\“X[˜YÙ\‹œÚ\™Y˜™YÚ[•[]]™PXØÛİ[›İ[™\PÜ™Y[X[™\Ù\˜][ÛŠBˆ›Ùš[RQÎˆ›İXİY›Ùš[RQÃBˆ
+CBˆ]™\İÜ™YØØ[İ]HH]ØZ]™\İÜ™P˜XÚİ\
+œ›ÛNˆ›İ[™Û˜\Úİ\›
+CBˆİX\™™\İÜ™YØØ[İ]H[ÙHÈ™]\›ˆ˜[ÙHCBˆİX\™X[šY™\İš\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\H[ÙHÃBƒBˆ˜XÚÙ\“X[˜YÙ\‹œÚ\™Y™[™[]]™PXØÛİ[›İ[™\PÜ™Y[X[™\Ù\˜][ÛŠBˆ›Ùš[RQÎˆ›İXİY›Ùš[RQÃBˆ
+CBˆ™]\›ˆYCBˆCBˆÚYˆÜÊSÔÊCBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆ]™\İÜ™YØ[›ÛšXØ[\˜Ú]™HHYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆœ™\İÜ™T™[[İPXØÛİ[›İ[™\P\˜Ú]™T™XÛİ™\JBˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+CBˆYˆ™\İÜ™YØ[›ÛšXØ[\˜Ú]™HÃBˆ˜XÚÙ\“X[˜YÙ\‹œÚ\™Y™[™[]]™PXØÛİ[›İ[™\PÜ™Y[X[™\Ù\˜][ÛŠBˆ›Ùš[RQÎˆ›İXİY›Ùš[RQÃBˆ
+CBˆCBˆ™]\›ˆ™\İÜ™YØ[›ÛšXØ[\˜Ú]™CBˆCBˆÙ[™YƒBˆ™]\›ˆ˜[ÙCBˆØ\ÙH›Ü™[˜\PÛİY™\İÜ™NƒBˆ™]\›ˆ]ØZ]™\İÜ™P˜XÚİ\
+œ›ÛNˆ›İ[™Û˜\Úİ\›
+CBˆCBˆCBƒBˆXZ[XİÜƒBˆ[˜È›Û˜XÚÔ™\\™Y^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+H\Ş[˜ÈOˆ›ÛÛÃBˆİX\™Ø\ÙH›ØYY
+]X[šY™\İ
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’Q[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆYˆX[šY™\İœİ]HOH˜ÛÛ[Z]]]Üš^™YÃBˆ™]\›ˆÛÛ\]Q^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+CBˆCBˆİX\™X[šY™\İœİ]HOHœ™\\™YBˆÙ[‹˜›İ[™^\š[Y[[ÛİY™\İÜ™TÛ˜\Úİ
+›ÜˆX[šY™\İ
+HOHš[[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]™\İÜ™YH]ØZ]™\İÜ™T™\\™Y^\š[Y[[ÛİY™\İÜ™JX[šY™\İ
+CBˆİX\™™\İÜ™Y[ÙHÈ™]\›ˆ˜[ÙHCBˆ™]\›ˆÛÛ\]Q^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+CBˆCBƒBˆÚYˆÜÊSÔÊCBˆXZ[XİÜƒBˆš]˜]H[˜ÈÛÛ\]P]]Üš^™YXØÛİ[›İ[™\JBˆÈÛÛ^ˆ^\š[Y[[ÛİY™\İÜ™P›İ[™\PÛÛ^Bˆ
+HOˆ›ÛÛÃBˆ]\ÜÜÚ][ÛˆHÙ[‹˜]]Üš^™Y™\^Q\ÜÜÚ][ÛŠ›ÜˆÛÛ^
+CBˆ]Y[]T\œÚ\İYˆ›ÛÛBˆİÚ]Ú\ÜÜÚ][ÛˆÃBˆØ\ÙH˜YÜ[™[™Ê]›İšY\ŠNƒBˆ]Y˜][ÈH\Ù\‘Y˜][Ëœİ[™\™BˆYˆ][™[™ÒY[]HHÛÛ^œ[™[™ÒY[]HÃBˆY˜][ËœÙ]
+[™[™ÒY[]K›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Y[]RÙ^JCBˆY˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Y[]U[œ™\ÛÛ™YÙ^JCBˆH[ÙHÃBˆY˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Y[]RÙ^JCBˆY˜][ËœÙ]
+YK›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[Y[]U[œ™\ÛÛ™YÙ^JCBˆCBˆY˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^Nˆ›İšY\‹œ[™[™ĞXØÛİ[Y[]RÙ^JCBˆY˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^Nˆ›İšY\‹˜XØÛİ[›İ[™\T[™[™ÒÙ^JCBˆY[]T\œÚ\İYHY˜][ËœŞ[˜Ú›Ûš^™J
+CBˆØ\ÙH˜[™XYPYÜYƒBˆY[]T\œÚ\İYH\Ù\‘Y˜][Ëœİ[™\™œŞ[˜Ú›Ûš^™J
+CBˆØ\ÙHœİ\\œÙYYÛÛ›™Xİ[ÛƒBƒBˆY[]T\œÚ\İYHYCBˆØ\ÙH[˜]˜Z[X›Kš[˜[YƒBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™Y[]T\œÚ\İY[ÙHÈ™]\›ˆ˜[ÙHCBƒBˆ]›Ùš[RQÈHÙ]
+ÛÛ^›İ]ÛÚ[™Ô›Ùš[RQÊCBˆ]ÛX[\›Ùš[RQÈH^\š[Y[[ÛİY˜XÚÙ\XØÛİ[›İ[™\TÛXŞKœ›Ùš[RQÕĞÛX\ŠBˆİ]ÛÚ[™Ô›Ùš[RQÎˆ›Ùš[RQËBˆ™\İÜ™Y˜XÚÙ\”›Ùš[RQÎˆÙ]
+ÛÛ^œ™\İÜ™Y˜XÚÙ\”›Ùš[RQÊCBˆ
+CBˆ˜XÚÙ\“X[˜YÙ\‹œÚ\™Y™[™[]]™PXØÛİ[›İ[™\PÜ™Y[X[™\Ù\˜][ÛŠBˆ›Ùš[RQÎˆ›Ùš[RQÃBˆ
+CBˆ˜\ˆ˜XÚÙ\ÛX[\\Ñ\˜X›T›İXİYHYCBˆ›Üˆ›Ùš[RQ[ˆÛX[\›Ùš[RQÈÃBˆ˜XÚÙ\ÛX[\\Ñ\˜X›T›İXİYH˜XÚÙ\“X[˜YÙ\‹œÚ\™YBˆ˜ÛX\”İÜ™Q›ÜÛÛ™š\›YYXØÛİ[›İ[™\J›Ùš[RQˆ›Ùš[RQ
+CBˆ	‰ˆ˜XÚÙ\ÛX[\\Ñ\˜X›T›İXİYBˆCBˆİX\™˜XÚÙ\ÛX[\\Ñ\˜X›T›İXİY[ÙHÈ™]\›ˆ˜[ÙHCBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆ™]\›ˆYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™Y™š[˜[^™SYYXTİ]T™[[İPXØÛİ[›İ[™\J
+CBˆCBˆ™]\›ˆYCBˆCBˆÙ[™YƒBƒBˆXZ[XİÜƒBˆš]˜]H[˜È\˜X›PÛX\‘^\š[Y[[ÛİY™\İÜ™T[™[™ÓZ\œ›ÜŠ
+HOˆ›ÛÛÃBˆ\Ù\‘Y˜][Ëœİ[™\™œÙ]
+˜[ÙK›Ü’Ù^NˆÙ[‹™^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^JCBˆİX\™\Ù\‘Y˜][Ëœİ[™\™œŞ[˜Ú›Ûš^™J
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ\˜X›HÛX\ˆHÛİY™\İÜ™H[™[™ÈZ\œ›Üˆ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆ™]\›ˆYCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™[X\ÙSYYXTİ]T™XÛİ™\U˜[œØXİ[ÛŠBˆ›ÜˆX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+HOˆ›ÛÛÃBˆİX\™X[šY™\İš\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Ûˆ[ÙHÈ™]\›ˆYHCBˆÚYˆÜÊSÔÊCBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆYˆX[šY™\İš\ĞØ[›ÛšXØ[\˜Ú]™T™XÛİ™\HÃBˆ™]\›ˆYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆ˜ÛÛ\]T™[[İPXØÛİ[›İ[™\P\˜Ú]™T™XÛİ™\JBˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+CBˆCBˆ™]\›ˆYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆ˜ÛÛ\]SYYXTİ]TŞ[˜Ô™\\™Y™XÛİ™\JBˆ˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’QBˆ
+CBˆCBˆÙ[™YƒBˆ™]\›ˆ˜[ÙCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜ÈÛX[\^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊBˆ›ÜˆX[šY™\İˆ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\SX[šY™\İBˆ
+HOˆ›ÛÛÃBˆİX\™Ø\ÙH›ØYY
+]İ\œ™[
+HHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆİ\œ™[˜[œØXİ[Û’QOHX[šY™\İ˜[œØXİ[Û’QBˆİ\œ™[œİ]HOH˜ÛÛ\]YBˆÙ[‹˜›İ[™^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\\Õ˜[Y›ÜÛX[\
+X[šY™\İ
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]š[SX[˜YÙ\ˆHš[SX[˜YÙ\‹™Y˜][Bˆ›Üˆ\›[ˆÃBˆÙ[‹™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\UT“
+˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’Q
+KBˆÙ[‹™^\š[Y[[ÛİY™\İÜ™SİÛ™\œÚ\T“
+˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’Q
+KBˆÙ[‹™^\š[Y[[ÛİY™\İÜ™U˜[œÜÜT“
+˜[œØXİ[Û’QˆX[šY™\İ˜[œØXİ[Û’Q
+CBˆK˜ÛÛ\XİX\
+È	JHÚ\™Hš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆ\›œ]
+HÃBˆÈÃBˆHš[SX[˜YÙ\‹œ™[[İ™R][J]ˆ\›
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ™[[İ™H›İXİYÛİY™\İÜ™H™XÛİ™\H\Y˜Xİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBˆYˆX[šY™\İš\ÓYYXTİ]T™XÛİ™\U˜[œØXİ[Û‹Bˆ\™[X\ÙSYYXTİ]T™XÛİ™\U˜[œØXİ[ÛŠ›ÜˆX[šY™\İ
+HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İÛÛ\]HH›İ[™YYXK\İ]H™XÛİ™\H˜[œØXİ[Ûˆ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]X[šY™\İT“HÙ[‹™^\š[Y[[ÛİY™\İÜ™SX[šY™\İT“[ÙHÈ™]\›ˆ˜[ÙHCBˆÈÃBˆYˆš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆX[šY™\İT“œ]
+HÃBˆHš[SX[˜YÙ\‹œ™[[İ™R][J]ˆX[šY™\İT“
+CBˆCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ™[[İ™HÛÛ\]YÛİY™\İÜ™HX[šY™\İˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆXİ]™Q^\š[Y[[ÛİY™\İÜ™U˜[œØXİ[Û’QHš[Bˆ™\İ[YTŞ[˜ĞY\‘^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+CBˆ™]\›ˆYCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜ÈÛX[\Üœ[™Y^\š[Y[[ÛİY™\İÜ™P\Y˜XİÊ
+HOˆ›ÛÛÃBˆİX\™Ø\ÙH›Z\ÜÚ[™ÈHÙ[‹›ØY^\š[Y[[ÛİY™\İÜ™SX[šY™\İ
+
+KBˆU\Ù\‘Y˜][Ëœİ[™\™˜›ÛÛ
+›Ü’Ù^NˆÙ[‹™^\š[Y[[ÛİY™\İÜ™T[™[™ÒÙ^JH[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]š[SX[˜YÙ\ˆHš[SX[˜YÙ\‹™Y˜][Bˆ˜\ˆİXØÙYYYHYCBˆİX\™]\™XİÜHHÙ[‹™^\š[Y[[ÛİY™\İÜ™Q\™XİÜUT“[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]\›ÎˆÕT“CBˆÈÃBˆ\›ÈHHš[SX[˜YÙ\‹˜ÛÛ[ÓÙ‘\™XİÜJBˆ]ˆ\™XİÜKBˆ[˜ÛY[™Ô›Ü\Y\Ñ›Ü’Ù^\Îˆš[Bˆ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ[[Y\˜]HÜœ[™YÛİY™\İÜ™H™XÛİ™\H\Y˜XİÎˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆ›Üˆ\›[ˆ\›ÈÃBˆ]˜[YHH\››\İ]ÛÛ\Û™[Bˆ]\ÓYØXŞHH˜[YHOHÙ[‹›YØXŞQ^\š[Y[[ÛİY™\İÜ™T™XÛİ™\Qš[[˜[YCBˆ]\Ğ›İ[™™XÛİ™\HH˜[YKš\Ô™Yš^
+Ù[‹™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\T™Yš^
+CBˆ	‰ˆ˜[YKš\ÔİY™š^
+Ù[‹™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\TİY™š^
+CBˆ	‰ˆ˜[YHOHÛİYŞ[˜Ô™\İÜ™T™XÛİ™\K›X[šY™\İšœÛÛˆƒBˆİX\™\ÓYØXŞH\Ğ›İ[™™XÛİ™\H[ÙHÈÛÛ[YHCBˆÈÃBˆHš[SX[˜YÙ\‹œ™[[İ™R][J]ˆ\›
+CBˆHØ]ÚÃBˆİXØÙYYYH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆÛİ[›İ™[[İ™HÜœ[™YÛİY™\İÜ™H™XÛİ™\H\Y˜Xİˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆCBˆÚYˆÜÊSÔÊCBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠKBˆSYYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™Y˜ÛÛ\]T™[[İPXØÛİ[›İ[™\P\˜Ú]™T™XÛİ™\JBˆ˜[œØXİ[Û’Qˆš[Bˆ
+HÃBˆİXØÙYYYH˜[ÙCBˆCBˆÙ[™YƒBˆ™]\›ˆİXØÙYYYBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™\İ[YTŞ[˜ĞY\‘^\š[Y[[ÛİY™\İÜ™T™XÛİ™\J
+HÃBˆYˆØ]˜Z[X›JSÔÈMËŒ“ÔÈMËŒ
+ŠHÃBˆYYXTİ]TŞ[˜Ğ›Ûİİ˜\œ™\İ[YPY\XØÛİ[›İ[™\T™XÛİ™\J
+CBˆCBˆ›İYšXØ][ÛÙ[\‹™Y˜][œÜİ
+Bˆ˜[YNˆ™^\š[Y[[ÛİY™\İÜ™T™XÛİ™\QYÛÛ\]KBˆØš™Xİˆš[Bˆ
+CBˆCBƒBœš]˜]HİXİØÛÜYÙ][™ÜÑY˜][ÈÃBƒBˆ˜\ˆ\Y\Ô›Ùš[TØÛÜYÜš]\ÈHYCBƒBˆ˜\ˆ\Y\ÔÙ\šXÙ\ÔØÛÜYÜš]\ÈHYCBƒBˆ˜\ˆXÛÙYÜ]™[Ù][™ÒÙ^\ÎˆÙ]İš[™ÏÈHš[BƒBˆ˜\ˆ[Ü]™[Ù][™ÜÕÙ\™PØ\\™YHYCBƒBˆš]˜]H[˜ÈİÜ™JÈÙ^Nˆİš[™ÊHOˆ\Ù\‘Y˜][ÈÃBˆ›Ùš[TÙ][™ÜÔİÜ™KœİÜ™J›ÜˆÙ^JCBˆCBƒBˆš]˜]H[˜ÈØ[•Üš]JÈÙ^Nˆİš[™ÊHOˆ›ÛÛÃBˆYˆ]XÛÙYÜ]™[Ù][™ÒÙ^\ËBˆP˜XÚİ\]KÜ]™[Ù][™Ò\Ğ]]Üš]]]™JBˆİÜ˜YÙRÙ^NˆÙ^KBˆXÛÙYÚ\™RÙ^\ÎˆXÛÙYÜ]™[Ù][™ÒÙ^\ËBˆ[Ù][™ÜÕÙ\™PØ\\™Yˆ[Ü]™[Ù][™ÜÕÙ\™PØ\\™YBˆ
+HÃBˆ™]\›ˆ˜[ÙCBˆCBˆİÚ]ÚXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHÃBˆØ\ÙHœ›Ùš[Nˆ™]\›ˆ\Y\Ô›Ùš[TØÛÜYÜš]\ÃBˆØ\ÙHœÙ\šXÙ\Îˆ™]\›ˆ\Y\ÔÙ\šXÙ\ÔØÛÜYÜš]\ÃBˆØ\ÙH™]šXÙNˆ™]\›ˆYCBˆCBˆCBƒBˆ[˜ÈÙ]
+È˜[YNˆ[OË›Ü’Ù^HÙ^Nˆİš[™ÊHÃBˆİX\™Ø[•Üš]JÙ^JH[ÙHÈ™]\›ˆCBˆİÜ™JÙ^JKœÙ]
+˜[YK›Ü’Ù^NˆÙ^JCBˆCBˆ[˜È™[[İ™SØš™Xİ
+›Ü’Ù^HÙ^Nˆİš[™ÊHÃBˆİX\™Ø[•Üš]JÙ^JH[ÙHÈ™]\›ˆCBˆİÜ™JÙ^JKœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆÙ^JCBˆCBˆ[˜ÈØš™Xİ
+›Ü’Ù^HÙ^Nˆİš[™ÊHOˆ[OÈÈİÜ™JÙ^JK›Øš™Xİ
+›Ü’Ù^NˆÙ^JHCBˆ[˜Èİš[™Ê›Ü’Ù^HÙ^Nˆİš[™ÊHOˆİš[™ÏÈÈİÜ™JÙ^JKœİš[™Ê›Ü’Ù^NˆÙ^JHCBˆ[˜È›ÛÛ
+›Ü’Ù^HÙ^Nˆİš[™ÊHOˆ›ÛÛÈİÜ™JÙ^JK˜›ÛÛ
+›Ü’Ù^NˆÙ^JHCBˆ[˜È[YÙ\Š›Ü’Ù^HÙ^Nˆİš[™ÊHOˆ[ÈİÜ™JÙ^JKš[YÙ\Š›Ü’Ù^NˆÙ^JHCBˆ[˜ÈİX›J›Ü’Ù^HÙ^Nˆİš[™ÊHOˆİX›HÈİÜ™JÙ^JK™İX›J›Ü’Ù^NˆÙ^JHCBˆ[˜È]J›Ü’Ù^HÙ^Nˆİš[™ÊHOˆ]OÈÈİÜ™JÙ^JK™]J›Ü’Ù^NˆÙ^JHCBˆ[˜Èİš[™Ğ\œ˜^J›Ü’Ù^HÙ^Nˆİš[™ÊHOˆÔİš[™×OÈÈİÜ™JÙ^JKœİš[™Ğ\œ˜^J›Ü’Ù^NˆÙ^JHCBƒBˆ[˜ÈXİ[Û˜\T™\™\Ù[][ÛŠ
+HOˆÔİš[™Îˆ[WHÃBˆ›Ùš[TÙ][™ÜÔİÜ™K˜Xİ]™K™Xİ[Û˜\T™\™\Ù[][ÛŠ
+CBˆCBŸCBƒBˆš]˜]H[˜ÈØ]\˜XÚİ\]JBˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\Úİˆ›ÛÛH˜[ÙKBˆ[˜ÛYTš]˜]PÛİY™XÛİ™\T^[ØYÎˆ›ÛÛH˜[ÙCBˆ
+H›İÜÈOˆ˜XÚİ\]HÃBƒBˆİX\™]Ø\\™PÛÛ^H˜XÚİ\Ø\\™PÛÛ^
+
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Y\ÙYÈ^Ü[ˆ[œ™XYX›H›Ùš[H›Üİ\ˆ‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹œ›Ùš[T›Üİ\•[œ™XYX›CBˆCBˆ]Ø\\™YØÛÜHHØ\\™PÛÛ^œØÛÜCBˆ]Xİ]™T›Ùš[RQHØ\\™YØÛÜKœ›Ùš[RQBˆ]\Ù\‘Y˜][ÈHØÛÜYÙ][™ÜÑY˜][Ê
+CBƒBˆ˜\ˆXØÙ[ÛÛÜ‘]Nˆ]OÃBˆYˆ]ÛÛÜ‘]HH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆ˜XØÙ[ÛÛÜˆŠHÃBˆXØÙ[ÛÛÜ‘]HHÛÛÜ‘]CBˆCBˆ]Ù][™ÜÑÜ˜YY[ÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆ™XÛ\ÙU[YQÜ˜YY[ÛÛÜˆŠCBˆ]™XY\XØÙ[ÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆœ™XY\XØÙ[ÛÛÜˆŠCBˆ]™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆœ™XY\•[YQÜ˜YY[ÛÛÜˆŠCBƒBˆ]Ù[XİY\X\˜[˜ÙHH˜XÚİ\]KœØ[š]^™Y\X\˜[˜ÙJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆœÙ[XİY\X\˜[˜ÙHŠJCBˆ]™XY\”Ù[XİY\X\˜[˜ÙHH˜XÚİ\]KœØ[š]^™Y\X\˜[˜ÙJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\”Ù[XİY\X\˜[˜ÙHŠHÏÈÙ[XİY\X\˜[˜ÙJCBˆ]™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YŠCBˆ][˜X›TİX]\ĞQY˜][H\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ™[˜X›TİX]\ĞQY˜][ŠCBˆ]Y˜][İX]S[™İXYÙHH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™Y˜][İX]S[™İXYÙHŠHÏÈ™[™ÈƒBˆ]^Y\”İX]P\X\˜[˜ÙQ[˜X›Yˆ›ÛÛBˆYˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\”İX]P\X\˜[˜ÙQ[˜X›YŠHOHš[ÃBˆ^Y\”İX]P\X\˜[˜ÙQ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ™[˜X›U“ÔİX]QY]Y[HŠH\ÏÈ›ÛÛÏÈYCBˆH[ÙHÃBˆ^Y\”İX]P\X\˜[˜ÙQ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\”İX]P\X\˜[˜ÙQ[˜X›YŠCBˆCBƒBˆ]™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙHH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙHŠHÏÈ™[™ÈƒBˆ]™Y™\œ™Y[š[YP]Y[Ó[™İXYÙHH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙHŠHÏÈšœˆƒBˆ][\^Y\ˆH^X˜XÚÑ[™Ú[™KœÙ[XİY
+Bˆ\œÚ\İY[™Ú[™Nˆ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ^X˜XÚÑ[™Ú[™K™Y˜][ÒÙ^JKBˆYØXŞR[\^Y\ˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆš[\^Y\ˆŠH\ÏÈİš[™ËBˆ]šXÙQ˜[Z[Nˆ˜İ\œ™[Bˆ
+Kœ˜]Õ˜[YCBˆ]Y“[™İXYÙHH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆY“[™İXYÙHŠHÏÈ™[‹UTÈƒBˆ]ÚİÔØÚY[UXˆH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚİÔØÚY[UXˆŠCBˆ]ÚİÓØØ[ØÚY[U[YHH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚİÓØØ[ØÚY[U[YHŠCBˆ]Y˜][ØÚY[S[ÙHHØÚY[S[ÙKœØ[š]^™Y˜]Õ˜[YJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™Y˜][ØÚY[S[ÙHŠJCBˆ]ØÚY[UÚ[™İÑ^\ÈHØÚY[UÚ[™İËœØ[š]^™Y^\Ê\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^NˆØÚY[UÚ[™İËœİÜ˜YÙRÙ^JH\ÏÈ[
+CBˆ]ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÈH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û”İXœØÜš\[ÛœÊBˆ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÈŠCBˆ
+CBˆ]ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÈH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÊBˆ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÈŠCBˆ
+CBˆ]ØØ[›İYšXØ][Û‘\\ÛÙSXY[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û‘\\ÛÙSXY[YJBˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û‘\\ÛÙSXY[YHŠH\ÏÈ[Bˆ
+CBˆ]ØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YJBˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YHŠH\ÏÈ[Bˆ
+CBˆ]ØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÈH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÈŠH\ÏÈ›ÛÛBƒBˆ]Y˜][^X˜XÚÔÜYYH˜XÚİ\]KœØ[š]^™YY˜][^X˜XÚÔÜYY
+Bˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆ™Y˜][^X˜XÚÔÜYYŠCBˆ
+CBˆ]ÛÜYY^Y\ˆH˜XÚİ\]KœØ[š]^™YÛÜYY^Y\ŠBˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^NˆšÛÜYY^Y\ˆŠCBˆ
+CBˆ]^\›˜[^Y\ˆH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™^\›˜[^Y\ˆŠHÏÈ››Û™HƒBˆ]™Y™\‘İÛ›ØYYYYXHH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ™Y™\‘İÛ›ØYYYYXHŠCBˆ][Ø^\Ó[™ØØ\HH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ˜[Ø^\Ó[™ØØ\HŠCBˆ]^Y\”^X˜XÚÓØÚÑ[˜X›YH^Y\”^X˜XÚÓØÚÔÙ][™ÜËš\Ñ[˜X›Y
+
+CBˆ][šTÚÚ\[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ˜[šTÚÚ\[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ˜[šTÚÚ\[˜X›YŠCBˆ][›Ñ‘[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆš[›Ñ‘[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆš[›Ñ‘[˜X›YŠCBˆ][›Ñ\[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆš[›Ñ\[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆš[›Ñ\[˜X›YŠCBˆ][šTÚÚ\]]ÔÚÚ\H\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ˜[šTÚÚ\]]ÔÚÚ\ŠCBˆ]ÚÚ\\Ñ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚÚ\\Ñ[˜X›YŠCBˆ]ÚÚ\\Ğ[Ø^\Õš\ÚX›HH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚÚ\\Ğ[Ø^\Õš\ÚX›HŠCBˆ]ÚİÓ™^\\ÛÙP]ÛˆH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^NˆœÚİÓ™^\\ÛÙP]ÛˆŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚİÓ™^\\ÛÙP]ÛˆŠCBˆ]ÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^NˆœÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆŠHOHš[BˆÈ
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^NˆœÚİÕ“Ñ\\ÛÙPœ›İÜÙ\]ÛˆŠH\ÏÈ›ÛÛÏÈYJCBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆŠCBˆ]ÚİÔ^Y\”Ù\šXÙ\Ğ]ÛˆH^Y\”Ù\šXÙ\Ğ]Û”Ù][™ÜËš\Ñ[˜X›Y
+
+CBˆ]ÚİÓ™^\\ÛÙTÜİ\]ÛˆH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚİÓ™^\\ÛÙTÜİ\]ÛˆŠCBˆ]™^\\ÛÙU™\ÚÛH˜XÚİ\]KœØ[š]^™Y™^\\ÛÙU™\ÚÛ
+Bˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆ›™^\\ÛÙU™\ÚÛŠCBˆ
+CBˆ]™^\\ÛÙTÚÚ\š[\‘[˜X›YH™^\\ÛÙQš[\”Ù][™ÜËš\Ñ[˜X›Y
+
+CBˆ]^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YŠHOHš[BˆÈ
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ĞœšYÚ™\ÜÑÙ\İ\™Q[˜X›YŠH\ÏÈ›ÛÛÏÈ˜[ÙJCBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YŠCBˆ]^Y\•›Û[YQÙ\İ\™Q[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\•›Û[YQÙ\İ\™Q[˜X›YŠHOHš[BˆÈ
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›Õ›Û[YQÙ\İ\™Q[˜X›YŠH\ÏÈ›ÛÛÏÈ˜[ÙJCBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\•›Û[YQÙ\İ\™Q[˜X›YŠCBˆ]^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›Yˆ›ÛÛBˆYˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YŠHOHš[ÃBˆ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›\•ÛÑš[™Ù\•\[˜X›YŠH\ÏÈ›ÛÛÏÈYCBˆH[ÙHÃBˆ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YŠCBˆCBˆ]^Y\Ù[\•\^T]\ÙQ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\Ù[\•\^T]\ÙQ[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\Ù[\•\^T]\ÙQ[˜X›YŠCBˆ]^Y\‘İX›U\ÙYZÑ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\‘İX›U\ÙYZÑ[˜X›YŠHOHš[BˆÈ
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ÑİX›U\ÙYZÑ[˜X›YŠH\ÏÈ›ÛÛÏÈYJCBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\‘İX›U\ÙYZÑ[˜X›YŠCBˆ]Ø]™YİX›U\ÙYZÔÙXÛÛ™ÈH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\‘İX›U\ÙYZÔÙXÛÛ™ÈŠHOHš[BˆÈ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆ›ÑİX›U\ÙYZÔÙXÛÛ™ÈŠCBˆˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆœ^Y\‘İX›U\ÙYZÔÙXÛÛ™ÈŠCBˆ]^Y\‘İX›U\ÙYZÔÙXÛÛ™ÈH˜XÚİ\]KœØ[š]^™Y^Y\‘İX›U\ÙYZÔÙXÛÛ™ÊBˆØ]™YİX›U\ÙYZÔÙXÛÛ™ÃBˆ
+CBˆ]^Y\“Ü[”İX]\Ñ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\“Ü[”İX]\Ñ[˜X›YŠHOHš[BˆÈ
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ÓÜ[”İX]\Ñ[˜X›YŠH\ÏÈ›ÛÛÏÈ˜[ÙJCBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\“Ü[”İX]\Ñ[˜X›YŠCBˆ]^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YŠHOHš[BˆÈ
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ÓÜ[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YŠH\ÏÈ›ÛÛÏÈYJCBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YŠCBˆ]^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›YH˜[ÙCBˆ]\‘›Ü™YÜ›İ[™”ÈH\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆ›\‘›Ü™YÜ›İ[™”ÈŠHOHŒÈŒˆÌBˆ]\”™[™\˜XÚÙ[™H˜XÚİ\]KœØ[š]^™YT”™[™\˜XÚÙ[™
+\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›\”™[™\˜XÚÙ[™ŠJCBˆ]\“Y][]X[]T›Ùš[HH˜XÚİ\]KœØ[š]^™YT“Y][]X[]T›Ùš[J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›\“Y][]X[]T›Ùš[HŠJCBˆ]\•\ØØ[[™Ó[ÙHH˜XÚİ\]KœØ[š]^™YT•\ØØ[[™Ó[ÙJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›\•\ØØ[[™Ó[ÙHŠJCBˆ]\“™]\˜[\ØØ[\ˆH˜XÚİ\]KœØ[š]^™YT“™]\˜[\ØØ[\Š\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›\“™]\˜[\ØØ[\ˆŠJCBˆ]\“™]\˜[\ØØ[\•ˆH˜XÚİ\]KœØ[š]^™YT“™]\˜[\ØØ[\Š\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›\“™]\˜[\ØØ[\•ˆŠJCBˆ]\”^Y\”ÚÚ[ˆH˜XÚİ\]KœØ[š]^™YT”^Y\”ÚÚ[Š\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜËœÚÚ[’Ù^JJCBˆ]\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜İ\İÛTš[X\PÛÛÜ’Ù^JCBˆ]\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜İ\İÛTÙXÛÛ™\PÛÛÜ’Ù^JCBˆ]\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›YHT”^Y\”ÚÚ[”Ù][™ÜË˜[š[X][ÛœÑ[˜X›Y
+
+CBˆ]\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›HHT”^Y\”ÚÚ[”Ù][™ÜË[ÛÛ›ÛÓÛ›J
+CBˆ]\”Xİ\™R[”Xİ\™Q[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›\”Xİ\™R[”Xİ\™Q[˜X›YŠH\ÏÈ›ÛÛÏÈYCBˆ]\\^]Xİ\™R[”Xİ\™Q[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ›\\^]Xİ\™R[”Xİ\™Q[˜X›YŠCBˆ]\’“[ÙHHT’“[ÙJ˜]Õ˜[YNˆ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ›\’“[ÙHŠHÏÈT’“[ÙK™Y˜][[ÙKœ˜]Õ˜[YJOËœ˜]Õ˜[YHÏÈT’“[ÙK™Y˜][[ÙKœ˜]Õ˜[YCBˆ]\”İ\œ›İ[™Ûİ[™[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›\”İ\œ›İ[™Ûİ[™[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ›\”İ\œ›İ[™Ûİ[™[˜X›YŠCBˆ]Ø]ÚÙÙ]\‘[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^NˆØ]ÚÙÙ]\”Ù][™ÜË™[˜X›YÙ^JHOHš[BˆÈØ]ÚÙÙ]\”Ù][™ÜË™Y˜][[˜X›YBˆˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆØ]ÚÙÙ]\”Ù][™ÜË™[˜X›YÙ^JCBˆ]ÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YH˜[ÙCBˆ^\š[Y[[™X]\™Tİ]Kœ™YÚ\İ\‘Y˜][Ê
+CBˆ]^\š[Y[[™X]\™\Ñ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K™[˜X›YÙ^JCBˆ]^\š[Y[[™X]\™\Ó\İÚ[™ÙY]H˜XÚİ\]KœØ[š]^™Y^\š[Y[[™X]\™\Ó\İÚ[™ÙY]
+Bˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\İÚ[™ÙY]Ù^JCBˆ
+CBˆ]^\š[Y[[T”™[ØY[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØY[˜X›YÙ^JCBˆ]^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”Û[Ûİ˜[œÚ][Û‘[˜X›YÙ^JCBˆ]^\š[Y[[T”™[ØYÙ[[\‘[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÙ[[\‘[˜X›YÙ^JCBˆ]^\š[Y[[T”™[ØYÚYšS[Z]PˆH^\š[Y[[™X]\™Tİ]Kœ™\ÛÛ™YT”™[ØYÚYšS[Z]PŠ\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÚYšS[Z]P’Ù^JJCBˆ]^\š[Y[[T”™[ØYÙ[[\“[Z]PˆH^\š[Y[[™X]\™Tİ]Kœ™\ÛÛ™YT”™[ØYÙ[[\“[Z]PŠ\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÙ[[\“[Z]P’Ù^JJCBˆ]^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YHH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”ÚİÔ™[XZ[š[™Õ[YRÙ^JCBˆ]^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™XÚ\ÙT›ÙÜ™\ÜÒÙ^JCBˆ]^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\ÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\’YÛ›Ü™TÜXÚX[İX]Tİ[\ÒÙ^JCBˆ]^\š[Y[[T”™[ØY]]ĞÛX\ˆH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØY]]ĞÛX\’Ù^JCBˆ]^\š[Y[[PÛİYŞ[˜Ñ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]KšPÛİYŞ[˜Ñ[˜X›YÙ^JCBƒBˆ]İX]Q›Ü™YÜ›İ[™ÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^NˆœİX]\×Ù›Ü™YÜ›İ[™ÛÛÜˆŠCBˆ]İX]Tİ›ÚÙPÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^NˆœİX]\×Üİ›ÚÙPÛÛÜˆŠCBˆ]İX]Tİ›ÚÙUÚYH˜XÚİ\]KœØ[š]^™YİX]Tİ›ÚÙUÚY
+Bˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^NˆœİX]\×Üİ›ÚÙUÚYŠCBˆ
+CBˆ]İX]Q›ÛÚ^™HH˜XÚİ\]KœØ[š]^™YİX]Q›ÛÚ^™JBˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^NˆœİX]\×Ù›ÛÚ^™HŠCBˆ
+CBˆ]İX]U™\XØ[Ù™œÙ]ˆİX›CBˆYˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ^Y\”İX]Sİ™\›^P›İÛPÛÛœİ[ŠHOHš[ÃBˆİX]U™\XØ[Ù™œÙ]H˜XÚİ\]KœØ[š]^™YİX]U™\XØ[Ù™œÙ]
+Bˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆœ^Y\”İX]Sİ™\›^P›İÛPÛÛœİ[ŠCBˆ
+CBˆH[ÙHYˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›ÔİX]Sİ™\›^P›İÛPÛÛœİ[ŠHOHš[ÃBˆİX]U™\XØ[Ù™œÙ]H˜XÚİ\]KœØ[š]^™YİX]U™\XØ[Ù™œÙ]
+Bˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆ›ÔİX]Sİ™\›^P›İÛPÛÛœİ[ŠCBˆ
+CBˆH[ÙHÃBˆİX]U™\XØ[Ù™œÙ]HM‹ŒBˆCBˆ]İX]\Õš\ÚX›HH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœİX]\×Ú\Õš\ÚX›HŠCBƒBˆ]ÚİÒØ[™[ˆH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÚİÒØ[™[ˆŠCBˆ]YTÜ\ÚØÜ™Y[ˆH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆšYTÜ\ÚØÜ™Y[ˆŠCBˆ][ÙTİÚ]Ú[š[X][Û‘[˜X›YH[ÙTİÚ]Ú[š[X][Û”Ù][™ÜËš\Ñ[˜X›Y
+
+CBˆ]Ø[™[]]Õ\]S[Ù[\ÈH[Ù[SX[˜YÙ\‹š\Ğ]]Õ\]Q[˜X›YBˆ]ÙX\ÛÛ“Y[HHYYXQ]Z[]›Ü›QY˜][Ë\Ù\ĞÛÛ\XİÙX\ÛÛ“Y[J
+CBˆ]Üš^›Û[\\ÛÙS\İHYYXQ]Z[]›Ü›QY˜][Ë\Ù\ÒÜš^›Û[\\ÛÙ\Ê
+CBˆ]YYXQ]Z[]P\ÛÜšÑ[˜X›YHYYXQ]Z[]P\ÛÜšÔÙ][™ÜËš\Ñ[˜X›Y
+
+CBˆ]YYXQ]Z[[\›˜]TÜİ\‘[˜X›YHYYXQ]Z[[\›˜]TÜİ\”Ù][™ÜËš\Ñ[˜X›Y
+
+CBˆ]YYXQ]Z[Ú[Z[\•]\Ñ[˜X›YHYYXQ]Z[Ú[Z[\•]\ÔÙ][™ÜËš\Ñ[˜X›Y
+
+CBˆ]\ÙPÛ\ÜÚXÔØÚY[URHH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ\ÙPÛ\ÜÚXÔØÚY[URHŠCBˆ]\›Ğ˜[›™\Ø][ÙÒYH˜XÚİ\]KœØ[š]^™Y›Û‘[\Tİš[™Ê\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆš\›Ğ˜[›™\Ø][ÙÒYŠKY˜][˜[YNˆ™[™[™ÈŠCBˆ]\›Ğ˜[›™\™Z]š[ÜˆH˜XÚİ\]KœØ[š]^™Y\›Ğ˜[›™\™Z]š[ÜŠ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆš\›Ğ˜[›™\™Z]š[ÜˆŠJCBˆ]ÛYPØ][ÙÓ^[İ]İ™\œšY\ÈH\Ù\‘Y˜][Ë™]J›Ü’Ù^NˆÛYPØ][ÙÓ^[İ]İÜ™KœİÜ˜YÙRÙ^JK™›]X\Èİš[™Ê]Nˆ	[˜ÛÙ[™Îˆ]
+HHÏÈˆƒBˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YHÛYP[š[X]Y˜XÚÙÜ›İ[™Ù][™ÜËš\Ñ[˜X›Y
+
+CBˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]HH˜XÚİ\]KœØ[š]^™YÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]KœİÜ˜YÙRÙ^JJCBˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]HH˜XÚİ\]KœØ[š]^™YÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]KœİÜ˜YÙRÙ^JJCBˆ]\\™›Ü›X[˜ÙSİ™\›^Q[˜X›YH\\™›Ü›X[˜ÙSİ™\›^TÙ][™ÜËš\Ñ[˜X›Y
+
+CBˆ]^\š[Y[[YYXQ\ÚYÛ”™\Ù]H˜XÚİ\]KœØ[š]^™Y^\š[Y[[YYXQ\ÚYÛ”™\Ù]
+\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ^\š[Y[[YYXQ\ÚYÛ”™\Ù]œİÜ˜YÙRÙ^JJCBˆ]^\š[Y[[\›Ğ›YY]™[H˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ğ›YY]™[
+\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ^\š[Y[[\›Ğ›YY]™[œİÜ˜YÙRÙ^JJCBˆ]^\š[Y[[ÛYPØ\™Ú\HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[ÛYPØ\™Ú\J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ^\š[Y[[ÛYPØ\™Ú\KœİÜ˜YÙRÙ^JJCBˆ]^\š[Y[[][QÜ˜YY[[]HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[][QÜ˜YY[[]J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ^\š[Y[[][QÜ˜YY[[]KœİÜ˜YÙRÙ^JJCBˆ]^\š[Y[[\›ÒZYÚØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›ÒZYÚØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ëš\›ÒZYÚØØ[RÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][\›ÒZYÚØØ[JJCBˆ]^\š[Y[[\›Ğ›YYİ™[™İH˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ğ›YYİ™[™İ
+˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ëš\›Ğ›YYİ™[™İÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][\›Ğ›YYİ™[™İ
+JCBˆ]^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ëš\›Ñ˜YQ\İ[˜ÙTØØ[RÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][\›Ñ˜YQ\İ[˜ÙTØØ[JJCBˆ]^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™ËœÙXİ[Û”ÜXÚ[™ÔØØ[RÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][ÙXİ[Û”ÜXÚ[™ÔØØ[JJCBˆ]^\š[Y[[Ø\™˜Y]\ÔØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ø\™˜Y]\ÔØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë˜Ø\™˜Y]\ÔØØ[RÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ø\™˜Y]\ÔØØ[JJCBˆ]^\š[Y[[YYXPØ\™ØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[YYXPØ\™ØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë›YYXPØ\™ØØ[RÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][YYXPØ\™ØØ[JJCBˆ]^\š[Y[[Û\ÜÔİ™[™İH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Û\ÜÔİ™[™İ
+˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Û\ÜÔİ™[™İÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Û\ÜÔİ™[™İ
+JCBˆ]^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÈH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÊ˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[˜\ÙQ\šÛ™\ÜÒÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ü˜YY[˜\ÙQ\šÛ™\ÜÊJCBˆ]^\š[Y[[Ü˜YY[XØÙ[[[œÚ]HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[XØÙ[[[œÚ]J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[XØÙ[[[œÚ]RÙ^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ü˜YY[XØÙ[[[œÚ]JJCBˆ]^\š[Y[[Ü˜YY[ØÜ›Û[İ[ÛˆH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[ØÜ›Û[İ[ÛŠ˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ØÜ›Û[İ[Û’Ù^JKY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ü˜YY[ØÜ›Û[İ[ÛŠJCBˆ]^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[\ÙPİ\İÛPÛÛÜœÒÙ^JCBˆ]^\š[Y[[Ü˜YY[ÛÛÜHH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ÛÛÜRÙ^JCBˆ]^\š[Y[[Ü˜YY[ÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ÛÛÜ’Ù^JCBˆ]^\š[Y[[Ü˜YY[ÛÛÜÈH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ÛÛÜÒÙ^JCBˆ]][ÜÜ\™Tİ[HH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™Tİ[J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ˜][ÜÜ\™Tİ[HŠJCBˆ]][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ˜][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHŠJCBˆ]][ÜÜ\™TÛÛYÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆ˜][ÜÜ\™TÛÛYÛÛÜˆŠCBˆ]™XY\][ÜÜ\™Tİ[HH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™Tİ[J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\][ÜÜ\™Tİ[HŠHÏÈ][ÜÜ\™Tİ[JCBˆ]™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHŠHÏÈ][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJCBˆ]™XY\][ÜÜ\™TÛÛYÛÛÜˆH\Ù\‘Y˜][Ë™]J›Ü’Ù^Nˆœ™XY\][ÜÜ\™TÛÛYÛÛÜˆŠCBˆ]YYXQ]Z[[[Y[Ü™\ˆH˜XÚİ\]KœØ[š]^™YYYXQ]Z[[[Y[Ü™\Š\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆYYXQ]Z[[[Y[›Ü™\”İÜ˜YÙRÙ^JJCBˆ]YYXQ]Z[Y[‘[[Y[ÈHYYXQ]Z[[[Y[œ˜]Õ˜[YJ›ÜˆYYXQ]Z[[[Y[šY[‘[[Y[Ê
+JCBˆ]™XY\‘]Z[[[Y[Ü™\ˆH˜XÚİ\]KœØ[š]^™Y™XY\‘]Z[[[Y[Ü™\Š\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™XY\‘]Z[[[Y[›Ü™\”İÜ˜YÙRÙ^JJCBˆ]™XY\‘]Z[Y[‘[[Y[ÈH™XY\‘]Z[[[Y[œ˜]Õ˜[YJ›Üˆ™XY\‘]Z[[[Y[šY[‘[[Y[Ê
+JCBˆ]YYXPÛÛ[[œÔÜ˜Z]H\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›YYXPÛÛ[[œÔÜ˜Z]ŠHOHš[È\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆ›YYXPÛÛ[[œÔÜ˜Z]ŠHˆÃBˆ]YYXPÛÛ[[œÓ[™ØØ\HH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ›YYXPÛÛ[[œÓ[™ØØ\HŠHOHš[È\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆ›YYXPÛÛ[[œÓ[™ØØ\HŠHˆCBƒBˆ]™XY[™Ó[ÙHH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ™XY[™Ó[ÙHŠHOHš[È\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆœ™XY[™Ó[ÙHŠHˆ™XY[™Ó[ÙK•ÑP•ÓÓ‹œ˜]Õ˜[YCBˆ]Ø[™[”™XY\“[ÙHH˜XÚİ\]KœØ[š]^™YØ[™[”™XY\“[ÙJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆšØ[™[”™XY\“[ÙHŠHÏÈ˜XÚİ\]K™Y˜][Ø[™[”™XY\“[ÙT˜]Õ˜[YJ
+JCBˆ]\Ù\‘Y˜][ÔÛ˜\ÚİH\Ù\‘Y˜][Ë™Xİ[Û˜\T™\™\Ù[][ÛŠ
+CBˆ]Ø[™[”™XY\“[ÙSİ™\œšY\ÈH˜XÚİ\]KœØ[š]^™YØ[™[”™XY\“[ÙSİ™\œšY\ÊBˆ\Ù\‘Y˜][ÔÛ˜\Úİœ™YXÙJ[ÎˆÔİš[™Îˆİš[™×J
+JHÈ™\İ[][H[ƒBˆİX\™][KšÙ^Kš\Ô™Yš^
+šØ[™[”™XY\“[ÙKˆŠKBˆ]˜[YHH][K˜[YH\ÏÈİš[™È[ÙHÈ™]\›ˆCBˆ™\İ[Ôİš[™Ê][KšÙ^K™›Üš\œİ
+šØ[™[”™XY\“[ÙKˆ‹˜Ûİ[
+JWHH˜[YCBˆCBˆ
+CBˆ]™XY\‘İÛœØ[\R[XYÙ\ÈH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ”™XY\‹™İÛœØ[\R[XYÙ\ÈŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹™İÛœØ[\R[XYÙ\ÈŠCBˆ]™XY\Ü›Ü›Ü™\œÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹˜Ü›Ü›Ü™\œÈŠCBˆ]™XY\‘\ØX›T]ZXÚĞXİ[ÛœÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹™\ØX›T]ZXÚĞXİ[ÛœÈŠCBˆ]™XY\‘\ØX›QİX›U\H\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹™\ØX›QİX›U\ŠCBˆ]™XY\“]™U^H\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹›]™U^ŠCBˆ]™XY\’YP˜\œÓÛ”İÚ\HH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹šYP˜\œÓÛ”İÚ\HŠCBˆ]™XY\˜XÚÙÜ›İ[™ÛÛÜˆH˜XÚİ\]KœØ[š]^™Y™XY\˜XÚÙÜ›İ[™ÛÛÜŠ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ”™XY\‹˜˜XÚÙÜ›İ[™ÛÛÜˆŠJCBˆ]™XY\“ÜšY[][ÛˆH˜XÚİ\]KœØ[š]^™Y™XY\“ÜšY[][ÛŠ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ”™XY\‹›ÜšY[][ÛˆŠJCBˆ]™XY\•\›Û™\ÈH˜XÚİ\]KœØ[š]^™Y™XY\•\›Û™\Ê\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ”™XY\‹\›Û™\ÈŠJCBˆ]™XY\’[™\\›Û™\ÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹š[™\\›Û™\ÈŠCBˆ]™XY\[š[X]TYÙU˜[œÚ][ÛœÈH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ”™XY\‹˜[š[X]TYÙU˜[œÚ][ÛœÈŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹˜[š[X]TYÙU˜[œÚ][ÛœÈŠCBˆ]™XY\•\ØØ[R[XYÙ\ÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹\ØØ[R[XYÙ\ÈŠCBˆ]™XY\•\ØØ[SX^ZYÚH˜XÚİ\]KœØ[š]^™Y™XY\•\ØØ[SX^ZYÚ
+˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ”™XY\‹\ØØ[SX^ZYÚŠKY˜][˜[YNˆŒ
+JCBˆ]™XY\•\ØØ[S[Ù[˜[YHH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ”™XY\‹\ØØ[S[Ù[˜[YHŠHÏÈ“›Û™HƒBˆ]™XY\”YÙ\ÕÔ™[ØYH˜XÚİ\]KœØ[š]^™Y™XY\”YÙ\ÕÔ™[ØY
+˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ”™XY\‹œYÙ\ÕÔ™[ØYŠKY˜][˜[YNˆÊJCBˆ]™XY\”YÙYYÙS^[İ]H˜XÚİ\]KœØ[š]^™Y™XY\”YÙYYÙS^[İ]
+\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ”™XY\‹œYÙYYÙS^[İ]ŠJCBˆ]™XY\”YÙYYÙSÙ™œÙ]H\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹œYÙYYÙSÙ™œÙ]ŠCBˆ]™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ÈH˜XÚİ\]KœØ[š]^™Y™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ÊBˆ\Ù\‘Y˜][ÔÛ˜\Úİœ™YXÙJ[ÎˆÔİš[™Îˆ›ÛÛJ
+JHÈ™\İ[][H[ƒBˆİX\™][KšÙ^Kš\Ô™Yš^
+”™XY\‹œYÙYYÙSÙ™œÙ]ˆŠKBˆ]˜[YHH][K˜[YH\ÏÈ›ÛÛ[ÙHÈ™]\›ˆCBˆ™\İ[Ôİš[™Ê][KšÙ^K™›Üš\œİ
+”™XY\‹œYÙYYÙSÙ™œÙ]ˆ‹˜Ûİ[
+JWHH˜[YCBˆCBˆ
+CBˆ]™XY\”Ü]ÚYR[XYÙ\ÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹œÜ]ÚYR[XYÙ\ÈŠCBˆ]™XY\”™]™\œÙTÜ]Ü™\ˆH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹œ™]™\œÙTÜ]Ü™\ˆŠCBˆ]™XY\•™\XØ[[™š[š]TØÜ›ÛH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ”™XY\‹™\XØ[[™š[š]TØÜ›ÛŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹™\XØ[[™š[š]TØÜ›ÛŠCBˆ]™XY\”[\˜›ŞH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ”™XY\‹œ[\˜›ŞŠCBˆ]™XY\”[\˜›Ş[[İ[H˜XÚİ\]KœØ[š]^™Y™XY\”[\˜›Ş[[İ[
+˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ”™XY\‹œ[\˜›Ş[[İ[ŠKY˜][˜[YNˆMJJCBˆ]™XY\”[\˜›ŞÜšY[][ÛˆH˜XÚİ\]KœØ[š]^™Y™XY\”[\˜›ŞÜšY[][ÛŠ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ”™XY\‹œ[\˜›ŞÜšY[][ÛˆŠJCBˆ]™XY\“ÜšY[][Û“ØÚÑ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ™XY\“ÜšY[][Û“ØÚÑ[˜X›YŠCBˆ]™XY\“ÜšY[][Û“ØÚÓX\ÚÈH˜XÚİ\]KœØ[š]^™Y™XY\“ÜšY[][Û“ØÚÓX\ÚÊ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\“ÜšY[][Û“ØÚÓX\ÚÈŠJCBˆ]™XY\”™XY™\ÚÛ\˜Ù[H˜XÚİ\]KœØ[š]^™Y™XY\”™XY™\ÚÛ\˜Ù[
+\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ™XY\”™XY™\ÚÛ\˜Ù[ŠH\ÏÈİX›JCBƒBˆ]™XY\‘›ÛÚ^™HH˜XÚİ\]KœØ[š]^™Y™XY\‘›ÛÚ^™JBˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆœ™XY\‘›ÛÚ^™HŠCBˆ
+CBˆ]™XY\‘›Û˜[Z[HH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\‘›Û˜[Z[HŠHÏÈ‹X\K\Ş\İ[HƒBˆ]™XY\‘›ÛÙZYÚH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\‘›ÛÙZYÚŠHÏÈ››Ü›X[ƒBˆ]™XY\ÛÛÜ”™\Ù]H˜XÚİ\]KœØ[š]^™Y™XY\ÛÛÜ”™\Ù]
+\Ù\‘Y˜][Ëš[YÙ\Š›Ü’Ù^Nˆœ™XY\ÛÛÜ”™\Ù]ŠJCBˆ]™XY\•^[YÛ›Y[H\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆœ™XY\•^[YÛ›Y[ŠHÏÈ›YƒBˆ]™XY\“[™TÜXÚ[™ÈH˜XÚİ\]KœØ[š]^™Y™XY\“[™TÜXÚ[™ÊBˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆœ™XY\“[™TÜXÚ[™ÈŠCBˆ
+CBˆ]™XY\“X\™Ú[ˆH˜XÚİ\]KœØ[š]^™Y™XY\“X\™Ú[ŠBˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ™XY\“X\™Ú[ˆŠHOHš[BˆÈ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆœ™XY\“X\™Ú[ˆŠCBˆˆš[Bˆ
+CBƒBˆ]]]ĞÛX\ØXÚQ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ˜]]ĞÛX\ØXÚQ[˜X›YŠCBˆ]]]ĞÛX\ØXÚU™\ÚÛPˆH˜XÚİ\]KœØ[š]^™Y]]ĞÛX\ØXÚU™\ÚÛPŠBˆ\Ù\‘Y˜][Ë™İX›J›Ü’Ù^Nˆ˜]]ĞÛX\ØXÚU™\ÚÛPˆŠCBˆ
+CBˆ]YÚ]X[]U™\ÚÛH˜XÚİ\]KœØ[š]^™YYÚ]X[]U™\ÚÛ
+Bˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^NˆšYÚ]X[]U™\ÚÛŠH\ÏÈİX›CBˆ
+CBˆ]˜XÚÙÜ›İ[™Ô\[[™Q[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ˜˜XÚÙÜ›İ[™Ô\[[™Q[˜X›YŠCBˆ]™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YŠCBˆ]™XY\‘İÛ›ØYÕÚYšSÛ›HH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆœ™XY\‘İÛ›ØYÕÚYšSÛ›HŠCBˆ]™XY\‘İÛ›ØYÔ\˜[[[Z]H˜XÚİ\]KœØ[š]^™Y™XY\‘İÛ›ØYÔ\˜[[[Z]
+˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆ\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆœ™XY\‘İÛ›ØYÔ\˜[[[Z]ŠKY˜][˜[YNˆŠJCBˆ]]]Õ\]TÙ\šXÙ\Ñ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ˜]]Õ\]TÙ\šXÙ\Ñ[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ˜]]Õ\]TÙ\šXÙ\Ñ[˜X›YŠCBˆ]Ù\šXÙ\Ğ]]Ó[ÙQ[˜X›YH]]Ó[ÙTÙ][™ÜËš\Ñ[˜X›Y
+
+CBˆ]Ù\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^NˆœÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YŠCBˆ]Ù\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›YH]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙTÙ][™ÜËš\Ñ[˜X›Y
+
+CBˆ]Ù\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÈH˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+\Ù\‘Y˜][Ëœİš[™Ğ\œ˜^J›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÈŠJCBˆ]Ù\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈH˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+\Ù\‘Y˜][Ëœİš[™Ğ\œ˜^J›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈŠJCBˆ]Ù\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙHH]]Ó[ÙT]X[]T™Y™\™[˜ÙKœØ[š]^™Y˜]Õ˜[YJ\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ]]Ó[ÙT]X[]T™Y™\™[˜ÙKœİÜ˜YÙRÙ^JJCBˆ]Ù\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]HHÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜË›Z[š[][TÚ[Z[\š]J
+CBˆ]Ù\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ÈHÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜË™›ÜÓZ\ÛX]ÚY™\İ[Ê
+CBˆ]Ù\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›YHÙ\šXÙ\ÔÚY]™\Ù[][Û”Ù][™ÜË\Ù\Ôİ™[Z[Ôİ[J
+CBˆ]Ù\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ÈHİ™X[S[™İXYÙQš[\‹š[˜ÛYY[™İXYÙ\Ê
+CBˆ]Ù\šXÙ\ÒY[”İ™X[S[™İXYÙ\ÈHİ™X[S[™İXYÙQš[\‹šY[“[™İXYÙ\Ê
+CBˆ]Ù\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]HHİ™X[S[™İXYÙQš[\‹šY\Ôİ™X[\ÕÚ]İ][™İXYÙQ]J
+CBˆ]Ù\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ÈHİ™X[S[™İXYÙQš[\‹˜\Üİ[Y\ÓÜšYÚ[˜[]Y[Ê
+CBˆ]Ù\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚHİ™X[S[™İXYÙQš[\‹™X]ÑX˜™Y[š[YP\Ñ[™Û\Ú
+
+CBˆ]Ù\šXÙ\ÒY[”İ™X[T]X[]Y\ÈHİ™X[S[™İXYÙQš[\‹šY[”]X[]RZYÚÊ
+CBˆ]Ù\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]HHİ™X[S[™İXYÙQš[\‹šY\Ôİ™X[\ÕÚ]İ]]XİY]X[]J
+CBˆ]Ù\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÈHİ™X[S[™İXYÙQš[\‹™^˜T[\ÔÛİ\˜ÙRYÊ
+CBˆ]Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YH\Ù\‘Y˜][Ë›Øš™Xİ
+›Ü’Ù^Nˆ™Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YŠHOHš[ÈYHˆ\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ™Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YŠCBˆ]Ú]X”™[X\ÙU\]P]˜Z[X›HH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ™Ú]X”™[X\ÙU\]P]˜Z[X›HŠCBˆ]Ú]X”™[X\ÙS]\İ™\œÚ[ÛˆH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™Ú]X”™[X\ÙS]\İ™\œÚ[ÛˆŠHÏÈˆƒBˆ]Ú]X”™[X\ÙUT“H\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™Ú]X”™[X\ÙUT“ŠHÏÈˆƒBˆ]Ú]X”™[X\ÙTÚİĞ[\[™[™ÈH\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ™Ú]X”™[X\ÙTÚİĞ[\[™[™ÈŠCBˆ]Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[ÛˆH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^Nˆ™Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[ÛˆŠHÏÈˆƒBˆ]š[\’Üœ›ÜÛÛ[H\Ù\‘Y˜][Ë˜›ÛÛ
+›Ü’Ù^Nˆ™š[\’Üœ›ÜˆŠCBˆ]Ù[XİYÚ[Z[\š]P[ÛÜš]HH˜XÚİ\]KœØ[š]^™YÚ[Z[\š]P[ÛÜš]J\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆœÙ[XİYÚ[Z[\š]P[ÛÜš]HŠJCBˆ]\™›Ü›X[˜ÙS[ÙQ[˜X›YH\™›Ü›X[˜ÙS[ÙTÙ][™ÜËš\Ñ[˜X›YBˆ]\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[ÈH\™›Ü›X[˜ÙS[ÙTÙ][™ÜËœÚÚ\Ğ[šS\İ˜]™\œØ[›Ü[š[YQ]Z[ÃBˆ]\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\ÈH\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™˜\İ[š[YPØ][ÙÓİ™\œšY\ÃBˆ]Ø[™[’ÛYTÙ[XİYÛİ\˜ÙRQH\Ù\‘Y˜][Ëœİš[™Ê›Ü’Ù^NˆšØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQŠHÏÈˆƒBˆ]Ø[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ÈH˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+\Ù\‘Y˜][Ëœİš[™Ğ\œ˜^J›Ü’Ù^NˆšØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ÈŠJCBƒBˆ]ÙX\˜Ú\İÜNˆ˜XÚİ\ÙX\˜Ú\İÜCBˆYˆ]\İÜQ]HH\Ù\‘Y˜][Ë™]J›Ü’Ù^NˆœÙX\˜Ú\İÜHŠHÃBˆYˆ]XÛÙYH˜XÚİ\ÙX\˜Ú\İÜK™XÛÙY]Y\šY\Êœ›ÛNˆ\İÜQ]JHÃBˆÙX\˜Ú\İÜHH˜XÚİ\ÙX\˜Ú\İÜJ]Y\šY\ÎˆXÛÙYØ\ĞØ\\™YˆYJCBˆH[ÙHÃBˆÙX\˜Ú\İÜHH˜XÚİ\ÙX\˜Ú\İÜJ
+CBˆCBˆH[ÙHÃBˆÙX\˜Ú\İÜHH˜XÚİ\ÙX\˜Ú\İÜJØ\ĞØ\\™YˆYJCBˆCBƒBˆ]Xœ˜\SX[˜YÙ\ˆHXœ˜\SX[˜YÙ\‹œÚ\™YBˆ]Xİ]™PÛÛXİ[ÛœÈHXœ˜\SX[˜YÙ\‹˜ÛÛXİ[ÛœÊ›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBƒBˆ]›ÙÜ™\ÜÓX[˜YÙ\ˆH›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™YBˆ]Xİ]™T›ÙÜ™\ÜÈH›ÙÜ™\ÜÓX[˜YÙ\‹œ›ÙÜ™\ÜÑ]J›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆ]Xİ]™T˜][™ÜÈH\Ù\”˜][™ÓX[˜YÙ\‹œÚ\™Yœ˜][™ÜĞ[™›İ\Ê›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBƒBˆ]Xİ]™PØ][ÙÜÈHØ][ÙÓX[˜YÙ\‹œÚ\™Y˜Ø][ÙÜÑ›Ü˜XÚİ\
+›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆ]Xİ]™SX[™ØPÛÛXİ[ÛœÈHX[™ØSXœ˜\SX[˜YÙ\‹œÚ\™YBˆ˜ÛÛXİ[ÛœÔÛ˜\Úİ
+›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆ]Xİ]™SX[™ØT›ÙÜ™\ÜÈHX[™ØT™XY[™Ô›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™YBˆœ›ÙÜ™\ÜÔÛ˜\Úİ
+›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆ]Xİ]™SX[™ØPØ][ÙÜÈHX[™ØPØ][ÙÓX[˜YÙ\‹œÚ\™YBˆ˜Ø][ÙÜÔÛ˜\Úİ
+›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆ]Xİ]™Pİ\İÛPØ][ÙÜÈHØ[™[İ\İÛPØ][ÙÓX[˜YÙ\‹œÚ\™YBˆ˜Ø][ÙÜÔÛ˜\Úİ
+›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆ]˜XÚÙ\“X[˜YÙ\ˆH˜XÚÙ\“X[˜YÙ\‹œÚ\™YBˆ]Xİ]™U˜XÚÙ\”İ]Nˆ˜XÚÙ\”İ]OÈHÃBˆYˆ™XYš\ÓXZ[•™XYÃBˆ™]\›ˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆÈ˜XÚÙ\“X[˜YÙ\‹˜XÚÙ\”İ]Q›Ü”š]˜]PÛİY^Ü
+Bˆ›Ü”›Ùš[NˆXİ]™T›Ùš[RQBˆ
+CBˆˆ˜XÚÙ\“X[˜YÙ\‹˜XÚÙ\”İ]J›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆCBˆ™]\›ˆ\Ü]Ú]Y]YK›XZ[‹œŞ[˜ÈÃBˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆÈ˜XÚÙ\“X[˜YÙ\‹˜XÚÙ\”İ]Q›Ü”š]˜]PÛİY^Ü
+Bˆ›Ü”›Ùš[NˆXİ]™T›Ùš[RQBˆ
+CBˆˆ˜XÚÙ\“X[˜YÙ\‹˜XÚÙ\”İ]J›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBˆCBˆJ
+CBˆ˜\ˆ[œ™XYX›PÛÛ\]Xš[]QÛXZ[œÎˆÔİš[™×HH×CBˆYˆXİ]™PÛÛXİ[ÛœÈOHš[È[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+›Xœ˜\HŠHCBˆYˆXİ]™T›ÙÜ™\ÜÈOHš[È[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+œ›ÙÜ™\ÜÈŠHCBˆYˆXİ]™T˜][™ÜÈOHš[È[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+œ˜][™ÜÈŠHCBˆYˆXİ]™PØ][ÙÜÈOHš[È[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+˜Ø][ÙÜÈŠHCBˆYˆXİ]™U˜XÚÙ\”İ]HOHš[È[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+˜XÚÙ\œÈŠHCBˆYˆXİ]™SX[™ØPÛÛXİ[ÛœÈOHš[ÃBˆ[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+”™XY\ˆXœ˜\HŠCBˆCBˆYˆXİ]™SX[™ØT›ÙÜ™\ÜÈOHš[ÃBˆ[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+”™XY\ˆ›ÙÜ™\ÜÈŠCBˆCBˆYˆXİ]™SX[™ØPØ][ÙÜÈOHš[ÃBˆ[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+”™XY\ˆØ][ÙÜÈŠCBˆCBˆYˆXİ]™Pİ\İÛPØ][ÙÜÈOHš[ÃBˆ[œ™XYX›PÛÛ\]Xš[]QÛXZ[œË˜\[™
+”™XY\ˆİ\İÛHØ][ÙÜÈŠCBˆCBˆİX\™[œ™XYX›PÛÛ\]Xš[]QÛXZ[œËš\Ñ[\KBˆ]Xİ]™PÛÛXİ[ÛœËBˆ]Xİ]™T›ÙÜ™\ÜËBˆ]Xİ]™T˜][™ÜËBˆ]Xİ]™PØ][ÙÜËBˆ]Xİ]™SX[™ØPÛÛXİ[ÛœËBˆ]Xİ]™SX[™ØT›ÙÜ™\ÜËBˆ]Xİ]™SX[™ØPØ][ÙÜËBˆ]Xİ]™Pİ\İÛPØ][ÙÜËBˆ]Xİ]™U˜XÚÙ\”İ]H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Y\ÙYÈ^Ü[œ™XYX›HXİ]™K\›Ùš[HYØXŞHÛXZ[œÈ
+
+[œ™XYX›PÛÛ\]Xš[]QÛXZ[œËš›Ú[™Y
+Ù\\˜]Üˆ‹ŠJJH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹˜Xİ]™T›Ùš[PÛÛ\]Xš[]QÛXZ[œÕ[œ™XYX›JBˆ[œ™XYX›PÛÛ\]Xš[]QÛXZ[œÃBˆ
+CBˆCBˆ]˜XÚİ\ÛÛXİ[ÛœÈHXİ]™PÛÛXİ[ÛœË›X\È˜XÚİ\ÛÛXİ[ÛŠœ›ÛNˆ	
+HCBˆ]›ÙÜ™\ÜÑ]HHXİ]™T›ÙÜ™\ÜÃBƒBˆ]˜XÚÙ\”İ]HH\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆÈXİ]™U˜XÚÙ\”İ]CBˆˆÙ[‹˜XÚÙ\”İ]UÚ]İ]Ü™Y[X[ÊXİ]™U˜XÚÙ\”İ]JCBƒBˆ]Ø][ÙÜÈHXİ]™PØ][ÙÜÃBƒBˆ]Ûİ\˜ÙPØ\\™Nˆ
+Ù\šXÙ\ÎˆĞ˜XÚİ\Ù\šXÙWKYÛœÎˆĞ˜XÚİ\İ™[Z[ĞYÛ—JOÈHÃBˆÈÃBˆ]Ù\šXÙ\ÈHHÙ\šXÙTİÜ™KœÚ\™Y˜˜XÚİ\›İÜÊ
+K›X\È›İÈ[ƒBˆ˜XÚİ\Ù\šXÙJBˆYˆ›İËšYBˆ\›ˆ›İË\›BˆœÛÛ“Y]Y]Nˆ›İËšœÛÛ“Y]Y]KBˆœÔØÜš\ˆ›İËšœÔØÜš\Bˆ\ĞXİ]™Nˆ›İËš\ĞXİ]™KBˆÛÜ[™^ˆ›İËœÛÜ[™^Bˆ
+CBˆCBˆ]YÛœÈHHİ™[Z[ĞYÛ”İÜ™KœÚ\™Y˜˜XÚİ\›İÜÊ
+K›X\È›İÈ[ƒBˆ]™\ÛÛ™YT“Hİ™[Z[ĞÛÛ™šYİ\™YT“˜][œ™\ÛÛ™JBˆYÛ’Qˆ›İËšYBˆ\œÚ\İYT“ˆ›İË˜ÛÛ™šYİ\™YT“Bˆ›Ùš[RQˆXİ]™T›Ùš[RQBˆ
+CBˆİX\™Tİ™[Z[ĞÛÛ™šYİ\™YT“˜][š\Õ[œ™\ÛÛ™Y™Y™\™[˜ÙJ™\ÛÛ™YT“
+H[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ˜ÛÙ\’[˜[Y˜[YJCBˆCBˆ™]\›ˆ˜XÚİ\İ™[Z[ĞYÛŠBˆYˆ›İËšYBˆÛÛ™šYİ\™YT“ˆ™\ÛÛ™YT“BˆX[šY™\İ”ÓÓˆ›İË›X[šY™\İ”ÓÓ‹Bˆ\ĞXİ]™Nˆ›İËš\ĞXİ]™KBˆÛÜ[™^ˆ›İËœÛÜ[™^Bˆ
+CBˆCBˆ™]\›ˆ
+Ù\šXÙ\ËYÛœÊCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆXİ]™HÙ\šXÙKÔİ™[Z[ÈÛİ\˜ÙHØ\\™HØ\È[˜]˜Z[X›NÈHÛİ\˜ÙH›Üİ\ˆØ\ÈÛZ]Y‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆ™]\›ˆš[BˆCBˆJ
+CBˆ]Ù\šXÙ\ÈHÛİ\˜ÙPØ\\™OËœÙ\šXÙ\ÈÏÈ×CBˆ]İ™[Z[ĞYÛœÈHÛİ\˜ÙPØ\\™OË˜YÛœÃBƒBˆ˜\ˆ]š[ÔYÚ[œÎˆ]š[ÔİÜ™YYÚ[œÔİ]OÈHš[Bˆ\™›Ü›SÛ“XZ[•™XYÃBˆXZ[XİÜ‹˜\Üİ[YR\ÛÛ]YÃBˆ]]š[ÓX[˜YÙ\ˆH]š[ÔYÚ[“X[˜YÙ\‹œÚ\™YBˆİX\™]š[ÓX[˜YÙ\‹š\ÓØYY[ÙHÈ™]\›ˆCBˆ]š[ÔYÚ[œÈH]š[ÓX[˜YÙ\‹˜˜XÚİ\İ]J
+CBˆCBˆCBƒBˆ˜\ˆÚŞTİ™X[NˆÚŞTİ™X[P˜XÚİ\Û˜\ÚİÈHš[Bˆ˜\ˆÚŞTİ™X[P˜XÚİ\\œ›Üˆ\œ›ÜÃBˆÚYˆÜÊSÔÊH	‰ˆ]\™Ù][š\›Û›Y[
+XXĞØ][\İ
+CBˆ˜\ˆÚŞTİ™X[SX[X[Ø\\™T[ˆÚŞTİ™X[SX[X[˜XÚİ\Ø\\™T[ÃBˆYˆ]Ü\]YTÛ˜\ÚİHØYÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+Bˆ™Y™\œš[™ÔØY™PÛİYˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆ
+HÃBƒBˆÚŞTİ™X[HH\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆÈ˜XÚİ\]KœÚŞTİ™X[TÛ˜\Úİ›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆÜ\]YTÛ˜\ÚİBˆİš\\˜Ú]™\ÎˆZ[˜ÛYTš]˜]PÛİY™XÛİ™\T^[ØYÃBˆ
+CBˆˆÜ\]YTÛ˜\ÚİBˆH[ÙHÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆXZ[XİÜ‹˜\Üİ[YR\ÛÛ]YÃBˆ]X[˜YÙ\ˆHÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™YBˆİX\™X[˜YÙ\‹š\ÓØYY[ÙHÈ™]\›ˆCBˆYˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİÃBˆÚŞTİ™X[HH[˜ÛYTš]˜]PÛİY™XÛİ™\T^[ØYÃBˆÈX[˜YÙ\‹˜ÛÛ\]Tš]˜]PÛİY˜XÚİ\Û˜\Úİ
+
+CBˆˆX[˜YÙ\‹˜ÛÛ\]Tš]˜]PÛİYY]Y]TÛ˜\Úİ
+
+CBˆH[ÙHÃBˆÈÃBƒBˆÚŞTİ™X[SX[X[Ø\\™T[ˆHHX[˜YÙ\‹›X[X[˜XÚİ\Ø\\™T[Š
+CBˆHØ]ÚÃBˆÚŞTİ™X[P˜XÚİ\\œ›ÜˆH\œ›ÜƒBˆCBˆCBˆCBˆCBˆCBˆYˆ]ÚŞTİ™X[SX[X[Ø\\™T[‹ÚŞTİ™X[P˜XÚİ\\œ›ÜˆOHš[ÃBˆÈÃBˆÚŞTİ™X[HHHÚŞTİ™X[TYÚ[“X[˜YÙ\‹›X]\šX[^™SX[X[˜XÚİ\Û˜\Úİ
+BˆÚŞTİ™X[SX[X[Ø\\™T[ƒBˆ
+CBˆHØ]ÚÃBˆÚŞTİ™X[P˜XÚİ\\œ›ÜˆH\œ›ÜƒBˆCBˆCBˆÙ[ÙCBˆYˆ]Ü\]YTÛ˜\ÚİHØYÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+Bˆ™Y™\œš[™ÔØY™PÛİYˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆ
+HÃBˆÚŞTİ™X[HH\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆÈ˜XÚİ\]KœÚŞTİ™X[TÛ˜\Úİ›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆÜ\]YTÛ˜\ÚİBˆİš\\˜Ú]™\ÎˆZ[˜ÛYTš]˜]PÛİY™XÛİ™\T^[ØYÃBˆ
+CBˆˆÜ\]YTÛ˜\ÚİBˆCBˆÙ[™YƒBˆYˆ]ÚŞTİ™X[P˜XÚİ\\œ›ÜˆÈ›İÈÚŞTİ™X[P˜XÚİ\\œ›ÜˆCBƒBˆ]X[™ØPÛÛXİ[ÛœÈHXİ]™SX[™ØPÛÛXİ[ÛœË›X\ÈÛÛXİ[Ûˆ[ƒBˆ˜XÚİ\X[™ØPÛÛXİ[ÛŠBˆYˆÛÛXİ[Û‹šYBˆ˜[YNˆÛÛXİ[Û‹›˜[YKBˆ][\ÎˆÛÛXİ[Û‹š][\ËBˆ\ØÜš\[ÛˆÛÛXİ[Û‹™\ØÜš\[ÛƒBˆ
+CBˆCBƒBˆ]X[™ØT™XY[™Ô›ÙÜ™\ÜÈHXİ[Û˜\JBˆ[š\]YRÙ^\ÕÚ]˜[Y\ÎˆXİ]™SX[™ØT›ÙÜ™\ÜÃBˆ›X\È
+—
+	šÙ^JH‹	˜[YJHCBˆ
+CBƒBˆ]X[™ØPØ][ÙÜÈHXİ]™SX[™ØPØ][ÙÜÃBƒBˆ]İ\İÛPØ][ÙÜÈHXİ]™Pİ\İÛPØ][ÙÜÃBƒBˆ]Ø[™[“[Ù[\ÈH[Ù[SX[˜YÙ\‹œÚ\™Y›[Ù[\Ë›X\È[Ù[ƒBˆ˜XÚİ\Ø[™[“[Ù[JBˆYˆ[ÙšYBˆ[Ù[Q]Nˆ[Ù›[Ù[Q]KBˆØØ[]ˆ[Ù›ØØ[]Bˆ[Ù[]\›ˆ[Ù›[Ù[]\›Bˆ\ĞXİ]™Nˆ[Ùš\ĞXİ]™CBˆ
+CBˆCBƒBˆÚYˆ[ÜÊ“ÔÊCBˆ]™XY\‘^[œÚ[ÛœÔİ]Nˆ˜XÚİ\™XY\‘^[œÚ[Û”İ]OÃBˆÈÃBˆ™XY\‘^[œÚ[ÛœÔİ]HHH˜XÚİ\™XY\‘^[œÚ[Û”İ]K˜Ø\\™JBˆœ›ÛNˆ›Ùš[TÙ][™ÜÔİÜ™KœÙ\šXÙ\ËBˆ™Y™\™[˜ÙTİÜ™Nˆ›Ùš[TÙ][™ÜÔİÜ™K˜Xİ]™CBˆ
+CBˆHØ]ÚÃBˆYˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİÃBˆ™XY\‘^[œÚ[ÛœÔİ]HHš[BˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\ˆXİ]™H™XY\ˆ^[œÚ[ÛˆY]Y]H\È[œ™XYX›NÈÛZ]Yœ›ÛHÛİYÛ˜\Úİ˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆH[ÙHÃBˆ›İÈ\œ›ÜƒBˆCBˆCBˆÙ[ÙCBˆ]™XY\‘^[œÚ[ÛœÔİ]Nˆ˜XÚİ\™XY\‘^[œÚ[Û”İ]OÈHš[BˆÙ[™YƒBƒBˆ]˜XÚİ\H˜XÚİ\]JBˆÜ™X]Y]Nˆ]J
+KBˆXØÙ[ÛÛÜˆXØÙ[ÛÛÜ‘]KBˆÙ][™ÜÑÜ˜YY[ÛÛÜˆÙ][™ÜÑÜ˜YY[ÛÛÜ‹Bˆ™XY\XØÙ[ÛÛÜˆ™XY\XØÙ[ÛÛÜ‹BˆY“[™İXYÙNˆY“[™İXYÙKBˆÙ[XİY\X\˜[˜ÙNˆÙ[XİY\X\˜[˜ÙKBˆ™XY\”Ù[XİY\X\˜[˜ÙNˆ™XY\”Ù[XİY\X\˜[˜ÙKBˆ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›Yˆ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YBˆ™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆ™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜ‹Bˆ[˜X›TİX]\ĞQY˜][ˆ[˜X›TİX]\ĞQY˜][BˆY˜][İX]S[™İXYÙNˆY˜][İX]S[™İXYÙKBˆ^Y\”İX]P\X\˜[˜ÙQ[˜X›Yˆ^Y\”İX]P\X\˜[˜ÙQ[˜X›YBƒBˆ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙNˆ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙKBˆ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙNˆ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙKBˆ[\^Y\ˆ[\^Y\‹BˆÚİÔØÚY[UXˆÚİÔØÚY[UX‹BˆÚİÓØØ[ØÚY[U[YNˆÚİÓØØ[ØÚY[U[YKBˆY˜][ØÚY[S[ÙNˆY˜][ØÚY[S[ÙKBˆØÚY[UÚ[™İÑ^\ÎˆØÚY[UÚ[™İÑ^\ËBˆØØ[›İYšXØ][Û”İXœØÜš\[ÛœÎˆØØ[›İYšXØ][Û”İXœØÜš\[ÛœËBˆØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÎˆØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œËBˆØØ[›İYšXØ][Û‘\\ÛÙSXY[YNˆØØ[›İYšXØ][Û‘\\ÛÙSXY[YKBˆØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YNˆØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YKBˆØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÎˆØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ËBƒBˆY˜][^X˜XÚÔÜYYˆY˜][^X˜XÚÔÜYYBˆÛÜYY^Y\ˆÛÜYY^Y\‹Bˆ^\›˜[^Y\ˆ^\›˜[^Y\‹Bˆ™Y™\‘İÛ›ØYYYYXNˆ™Y™\‘İÛ›ØYYYYXKBˆ[Ø^\Ó[™ØØ\Nˆ[Ø^\Ó[™ØØ\KBˆ^Y\”^X˜XÚÓØÚÑ[˜X›Yˆ^Y\”^X˜XÚÓØÚÑ[˜X›YBˆ[šTÚÚ\[˜X›Yˆ[šTÚÚ\[˜X›YBˆ[›Ñ‘[˜X›Yˆ[›Ñ‘[˜X›YBˆ[›Ñ\[˜X›Yˆ[›Ñ\[˜X›YBˆ[šTÚÚ\]]ÔÚÚ\ˆ[šTÚÚ\]]ÔÚÚ\BˆÚÚ\\Ñ[˜X›YˆÚÚ\\Ñ[˜X›YBˆÚÚ\\Ğ[Ø^\Õš\ÚX›NˆÚÚ\\Ğ[Ø^\Õš\ÚX›KBˆÚİÓ™^\\ÛÙP]ÛˆÚİÓ™^\\ÛÙP]Û‹BˆÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆÚİÑ\\ÛÙPœ›İÜÙ\]Û‹BˆÚİÔ^Y\”Ù\šXÙ\Ğ]ÛˆÚİÔ^Y\”Ù\šXÙ\Ğ]Û‹BˆÚİÓ™^\\ÛÙTÜİ\]ÛˆÚİÓ™^\\ÛÙTÜİ\]Û‹Bˆ™^\\ÛÙU™\ÚÛˆ™^\\ÛÙU™\ÚÛBˆ™^\\ÛÙTÚÚ\š[\‘[˜X›Yˆ™^\\ÛÙTÚÚ\š[\‘[˜X›YBˆ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›Yˆ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YBˆ^Y\•›Û[YQÙ\İ\™Q[˜X›Yˆ^Y\•›Û[YQÙ\İ\™Q[˜X›YBˆ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›Yˆ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YBˆ^Y\Ù[\•\^T]\ÙQ[˜X›Yˆ^Y\Ù[\•\^T]\ÙQ[˜X›YBˆ^Y\‘İX›U\ÙYZÑ[˜X›Yˆ^Y\‘İX›U\ÙYZÑ[˜X›YBˆ^Y\‘İX›U\ÙYZÔÙXÛÛ™Îˆ^Y\‘İX›U\ÙYZÔÙXÛÛ™ËBˆ^Y\“Ü[”İX]\Ñ[˜X›Yˆ^Y\“Ü[”İX]\Ñ[˜X›YBˆ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›Yˆ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YBˆ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›Yˆ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›YBˆ\‘›Ü™YÜ›İ[™”Îˆ\‘›Ü™YÜ›İ[™”ËBˆ\”™[™\˜XÚÙ[™ˆ\”™[™\˜XÚÙ[™Bˆ\“Y][]X[]T›Ùš[Nˆ\“Y][]X[]T›Ùš[KBˆ\•\ØØ[[™Ó[ÙNˆ\•\ØØ[[™Ó[ÙKBˆ\“™]\˜[\ØØ[\ˆ\“™]\˜[\ØØ[\‹Bˆ\“™]\˜[\ØØ[\•ˆ\“™]\˜[\ØØ[\•‹Bˆ\”^Y\”ÚÚ[ˆ\”^Y\”ÚÚ[‹Bˆ\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜˆ\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜ‹Bˆ\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜˆ\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜ‹Bˆ\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›Yˆ\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›YBˆ\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›Nˆ\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›KBˆ\”Xİ\™R[”Xİ\™Q[˜X›Yˆ\”Xİ\™R[”Xİ\™Q[˜X›YBˆ\\^]Xİ\™R[”Xİ\™Q[˜X›Yˆ\\^]Xİ\™R[”Xİ\™Q[˜X›YBˆ\’“[ÙNˆ\’“[ÙKBˆ\”İ\œ›İ[™Ûİ[™[˜X›Yˆ\”İ\œ›İ[™Ûİ[™[˜X›YBˆØ]ÚÙÙ]\‘[˜X›YˆØ]ÚÙÙ]\‘[˜X›YBˆÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YˆÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YBˆ^\š[Y[[™X]\™\Ñ[˜X›Yˆ^\š[Y[[™X]\™\Ñ[˜X›YBˆ^\š[Y[[™X]\™\Ó\İÚ[™ÙY]ˆ^\š[Y[[™X]\™\Ó\İÚ[™ÙY]Bˆ^\š[Y[[T”™[ØY[˜X›Yˆ^\š[Y[[T”™[ØY[˜X›YBˆ^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›Yˆ^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›YBˆ^\š[Y[[T”™[ØYÙ[[\‘[˜X›Yˆ^\š[Y[[T”™[ØYÙ[[\‘[˜X›YBˆ^\š[Y[[T”™[ØYÚYšS[Z]Pˆ^\š[Y[[T”™[ØYÚYšS[Z]P‹Bˆ^\š[Y[[T”™[ØYÙ[[\“[Z]Pˆ^\š[Y[[T”™[ØYÙ[[\“[Z]P‹Bˆ^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YNˆ^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YKBˆ^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜÎˆ^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜËBˆ^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\Îˆ^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\ËBˆ^\š[Y[[T”™[ØY]]ĞÛX\ˆ^\š[Y[[T”™[ØY]]ĞÛX\‹Bˆ^\š[Y[[PÛİYŞ[˜Ñ[˜X›Yˆ^\š[Y[[PÛİYŞ[˜Ñ[˜X›YBƒBˆİX]Q›Ü™YÜ›İ[™ÛÛÜˆİX]Q›Ü™YÜ›İ[™ÛÛÜ‹BˆİX]Tİ›ÚÙPÛÛÜˆİX]Tİ›ÚÙPÛÛÜ‹BˆİX]Tİ›ÚÙUÚYˆİX]Tİ›ÚÙUÚYBˆİX]Q›ÛÚ^™NˆİX]Q›ÛÚ^™KBˆİX]U™\XØ[Ù™œÙ]ˆİX]U™\XØ[Ù™œÙ]BˆİX]\Õš\ÚX›NˆİX]\Õš\ÚX›KBƒBˆÚİÒØ[™[ˆÚİÒØ[™[‹BˆYTÜ\ÚØÜ™Y[ˆYTÜ\ÚØÜ™Y[‹Bˆ[ÙTİÚ]Ú[š[X][Û‘[˜X›Yˆ[ÙTİÚ]Ú[š[X][Û‘[˜X›YBˆØ[™[]]Õ\]S[Ù[\ÎˆØ[™[]]Õ\]S[Ù[\ËBˆÙX\ÛÛ“Y[NˆÙX\ÛÛ“Y[KBˆÜš^›Û[\\ÛÙS\İˆÜš^›Û[\\ÛÙS\İBˆYYXQ]Z[]P\ÛÜšÑ[˜X›YˆYYXQ]Z[]P\ÛÜšÑ[˜X›YBˆYYXQ]Z[[\›˜]TÜİ\‘[˜X›YˆYYXQ]Z[[\›˜]TÜİ\‘[˜X›YBˆYYXQ]Z[Ú[Z[\•]\Ñ[˜X›YˆYYXQ]Z[Ú[Z[\•]\Ñ[˜X›YBˆ\ÙPÛ\ÜÚXÔØÚY[URNˆ\ÙPÛ\ÜÚXÔØÚY[URKBˆ\›Ğ˜[›™\Ø][ÙÒYˆ\›Ğ˜[›™\Ø][ÙÒYBˆ\›Ğ˜[›™\™Z]š[Üˆ\›Ğ˜[›™\™Z]š[Ü‹BˆÛYPØ][ÙÓ^[İ]İ™\œšY\ÎˆÛYPØ][ÙÓ^[İ]İ™\œšY\ËBˆÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YˆÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YBˆÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]NˆÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]KBˆÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]NˆÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]KBˆ\\™›Ü›X[˜ÙSİ™\›^Q[˜X›Yˆ\\™›Ü›X[˜ÙSİ™\›^Q[˜X›YBˆ^\š[Y[[YYXQ\ÚYÛ”™\Ù]ˆ^\š[Y[[YYXQ\ÚYÛ”™\Ù]Bˆ^\š[Y[[\›Ğ›YY]™[ˆ^\š[Y[[\›Ğ›YY]™[Bˆ^\š[Y[[ÛYPØ\™Ú\Nˆ^\š[Y[[ÛYPØ\™Ú\KBˆ^\š[Y[[][QÜ˜YY[[]Nˆ^\š[Y[[][QÜ˜YY[[]KBˆ^\š[Y[[\›ÒZYÚØØ[Nˆ^\š[Y[[\›ÒZYÚØØ[KBˆ^\š[Y[[\›Ğ›YYİ™[™İˆ^\š[Y[[\›Ğ›YYİ™[™İBˆ^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[Nˆ^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[KBˆ^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[Nˆ^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[KBˆ^\š[Y[[Ø\™˜Y]\ÔØØ[Nˆ^\š[Y[[Ø\™˜Y]\ÔØØ[KBˆ^\š[Y[[YYXPØ\™ØØ[Nˆ^\š[Y[[YYXPØ\™ØØ[KBˆ^\š[Y[[Û\ÜÔİ™[™İˆ^\š[Y[[Û\ÜÔİ™[™İBˆ^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÎˆ^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜËBˆ^\š[Y[[Ü˜YY[XØÙ[[[œÚ]Nˆ^\š[Y[[Ü˜YY[XØÙ[[[œÚ]KBˆ^\š[Y[[Ü˜YY[ØÜ›Û[İ[Ûˆ^\š[Y[[Ü˜YY[ØÜ›Û[İ[Û‹Bˆ^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœÎˆ^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœËBˆ^\š[Y[[Ü˜YY[ÛÛÜNˆ^\š[Y[[Ü˜YY[ÛÛÜKBˆ^\š[Y[[Ü˜YY[ÛÛÜˆ^\š[Y[[Ü˜YY[ÛÛÜ‹Bˆ^\š[Y[[Ü˜YY[ÛÛÜÎˆ^\š[Y[[Ü˜YY[ÛÛÜËBˆ][ÜÜ\™Tİ[Nˆ][ÜÜ\™Tİ[KBˆ][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙNˆ][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙKBˆ][ÜÜ\™TÛÛYÛÛÜˆ][ÜÜ\™TÛÛYÛÛÜ‹Bˆ™XY\][ÜÜ\™Tİ[Nˆ™XY\][ÜÜ\™Tİ[KBˆ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙNˆ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙKBˆ™XY\][ÜÜ\™TÛÛYÛÛÜˆ™XY\][ÜÜ\™TÛÛYÛÛÜ‹BˆYYXQ]Z[[[Y[Ü™\ˆYYXQ]Z[[[Y[Ü™\‹BˆYYXQ]Z[Y[‘[[Y[ÎˆYYXQ]Z[Y[‘[[Y[ËBˆ™XY\‘]Z[[[Y[Ü™\ˆ™XY\‘]Z[[[Y[Ü™\‹Bˆ™XY\‘]Z[Y[‘[[Y[Îˆ™XY\‘]Z[Y[‘[[Y[ËBˆYYXPÛÛ[[œÔÜ˜Z]ˆYYXPÛÛ[[œÔÜ˜Z]BˆYYXPÛÛ[[œÓ[™ØØ\NˆYYXPÛÛ[[œÓ[™ØØ\KBƒBˆ™XY[™Ó[ÙNˆ™XY[™Ó[ÙKBˆØ[™[”™XY\“[ÙNˆØ[™[”™XY\“[ÙKBˆØ[™[”™XY\“[ÙSİ™\œšY\ÎˆØ[™[”™XY\“[ÙSİ™\œšY\ËBˆ™XY\‘İÛœØ[\R[XYÙ\Îˆ™XY\‘İÛœØ[\R[XYÙ\ËBˆ™XY\Ü›Ü›Ü™\œÎˆ™XY\Ü›Ü›Ü™\œËBˆ™XY\‘\ØX›T]ZXÚĞXİ[ÛœÎˆ™XY\‘\ØX›T]ZXÚĞXİ[ÛœËBˆ™XY\‘\ØX›QİX›U\ˆ™XY\‘\ØX›QİX›U\Bˆ™XY\“]™U^ˆ™XY\“]™U^Bˆ™XY\’YP˜\œÓÛ”İÚ\Nˆ™XY\’YP˜\œÓÛ”İÚ\KBˆ™XY\˜XÚÙÜ›İ[™ÛÛÜˆ™XY\˜XÚÙÜ›İ[™ÛÛÜ‹Bˆ™XY\“ÜšY[][Ûˆ™XY\“ÜšY[][Û‹Bˆ™XY\•\›Û™\Îˆ™XY\•\›Û™\ËBˆ™XY\’[™\\›Û™\Îˆ™XY\’[™\\›Û™\ËBˆ™XY\[š[X]TYÙU˜[œÚ][ÛœÎˆ™XY\[š[X]TYÙU˜[œÚ][ÛœËBˆ™XY\•\ØØ[R[XYÙ\Îˆ™XY\•\ØØ[R[XYÙ\ËBˆ™XY\•\ØØ[SX^ZYÚˆ™XY\•\ØØ[SX^ZYÚBˆ™XY\•\ØØ[S[Ù[˜[YNˆ™XY\•\ØØ[S[Ù[˜[YKBˆ™XY\”YÙ\ÕÔ™[ØYˆ™XY\”YÙ\ÕÔ™[ØYBˆ™XY\”YÙYYÙS^[İ]ˆ™XY\”YÙYYÙS^[İ]Bˆ™XY\”YÙYYÙSÙ™œÙ]ˆ™XY\”YÙYYÙSÙ™œÙ]Bˆ™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\Îˆ™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ËBˆ™XY\”Ü]ÚYR[XYÙ\Îˆ™XY\”Ü]ÚYR[XYÙ\ËBˆ™XY\”™]™\œÙTÜ]Ü™\ˆ™XY\”™]™\œÙTÜ]Ü™\‹Bˆ™XY\•™\XØ[[™š[š]TØÜ›Ûˆ™XY\•™\XØ[[™š[š]TØÜ›ÛBˆ™XY\”[\˜›Şˆ™XY\”[\˜›ŞBˆ™XY\”[\˜›Ş[[İ[ˆ™XY\”[\˜›Ş[[İ[Bˆ™XY\”[\˜›ŞÜšY[][Ûˆ™XY\”[\˜›ŞÜšY[][Û‹Bˆ™XY\“ÜšY[][Û“ØÚÑ[˜X›Yˆ™XY\“ÜšY[][Û“ØÚÑ[˜X›YBˆ™XY\“ÜšY[][Û“ØÚÓX\ÚÎˆ™XY\“ÜšY[][Û“ØÚÓX\ÚËBˆ™XY\”™XY™\ÚÛ\˜Ù[ˆ™XY\”™XY™\ÚÛ\˜Ù[BƒBˆ™XY\‘›ÛÚ^™Nˆ™XY\‘›ÛÚ^™KBˆ™XY\‘›Û˜[Z[Nˆ™XY\‘›Û˜[Z[KBˆ™XY\‘›ÛÙZYÚˆ™XY\‘›ÛÙZYÚBˆ™XY\ÛÛÜ”™\Ù]ˆ™XY\ÛÛÜ”™\Ù]Bˆ™XY\•^[YÛ›Y[ˆ™XY\•^[YÛ›Y[Bˆ™XY\“[™TÜXÚ[™Îˆ™XY\“[™TÜXÚ[™ËBˆ™XY\“X\™Ú[ˆ™XY\“X\™Ú[‹BƒBˆ]]ĞÛX\ØXÚQ[˜X›Yˆ]]ĞÛX\ØXÚQ[˜X›YBˆ]]ĞÛX\ØXÚU™\ÚÛPˆ]]ĞÛX\ØXÚU™\ÚÛP‹BˆYÚ]X[]U™\ÚÛˆYÚ]X[]U™\ÚÛBˆ˜XÚÙÜ›İ[™Ô\[[™Q[˜X›Yˆ˜XÚÙÜ›İ[™Ô\[[™Q[˜X›YBˆ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›Yˆ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YBˆ™XY\‘İÛ›ØYÕÚYšSÛ›Nˆ™XY\‘İÛ›ØYÕÚYšSÛ›KBˆ™XY\‘İÛ›ØYÔ\˜[[[Z]ˆ™XY\‘İÛ›ØYÔ\˜[[[Z]Bˆ]]Õ\]TÙ\šXÙ\Ñ[˜X›Yˆ]]Õ\]TÙ\šXÙ\Ñ[˜X›YBˆÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›YˆÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›YBˆÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YˆÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YBˆÙ\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›YˆÙ\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›YBˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÎˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYËBˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÎˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YËBˆÙ\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙNˆÙ\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙKBˆÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]NˆÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]KBˆÙ\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ÎˆÙ\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ËBˆÙ\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›YˆÙ\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›YBˆÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ÎˆÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ËBˆÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\ÎˆÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\ËBˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]NˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]KBˆÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ÎˆÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ËBˆÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚˆÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚBˆÙ\šXÙ\ÒY[”İ™X[T]X[]Y\ÎˆÙ\šXÙ\ÒY[”İ™X[T]X[]Y\ËBˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]NˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]KBˆÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÎˆÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYËBˆÚ]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YˆÚ]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YBˆÚ]X”™[X\ÙU\]P]˜Z[X›NˆÚ]X”™[X\ÙU\]P]˜Z[X›KBˆÚ]X”™[X\ÙS]\İ™\œÚ[ÛˆÚ]X”™[X\ÙS]\İ™\œÚ[Û‹BˆÚ]X”™[X\ÙUT“ˆÚ]X”™[X\ÙUT“BˆÚ]X”™[X\ÙTÚİĞ[\[™[™ÎˆÚ]X”™[X\ÙTÚİĞ[\[™[™ËBˆÚ]X”™[X\ÙS\İ›Û\Y™\œÚ[ÛˆÚ]X”™[X\ÙS\İ›Û\Y™\œÚ[Û‹Bˆš[\’Üœ›ÜÛÛ[ˆš[\’Üœ›ÜÛÛ[BˆÙ[XİYÚ[Z[\š]P[ÛÜš]NˆÙ[XİYÚ[Z[\š]P[ÛÜš]KBˆ\™›Ü›X[˜ÙS[ÙQ[˜X›Yˆ\™›Ü›X[˜ÙS[ÙQ[˜X›YBˆ\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[Îˆ\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[ËBˆ\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\Îˆ\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\ËBˆØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQˆØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQBˆØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ÎˆØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ËBƒBˆÛÛXİ[ÛœÎˆ˜XÚİ\ÛÛXİ[ÛœËBˆ›ÙÜ™\ÜÑ]Nˆ›ÙÜ™\ÜÑ]KBˆ˜XÚÙ\”İ]Nˆ˜XÚÙ\”İ]KBˆØ][ÙÜÎˆØ][ÙÜËBˆÙ\šXÙ\ÎˆÙ\šXÙ\ËBˆİ™[Z[ĞYÛœÎˆİ™[Z[ĞYÛœËBˆÚŞTİ™X[NˆÚŞTİ™X[KBˆ]š[ÔYÚ[œÎˆ]š[ÔYÚ[œËBˆX[™ØPÛÛXİ[ÛœÎˆX[™ØPÛÛXİ[ÛœËBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÎˆX[™ØT™XY[™Ô›ÙÜ™\ÜËBˆX[™ØPØ][ÙÜÎˆX[™ØPØ][ÙÜËBˆİ\İÛPØ][ÙÜÎˆİ\İÛPØ][ÙÜËBˆØ[™[“[Ù[\ÎˆØ[™[“[Ù[\ËBˆ™XY\‘^[œÚ[ÛœÔİ]Nˆ™XY\‘^[œÚ[ÛœÔİ]KBˆÙX\˜Ú\İÜNˆÙX\˜Ú\İÜKBˆ™XÛÛ[Y[™][ÛØXÚNˆ™XÛÛ[Y[™][Û‘[™Ú[™KœÚ\™Y™Ù]™XÛÛ[Y[™][ÛØXÚJ
+KBˆ\Ù\”˜][™ÜÎˆXİ]™T˜][™ÜËœ˜][™ÜËBˆ\Ù\”˜][™Ó›İ\ÎˆXİ]™T˜][™ÜË››İ\ËBˆYYXTİ]TÙ][™ÜÎˆ˜XÚİ\]K˜Ø\\™SYYXTİ]TÙ][™ÜÊ
+KBˆÙ\šXÙ\Ô™\Ù[ˆÛİ\˜ÙPØ\\™HOHš[BˆØ[™[“[Ù[\Ô™\Ù[ˆS[Ù[SX[˜YÙ\‹œÚ\™Y›Y]Y]TİÜ™Q˜Z[YÓØYBˆ
+CBƒBˆ˜\ˆ˜XÚİ\Ú]›Ùš[\ÈH˜XÚİ\BƒBˆYˆ]Ù\šXÙ\ÔÙ][™ÜÈHÙ[‹˜Ø\\™TÙ\šXÙ\ÔØÛÜYÙ][™ÜÊ
+HÃBˆ˜XÚİ\Ú]›Ùš[\ËœÙ\šXÙ\ÔÙ][™ÜÈHÙ\šXÙ\ÔÙ][™ÜÃBˆ˜XÚİ\Ú]›Ùš[\ËœÙ\šXÙ\ÔÙ][™ÜÕÙ\™PØ\\™YHYCBˆH[ÙHÃBˆ˜XÚİ\Ú]›Ùš[\ËœÙ\šXÙ\ÔÙ][™ÜÈHš[Bˆ˜XÚİ\Ú]›Ùš[\ËœÙ\šXÙ\ÔÙ][™ÜÕÙ\™PØ\\™YH˜[ÙCBˆCBˆ˜XÚİ\Ú]›Ùš[\ËœÚ\™\ÔÙ\šXÙ\ÈH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÃBˆ˜XÚİ\Ú]›Ùš[\Ëœ›Ùš[\ÈHHÙ[‹˜Ø\\™T›Ùš[TÛ˜\ÚİÊBˆ›Ùš[\ÎˆØ\\™PÛÛ^œ›Ùš[\ËBˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]Nˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆ™\]Z\™T™XYX›T™XY\‘^[œÚ[Û“Y]Y]Nˆ]\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆ[˜ÛYTš]˜]PÛİY˜XÚÙ\Ü™Y[X[Îˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆ
+CBˆYˆ\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\ÚİBˆ]Ø\\™YXİ]™U˜XÚÙ\ˆH˜XÚİ\Ú]›Ùš[\Ëœ›Ùš[\ÏË™š\œİ
+Ú\™NˆÃBˆ	šYOHXİ]™T›Ùš[RQBˆ	‰ˆ	˜XÚÙ\”İ]UØ\ĞØ\\™YBˆ	‰ˆ	˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YBˆJHÃBˆ˜XÚİ\Ú]›Ùš[\Ë˜XÚÙ\”İ]HHØ\\™YXİ]™U˜XÚÙ\‹˜XÚÙ\”İ]CBˆCBˆ˜XÚİ\Ú]›Ùš[\Ë˜Xİ]™T›Ùš[RQHXİ]™T›Ùš[RQBƒBˆYˆ]\ÙTØY™PÛİYÚŞTİ™X[TÛ˜\Úİ[˜ÛYTš]˜]PÛİY™XÛİ™\T^[ØYÈÃBˆHÙ[‹˜Ø\\™TÚ\™YÛİ\˜ÙT^[ØYÊ[Îˆ	˜˜XÚİ\Ú]›Ùš[\ÊCBˆCBˆİX\™Xİ]™T›Ùš[TØÛÜR\Ğİ\œ™[
+Ø\\™YØÛÜJH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ\ØØ\™YH˜XÚİ\Ø\\™YXÜ›ÜÜÈH›Ùš[HØÛÜHÜˆ›Üİ\ˆÚ[™ÙH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹˜Xİ]™T›Ùš[PÚ[™ÙYBˆCBˆ™]\›ˆ˜XÚİ\Ú]›Ùš[\ÃBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ\\™TÚ\™YÛİ\˜ÙT^[ØYÊ[È˜XÚİ\ˆ[›İ]˜XÚİ\]JH›İÜÈÃBˆİX\™T›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ËBˆ]Û˜\ÚİÈH˜XÚİ\œ›Ùš[\È[ÙHÈ™]\›ˆCBˆİX\™]Xİ]™T›Ùš[RQH˜XÚİ\˜Xİ]™T›Ùš[RQ[ÙHÃBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹˜Xİ]™T›Ùš[PÚ[™ÙYBˆCBˆ][˜Xİ]™TÛ˜\ÚİÈHÛ˜\ÚİË™š[\ˆÈ	šYOHXİ]™T›Ùš[RQCBˆİX\™Z[˜Xİ]™TÛ˜\ÚİËš\Ñ[\H[ÙHÈ™]\›ˆCBƒBˆ˜\ˆ™[XZ[š[™Ğ]\ÈHX^[][TÚ\™YÛİ\˜ÙT^[ØY]\ÃBˆ˜\ˆÚÚ\Y›ÜYÙ]HBƒBˆ˜\ˆÛİ™\™Y^[ØY]ÈHÙ]İš[™ÏŠ
+CBˆ˜\ˆÛİ™\™Y\˜Ú]™R\Ú\ÈHÙ]İš[™ÏŠ
+CBˆ˜\ˆÚŞTİ™X[T^[ØYÎˆĞ˜XÚİ\ÚŞTİ™X[TÚ\™Y^[ØYHH×CBˆ›ÜˆÛ˜\Úİ[ˆ[˜Xİ]™TÛ˜\ÚİÈÃBˆİX\™]Øİ[Y[HÛ˜\ÚİœÚŞTİ™X[Tİ]Q]KBˆ]YÚ[œÈHXÛÙYÚŞTİ™X[R[œİ[YYÚ[œÊØİ[Y[
+H[ÙHÈÛÛ[YHCBˆ›ÜˆYÚ[ˆ[ˆYÚ[œÈÚ\™HÛİ™\™Y^[ØY]Ëš[œÙ\
+YÚ[‹œ^[ØY™[]]™T]
+Kš[œÙ\YÃBˆ]\˜Ú]™R\ÚHYÚ[‹˜\˜Ú]™TÒLM‹›İÙ\˜Ø\ÙY
+
+CBˆ]Ø\œšY\Ğ\˜Ú]™HHXÛİ™\™Y\˜Ú]™R\Ú\Ë˜ÛÛZ[œÊ\˜Ú]™R\Ú
+CBˆİX\™]^[ØYHÚ\™YÚŞTİ™X[T^[ØY
+Bˆ›ÜˆYÚ[‹Bˆ[˜ÛY[™Ğ\˜Ú]™NˆØ\œšY\Ğ\˜Ú]™CBˆ
+H[ÙHÈÛÛ[YHCBˆ]]PÛİ[H^[ØYœØÜš\˜Ûİ[
+È
+^[ØY˜\˜Ú]™OË˜Ûİ[ÏÈ
+CBˆİX\™]PÛİ[H™[XZ[š[™Ğ]\È[ÙHÃBˆÚÚ\Y›ÜYÙ]
+ÏHCBˆÛÛ[YCBˆCBˆ™[XZ[š[™Ğ]\ÈOH]PÛİ[BˆÚŞTİ™X[T^[ØYË˜\[™
+^[ØY
+CBƒBˆYˆ^[ØY˜\˜Ú]™HOHš[ÃBˆÛİ™\™Y\˜Ú]™R\Ú\Ëš[œÙ\
+\˜Ú]™R\Ú
+CBˆCBˆCBˆCBˆYˆ\ÚŞTİ™X[T^[ØYËš\Ñ[\HÃBˆ˜XÚİ\œÚŞTİ™X[TÚ\™Y^[ØYÈHÚŞTİ™X[T^[ØYÃBˆCBƒBˆ˜\ˆÛİ™\™Y]š[Ñš[\ÈHÙ]İš[™ÏŠ
+CBˆ˜\ˆ]š[Ô^[ØYÎˆĞ˜XÚİ\]š[ÔÚ\™Y^[ØYHH×CBˆ›ÜˆÛ˜\Úİ[ˆ[˜Xİ]™TÛ˜\ÚİÈÃBˆ›ÜˆØÜ˜\\ˆ[ˆÛ˜\Úİ›]š[ÔYÚ[œÏËœØÜ˜\\œÈÏÈ×HÃBˆ]Y[]HH—
+ØÜ˜\\‹œ™\ÜÚ]ÜRY
+K×
+ØÜ˜\\‹˜ÛÙQš[S˜[YJHƒBˆİX\™Ûİ™\™Y]š[Ñš[\Ëš[œÙ\
+Y[]JKš[œÙ\YBˆ]ÛÙHH]š[ÔYÚ[”İÜ™KœÚ\™Yœ™XYÛÙJBˆ™\ÜÚ]ÜRQˆØÜ˜\\‹œ™\ÜÚ]ÜRYBˆÛÙQš[S˜[YNˆØÜ˜\\‹˜ÛÙQš[S˜[YCBˆ
+H[ÙHÈÛÛ[YHCBˆ]]PÛİ[HÛÙK]˜Ûİ[BˆİX\™]PÛİ[H™[XZ[š[™Ğ]\È[ÙHÃBˆÚÚ\Y›ÜYÙ]
+ÏHCBˆÛÛ[YCBˆCBˆ™[XZ[š[™Ğ]\ÈOH]PÛİ[Bˆ]š[Ô^[ØYË˜\[™
+Bˆ˜XÚİ\]š[ÔÚ\™Y^[ØY
+Bˆ™\ÜÚ]ÜRQˆØÜ˜\\‹œ™\ÜÚ]ÜRYBˆØÜ˜\\’QˆØÜ˜\\‹šYBˆÛÙQš[S˜[YNˆØÜ˜\\‹˜ÛÙQš[S˜[YKBˆÛÙNˆÛÙCBˆ
+CBˆ
+CBˆCBˆCBˆYˆ[]š[Ô^[ØYËš\Ñ[\HÃBˆ˜XÚİ\›]š[ÔÚ\™Y^[ØYÈH]š[Ô^[ØYÃBˆCBƒBˆYˆÚÚ\Y›ÜYÙ]ˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Y\ÙY[ˆ[˜ÛÛ\]H^Ü™XØ]\ÙH
+ÚÚ\Y›ÜYÙ]
+H[˜Xİ]™K\›Ùš[HÛİ\˜ÙH^[ØY
+ÊH^ÙYYYHÚ\™Y\^[ØYYÙ]‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ›İÈ˜XÚİ\Ü™X][Û‘\œ›Ü‹œÚ\™YÛİ\˜ÙT^[ØYYÙ]^ÙYYY
+ÚÚ\Y›ÜYÙ]
+CBˆCBˆYˆ\ÚŞTİ™X[T^[ØYËš\Ñ[\H[]š[Ô^[ØYËš\Ñ[\HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆØ\œšYY
+ÚŞTİ™X[T^[ØYË˜Ûİ[
+HÚŞTİ™X[H[™
+]š[Ô^[ØYË˜Ûİ[
+H]š[È^[ØY
+ÊH›Üˆ[˜Xİ]™H›Ùš[\È‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÚ\™YÚŞTİ™X[T^[ØY
+Bˆ›ÜˆYÚ[ˆÚŞTİ™X[R[œİ[YYÚ[”İ]KBˆ[˜ÛY[™Ğ\˜Ú]™Nˆ›ÛÛBˆ
+HOˆ˜XÚİ\ÚŞTİ™X[TÚ\™Y^[ØYÈÃBˆİX\™]^[ØYT“HÚ\™YÚŞTİ™X[T^[ØYT“
+™[]]™T]ˆYÚ[‹œ^[ØY™[]]™T]
+KBˆ]ØÜš\HOÈ]JBˆÛÛ[ÓÙˆ^[ØYT“˜\[™[™Ô]ÛÛ\Û™[
+œYÚ[‹šœÈ‹\Ñ\™XİÜNˆ˜[ÙJKBˆÜ[ÛœÎˆË›X\YY”ØY™WCBˆ
+KBˆØÜš\˜Ûİ[HX^[][TÚŞTİ™X[TØÜš\]\ËBˆÚLM’^
+ØÜš\
+K˜Ø\ÙR[œÙ[œÚ]]™PÛÛ\\™JYÚ[‹œØÜš\ÒLMŠHOH›Ü™\™YØ[YH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆÛİ[›İØ\œHHÚŞTİ™X[H^[ØY›Üˆ
+YÚ[‹šY
+NÈ]ÈØÜš\\ÈZ\ÜÚ[™ÈÜˆÙ\È›İX]ÚH\Ú]È›Ùš[H™XÛÜ™Y‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆš[BˆCBƒBˆ˜\ˆ\˜Ú]™Nˆ]OÃBˆYˆ[˜ÛY[™Ğ\˜Ú]™KBˆ]\˜Ú]™UT“HÚ\™YÚŞTİ™X[P\˜Ú]™UT“
+BˆXÚØYÙRQˆYÚ[‹šYBˆ\˜Ú]™TÒLMˆYÚ[‹˜\˜Ú]™TÒLMƒBˆ
+KBˆ]]\ÈHOÈ]JÛÛ[ÓÙˆ\˜Ú]™UT“Ü[ÛœÎˆË›X\YY”ØY™WJKBˆ]\Ë˜Ûİ[HX^[][TÚŞTİ™X[P\˜Ú]™P]\ËBˆÚLM’^
+]\ÊK˜Ø\ÙR[œÙ[œÚ]]™PÛÛ\\™JYÚ[‹˜\˜Ú]™TÒLMŠHOH›Ü™\™YØ[YHÃBˆ\˜Ú]™HH]\ÃBˆCBƒBˆ™]\›ˆ˜XÚİ\ÚŞTİ™X[TÚ\™Y^[ØY
+BˆXÚØYÙRQˆYÚ[‹šYBˆ^[ØY™[]]™T]ˆYÚ[‹œ^[ØY™[]]™T]BˆØÜš\ÒLMˆYÚ[‹œØÜš\ÒLM‹›İÙ\˜Ø\ÙY
+
+KBˆ\˜Ú]™TÒLMˆYÚ[‹˜\˜Ú]™TÒLM‹›İÙ\˜Ø\ÙY
+
+KBˆØÜš\ˆØÜš\Bˆ\˜Ú]™Nˆ\˜Ú]™CBˆ
+CBˆCBƒBˆš]˜]HİXİÚŞTİ™X[T\œÚ\İY[œİ[ÎˆXÛÙX›HÃBˆ][œİ[YYÚ[œÎˆÔÚŞTİ™X[R[œİ[YYÚ[”İ]WCBƒBˆ[š]
+œ›ÛHXÛÙ\ˆXÛÙ\ŠH›İÜÈÃBˆ]ÛÛZ[™\ˆHHXÛÙ\‹˜ÛÛZ[™\ŠÙ^YYNˆÛÙ[™ÒÙ^\ËœÙ[ŠCBˆ[œİ[YYÚ[œÈHHÛÛZ[™\‹™XÛÙRY”™\Ù[
+BˆÔÚŞTİ™X[R[œİ[YYÚ[”İ]WKœÙ[‹Bˆ›Ü’Ù^Nˆš[œİ[YYÚ[œÃBˆ
+HÏÈ×CBˆCBƒBˆš]˜]H[[HÛÙ[™ÒÙ^\Îˆİš[™ËÛÙ[™ÒÙ^HÃBˆØ\ÙH[œİ[YYÚ[œÃBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈXÛÙYÚŞTİ™X[R[œİ[YYÚ[œÊÈØİ[Y[ˆ]JHOˆÔÚŞTİ™X[R[œİ[YYÚ[”İ]WOÈÃBˆİX\™Øİ[Y[˜Ûİ[H
+ˆWÌ
+ˆWÌBˆ]XÛÙYHOÈ”ÓÓ‘XÛÙ\Š
+K™XÛÙJÚŞTİ™X[T\œÚ\İY[œİ[ËœÙ[‹œ›ÛNˆØİ[Y[
+H[ÙHÃBˆ™]\›ˆš[BˆCBˆ™]\›ˆXÛÙYš[œİ[YYÚ[œÃBˆCBƒBˆš]˜]Hİ]XÈ˜\ˆÚ\™YÚŞTİ™X[T›ÛİT“ˆT“ÈÃBˆİX\™]İ\ÜHOÈš[SX[˜YÙ\‹™Y˜][\›
+Bˆ›Üˆ˜\XØ][Û”İ\Ü\™XİÜKBˆ[ˆ\Ù\‘ÛXZ[“X\ÚËBˆ\›ÜšX]Q›Üˆš[BˆÜ™X]Nˆ˜[ÙCBˆ
+H[ÙHÈ™]\›ˆš[CBˆ™]\›ˆİ\Ü˜\[™[™Ô]ÛÛ\Û™[
+”ÚŞTİ™X[H‹\Ñ\™XİÜNˆYJKœİ[™\™^™Yš[UT“BˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÚ\™YÚŞTİ™X[T^[ØYT“
+™[]]™T]ˆİš[™ÊHOˆT“ÈÃBˆİX\™]›ÛİHÚ\™YÚŞTİ™X[T›ÛİT“Bˆ\™[]]™T]š\Ñ[\KBˆ\™[]]™T]š\Ô™Yš^
+‹ÈŠKBˆ\™[]]™T]˜ÛÛZ[œÊ—ŠKBˆ\™[]]™T]œÜ]
+Ù\\˜]Üˆ‹ÈŠK˜ÛÛZ[œÊ‹‹ˆŠH[ÙHÈ™]\›ˆš[CBˆ]XÚØYÙT›ÛİH›ÛİBˆ˜\[™[™Ô]ÛÛ\Û™[
+”XÚØYÙ\È‹\Ñ\™XİÜNˆYJCBˆœİ[™\™^™Yš[UT“Bˆ]\›H›Ûİ˜\[™[™Ô]ÛÛ\Û™[
+™[]]™T]\Ñ\™XİÜNˆYJKœİ[™\™^™Yš[UT“BˆİX\™\›œ]š\Ô™Yš^
+XÚØYÙT›Ûİœ]
+È‹ÈŠH[ÙHÈ™]\›ˆš[CBˆ™]\›ˆ\›BˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÚ\™YÚŞTİ™X[P\˜Ú]™UT“
+XÚØYÙRQˆİš[™Ë\˜Ú]™TÒLMˆİš[™ÊHOˆT“ÈÃBˆİX\™]›ÛİHÚ\™YÚŞTİ™X[T›ÛİT“BˆÚŞTİ™X[TİX›RQš\Õ˜[YXÚØYÙS˜[YJXÚØYÙRQ
+KBˆ\ÔÒLM’^
+\˜Ú]™TÒLMŠH[ÙHÈ™]\›ˆš[CBˆ™]\›ˆ›ÛİBˆ˜\[™[™Ô]ÛÛ\Û™[
+\˜Ú]™\È‹\Ñ\™XİÜNˆYJCBˆ˜\[™[™Ô]ÛÛ\Û™[
+XÚØYÙRQ\Ñ\™XİÜNˆYJCBˆ˜\[™[™Ô]ÛÛ\Û™[
+—
+\˜Ú]™TÒLM‹›İÙ\˜Ø\ÙY
+
+JKœÚŞH‹\Ñ\™XİÜNˆ˜[ÙJCBˆCBƒBˆš]˜]Hİ]XÈ[˜È\ÔÒLM’^
+È˜[YNˆİš[™ÊHOˆ›ÛÛÃBˆ]›Ü›X[^™YH˜[YK›İÙ\˜Ø\ÙY
+
+CBˆ™]\›ˆ›Ü›X[^™Y˜Ûİ[OH	‰ˆ›Ü›X[^™Y˜[Ø]\ÙJš\Ò^YÚ]
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÚLM’^
+È]Nˆ]JHOˆİš[™ÈÃBˆÒLM‹š\Ú
+]Nˆ]JK›X\Èİš[™Ê›Ü›X]ˆ‰L‹	
+HKš›Ú[™Y
+
+CBˆCBƒBˆİ]XÈ[˜ÈZYÜ˜][™Ó]š[ÔÚ\™Y^[ØYÑ›Ü”™\İÜ™JBˆÈÛİ\˜ÙNˆ˜XÚİ\]KBˆÜš]PÛÙNˆ
+ÈÛÙNˆİš[™ËÈ™\ÜÚ]ÜRQˆİš[™ËÈØÜ˜\\’Qˆİš[™ÊH›İÜÈOˆİš[™ÃBˆ
+HOˆ]š[ÔÚ\™Y^[ØYZYÜ˜][Û”™\İ[ÃBˆ˜\ˆ˜XÚİ\HÛİ\˜ÙCBˆ˜\ˆZYÜ˜]Y^[ØYÎˆĞ˜XÚİ\]š[ÔÚ\™Y^[ØYHH×CBˆ˜\ˆZYÜ˜]Y^[ØYÛİ[HBˆ˜\ˆ™Y\ÙY^[ØYÛİ[HBˆ›Üˆ^[ØY[ˆÛİ\˜ÙK›]š[ÔÚ\™Y^[ØYÈÏÈ×HÃBˆ]YØXŞS˜[YHH]š[ÔYÚ[”İ\Ü˜ÛÙQš[S˜[YJ›Ü”ØÜ˜\\’Qˆ^[ØYœØÜ˜\\’Q
+CBˆ]ÛÛ[Y™\ÜÙY˜[YHH]š[ÔYÚ[”İÜ™K˜ÛÙQš[S˜[YJBˆ›Ü”ØÜ˜\\’Qˆ^[ØYœØÜ˜\\’QBˆÛÙNˆ^[ØY˜ÛÙCBˆ
+CBˆİX\™\^[ØY˜ÛÙKš\Ñ[\KBˆ^[ØY˜ÛÙK]˜Ûİ[H]š[ÔYÚ[”İÜ™K›İ[™Ë˜ÛÙP]\ËBˆ^[ØY˜ÛÙQš[S˜[YHOHYØXŞS˜[YCBˆ^[ØY˜ÛÙQš[S˜[YHOHÛÛ[Y™\ÜÙY˜[YKBˆ˜XÚİ\ÛÛZ[œÓ]š[Ô^[ØY™Y™\™[˜ÙJ˜XÚİ\^[ØYˆ^[ØY
+H[ÙHÃBˆ™Y\ÙY^[ØYÛİ[
+ÏHCBˆÛÛ[YCBˆCBˆ]Üš][“˜[YNˆİš[™ÃBˆÈÃBˆÜš][“˜[YHHHÜš]PÛÙJBˆ^[ØY˜ÛÙKBˆ^[ØYœ™\ÜÚ]ÜRQBˆ^[ØYœØÜ˜\\’QBˆ
+CBˆHØ]ÚÃBˆ™Y\ÙY^[ØYÛİ[
+ÏHCBˆÛÛ[YCBˆCBˆİX\™Üš][“˜[YHOHÛÛ[Y™\ÜÙY˜[YH[ÙHÃBˆ™Y\ÙY^[ØYÛİ[
+ÏHCBˆÛÛ[YCBˆCBˆ˜\ˆ™]Üš][Ûİ[H™\XÙS]š[Ô^[ØY™Y™\™[˜Ù\ÊBˆ[ˆ	˜˜XÚİ\›]š[ÔYÚ[œËBˆ^[ØYˆ^[ØYBˆÛÙQš[S˜[YNˆÜš][“˜[YCBˆ
+CBˆYˆ˜\ˆ›Ùš[\ÈH˜XÚİ\œ›Ùš[\ÈÃBˆ›Üˆ[™^[ˆ›Ùš[\Ëš[™XÙ\ÈÃBˆ™]Üš][Ûİ[
+ÏH™\XÙS]š[Ô^[ØY™Y™\™[˜Ù\ÊBˆ[ˆ	œ›Ùš[\ÖÚ[™^K›]š[ÔYÚ[œËBˆ^[ØYˆ^[ØYBˆÛÙQš[S˜[YNˆÜš][“˜[YCBˆ
+CBˆCBˆ˜XÚİ\œ›Ùš[\ÈH›Ùš[\ÃBˆCBˆİX\™™]Üš][Ûİ[ˆ[ÙHÃBˆ™Y\ÙY^[ØYÛİ[
+ÏHCBˆÛÛ[YCBˆCBˆZYÜ˜]Y^[ØYË˜\[™
+˜XÚİ\]š[ÔÚ\™Y^[ØY
+Bˆ™\ÜÚ]ÜRQˆ^[ØYœ™\ÜÚ]ÜRQBˆØÜ˜\\’Qˆ^[ØYœØÜ˜\\’QBˆÛÙQš[S˜[YNˆÜš][“˜[YKBˆÛÙNˆ^[ØY˜ÛÙCBˆ
+JCBˆZYÜ˜]Y^[ØYÛİ[
+ÏHCBˆCBˆ˜XÚİ\›]š[ÔÚ\™Y^[ØYÈHZYÜ˜]Y^[ØYËš\Ñ[\HÈš[ˆZYÜ˜]Y^[ØYÃBˆ™]\›ˆ]š[ÔÚ\™Y^[ØYZYÜ˜][Û”™\İ[
+Bˆ˜XÚİ\ˆ˜XÚİ\BˆZYÜ˜]Y^[ØYÛİ[ˆZYÜ˜]Y^[ØYÛİ[Bˆ™Y\ÙY^[ØYÛİ[ˆ™Y\ÙY^[ØYÛİ[Bˆ
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È˜XÚİ\ÛÛZ[œÓ]š[Ô^[ØY™Y™\™[˜ÙJBˆÈ˜XÚİ\ˆ˜XÚİ\]KBˆ^[ØYˆ˜XÚİ\]š[ÔÚ\™Y^[ØYBˆ
+HOˆ›ÛÛÃBˆYˆ]š[Ôİ]PÛÛZ[œÔ^[ØY™Y™\™[˜ÙJ˜XÚİ\›]š[ÔYÚ[œË^[ØYˆ^[ØY
+HÃBˆ™]\›ˆYCBˆCBˆ™]\›ˆ˜XÚİ\œ›Ùš[\ÏË˜ÛÛZ[œÊÚ\™NˆÃBˆ]š[Ôİ]PÛÛZ[œÔ^[ØY™Y™\™[˜ÙJ	›]š[ÔYÚ[œË^[ØYˆ^[ØY
+CBˆJHOHYCBˆCBƒBˆš]˜]Hİ]XÈ[˜È]š[Ôİ]PÛÛZ[œÔ^[ØY™Y™\™[˜ÙJBˆÈİ]Nˆ]š[ÔİÜ™YYÚ[œÔİ]OËBˆ^[ØYˆ˜XÚİ\]š[ÔÚ\™Y^[ØYBˆ
+HOˆ›ÛÛÃBˆİ]OËœØÜ˜\\œË˜ÛÛZ[œÊÚ\™NˆÃBˆ	šYOH^[ØYœØÜ˜\\’QBˆ	‰ˆ	œ™\ÜÚ]ÜRYOH^[ØYœ™\ÜÚ]ÜRQBˆ	‰ˆ	˜ÛÙQš[S˜[YHOH^[ØY˜ÛÙQš[S˜[YCBˆJHOHYCBˆCBƒBˆ\ØØ\™X›T™\İ[Bˆš]˜]Hİ]XÈ[˜È™\XÙS]š[Ô^[ØY™Y™\™[˜Ù\ÊBˆ[ˆİ]Nˆ[›İ]]š[ÔİÜ™YYÚ[œÔİ]OËBˆ^[ØYˆ˜XÚİ\]š[ÔÚ\™Y^[ØYBˆÛÙQš[S˜[YNˆİš[™ÃBˆ
+HOˆ[ÃBˆİX\™˜\ˆ™\İÜ™Yİ]HHİ]H[ÙHÈ™]\›ˆCBˆ˜\ˆ™\XÙYÛİ[HBˆ™\İÜ™Yİ]KœØÜ˜\\œÈH™\İÜ™Yİ]KœØÜ˜\\œË›X\ÈØÜ˜\\ˆ[ƒBˆİX\™ØÜ˜\\‹šYOH^[ØYœØÜ˜\\’QBˆØÜ˜\\‹œ™\ÜÚ]ÜRYOH^[ØYœ™\ÜÚ]ÜRQBˆØÜ˜\\‹˜ÛÙQš[S˜[YHOH^[ØY˜ÛÙQš[S˜[YH[ÙHÃBˆ™]\›ˆØÜ˜\\ƒBˆCBˆ™\XÙYÛİ[
+ÏHCBˆ™]\›ˆ]š[ÔYÚ[”ØÜ˜\\ŠBˆYˆØÜ˜\\‹šYBˆ›İšY\’Ù^NˆØÜ˜\\‹œ›İšY\’Ù^KBˆ™\ÜÚ]ÜRYˆØÜ˜\\‹œ™\ÜÚ]ÜRYBˆ™\ÜÚ]ÜU\›ˆØÜ˜\\‹œ™\ÜÚ]ÜU\›Bˆ˜[YNˆØÜ˜\\‹›˜[YKBˆ\ØÜš\[ÛˆØÜ˜\\‹™\ØÜš\[Û‹Bˆ]]ÜˆØÜ˜\\‹˜]]Ü‹Bˆ™\œÚ[ÛˆØÜ˜\\‹™\œÚ[Û‹Bˆš[[˜[YNˆØÜ˜\\‹™š[[˜[YKBˆÛÙQš[S˜[YNˆÛÙQš[S˜[YKBˆİ\ÜY\\ÎˆØÜ˜\\‹œİ\ÜY\\ËBˆ[˜X›YˆØÜ˜\\‹™[˜X›YBˆX[šY™\İ[˜X›YˆØÜ˜\\‹›X[šY™\İ[˜X›YBˆXÛ\™\ÔÙ][™ÜÎˆØÜ˜\\‹™XÛ\™\ÔÙ][™ÜËBˆÙÛÎˆØÜ˜\\‹›ÙÛËBˆÛÛ[[™İXYÙNˆØÜ˜\\‹˜ÛÛ[[™İXYÙKBˆ›Ü›X]ÎˆØÜ˜\\‹™›Ü›X]ÃBˆ
+CBˆCBˆİ]HH™\İÜ™Yİ]CBˆ™]\›ˆ™\XÙYÛİ[BˆCBƒBˆš]˜]H[˜ÈZYÜ˜][™Ó]š[ÔÚ\™Y^[ØYÑ›Ü”™\İÜ™JÈÛİ\˜ÙNˆ˜XÚİ\]JHOˆ˜XÚİ\]HÃBˆ]İÜ™HH]š[ÔYÚ[”İÜ™KœÚ\™YBˆ]ZYÜ˜][ÛˆHÙ[‹›ZYÜ˜][™Ó]š[ÔÚ\™Y^[ØYÑ›Ü”™\İÜ™JÛİ\˜ÙJHÃBˆÛÙK™\ÜÚ]ÜRQØÜ˜\\’Q[ƒBˆHİÜ™KÜš]PÛÙJBˆÛÙKBˆ™\ÜÚ]ÜRQˆ™\ÜÚ]ÜRQBˆØÜ˜\\’QˆØÜ˜\\’QBˆ
+CBˆCBˆYˆZYÜ˜][Û‹›ZYÜ˜]Y^[ØYÛİ[ˆZYÜ˜][Û‹œ™Y\ÙY^[ØYÛİ[ˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆZYÜ˜]Y
+ZYÜ˜][Û‹›ZYÜ˜]Y^[ØYÛİ[
+H]š[ÈÚ\™Y^[ØY
+ÊHÈÛÛ[XY™\ÜÙYİÜ˜YÙNÈ™Y\ÙY
+ZYÜ˜][Û‹œ™Y\ÙY^[ØYÛİ[
+H‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBˆ™]\›ˆZYÜ˜][Û‹˜˜XÚİ\BˆCBƒBˆš]˜]H[˜È™\İÜ™TÚ\™YÛİ\˜ÙT^[ØYÊÈ˜XÚİ\ˆ˜XÚİ\]JHÃBˆ˜\ˆ™\İÜ™YØÜš\ÈHBˆ˜\ˆ™Y\ÙY^[ØYÈHBˆ›Üˆ^[ØY[ˆ˜XÚİ\œÚŞTİ™X[TÚ\™Y^[ØYÈÏÈ×HÃBˆİX\™]^[ØYT“HÙ[‹œÚ\™YÚŞTİ™X[T^[ØYT“
+Bˆ™[]]™T]ˆ^[ØYœ^[ØY™[]]™T]Bˆ
+KBˆ^[ØYœØÜš\˜Ûİ[HÙ[‹›X^[][TÚŞTİ™X[TØÜš\]\ËBˆÙ[‹š\ÔÒLM’^
+^[ØYœØÜš\ÒLMŠKBˆÙ[‹œÚLM’^
+^[ØYœØÜš\
+CBˆ˜Ø\ÙR[œÙ[œÚ]]™PÛÛ\\™J^[ØYœØÜš\ÒLMŠHOH›Ü™\™YØ[YH[ÙHÃBˆ™Y\ÙY^[ØYÈ
+ÏHCBˆÛÛ[YCBˆCBƒBˆ]ØÜš\T“H^[ØYT“˜\[™[™Ô]ÛÛ\Û™[
+œYÚ[‹šœÈ‹\Ñ\™XİÜNˆ˜[ÙJCBˆYˆYš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆØÜš\T“œ]
+HÃBˆÈÃBˆHš[SX[˜YÙ\‹˜Ü™X]Q\™XİÜJBˆ]ˆ^[ØYT“BˆÚ][\›YYX]Q\™XİÜšY\ÎˆYCBˆ
+CBˆH^[ØYœØÜš\Üš]JÎˆØÜš\T“Ü[ÛœÎˆ˜]ÛZXÊCBˆ™\İÜ™YØÜš\È
+ÏHCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆÛİ[›İÜš]HHÚ\™YÚŞTİ™X[H^[ØY›Üˆ
+^[ØYœXÚØYÙRQ
+Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆÛÛ[YCBˆCBˆCBƒBˆİX\™]\˜Ú]™HH^[ØY˜\˜Ú]™KBˆ\˜Ú]™K˜Ûİ[HÙ[‹›X^[][TÚŞTİ™X[P\˜Ú]™P]\ËBˆÙ[‹œÚLM’^
+\˜Ú]™JCBˆ˜Ø\ÙR[œÙ[œÚ]]™PÛÛ\\™J^[ØY˜\˜Ú]™TÒLMŠHOH›Ü™\™YØ[YKBˆ]\˜Ú]™UT“HÙ[‹œÚ\™YÚŞTİ™X[P\˜Ú]™UT“
+BˆXÚØYÙRQˆ^[ØYœXÚØYÙRQBˆ\˜Ú]™TÒLMˆ^[ØY˜\˜Ú]™TÒLMƒBˆ
+KBˆYš[SX[˜YÙ\‹™š[Q^\İÊ]]ˆ\˜Ú]™UT“œ]
+H[ÙHÈÛÛ[YHCBˆOÈš[SX[˜YÙ\‹˜Ü™X]Q\™XİÜJBˆ]ˆ\˜Ú]™UT“™[][™Ó\İ]ÛÛ\Û™[
+
+KBˆÚ][\›YYX]Q\™XİÜšY\ÎˆYCBˆ
+CBˆOÈ\˜Ú]™KÜš]JÎˆ\˜Ú]™UT“Ü[ÛœÎˆ˜]ÛZXÊCBˆCBƒBˆ˜\ˆ™\İÜ™Y]š[Ñš[\ÈHBˆ]]š[ÔİÜ™HH]š[ÔYÚ[”İÜ™KœÚ\™YBˆ›Üˆ^[ØY[ˆ˜XÚİ\›]š[ÔÚ\™Y^[ØYÈÏÈ×HÃBˆ]\Ù\ĞÛÛ[Y™\ÜÙY˜[YHH^[ØY˜ÛÙQš[S˜[YHOH]š[ÔYÚ[”İÜ™K˜ÛÙQš[S˜[YJBˆ›Ü”ØÜ˜\\’Qˆ^[ØYœØÜ˜\\’QBˆÛÙNˆ^[ØY˜ÛÙCBˆ
+CBˆİX\™\^[ØY˜ÛÙKš\Ñ[\KBˆ^[ØY˜ÛÙK]˜Ûİ[H]š[ÔYÚ[”İÜ™K›İ[™Ë˜ÛÙP]\ËBˆ\Ù\ĞÛÛ[Y™\ÜÙY˜[YH[ÙHÃBˆ™Y\ÙY^[ØYÈ
+ÏHCBˆÛÛ[YCBˆCBˆİX\™[]š[ÔİÜ™Kš\ĞÛÙJBˆ™\ÜÚ]ÜRQˆ^[ØYœ™\ÜÚ]ÜRQBˆÛÙQš[S˜[YNˆ^[ØY˜ÛÙQš[S˜[YCBˆ
+H[ÙHÈÛÛ[YHCBˆÈÃBˆÈHH]š[ÔİÜ™KÜš]PÛÙJBˆ^[ØY˜ÛÙKBˆ™\ÜÚ]ÜRQˆ^[ØYœ™\ÜÚ]ÜRQBˆØÜ˜\\’Qˆ^[ØYœØÜ˜\\’QBˆ
+CBˆ™\İÜ™Y]š[Ñš[\È
+ÏHCBˆHØ]ÚÃBˆ™Y\ÙY^[ØYÈ
+ÏHCBˆCBˆCBƒBˆYˆ™\İÜ™YØÜš\Èˆ™\İÜ™Y]š[Ñš[\Èˆ™Y\ÙY^[ØYÈˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™\İÜ™Y
+™\İÜ™YØÜš\ÊHÚŞTİ™X[H[™
+™\İÜ™Y]š[Ñš[\ÊH]š[ÈÚ\™Y^[ØY
+ÊNÈ™Y\ÙY
+™Y\ÙY^[ØYÊH‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ\\™T›Ùš[TÛ˜\ÚİÊBˆ›Ùš[\ÎˆÔ›Ùš[WKBˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]Nˆ›ÛÛBˆ™\]Z\™T™XYX›T™XY\‘^[œÚ[Û“Y]Y]Nˆ›ÛÛBˆ[˜ÛYTš]˜]PÛİY˜XÚÙ\Ü™Y[X[Îˆ›ÛÛBˆ
+H›İÜÈOˆĞ˜XÚİ\›Ùš[TÛ˜\ÚİHÃBˆH›Ùš[\Ë›X\È›Ùš[H[ƒBˆ˜\ˆÛ˜\ÚİH˜XÚİ\›Ùš[TÛ˜\Úİ
+BˆYˆ›Ùš[KšYBˆ˜[YNˆ›Ùš[K›˜[YKBˆ]˜]\”Ş[X›Ûˆ›Ùš[K˜]˜]\”Ş[X›ÛBˆ]˜]\ÛÛÜ’^ˆ›Ùš[K˜]˜]\ÛÛÜ’^Bˆ]˜]\”İÑ]Nˆ›Ùš[K˜]˜]\”İÑ]KBˆ\ÒÚYÔ›Ùš[Nˆ›Ùš[Kš\ÒÚYÔ›Ùš[KBˆÜ™X]Y]ˆ›Ùš[K˜Ü™X]Y]Bˆ[’\Úˆ›Ùš[Kœ[’\ÚBˆ[Ú[™ÙY]ˆ›Ùš[Kœ[Ú[™ÙY]BˆÚYÑ›YĞÚ[™ÙY]ˆ›Ùš[KšÚYÑ›YĞÚ[™ÙY]Bˆ
+CBˆYˆ]›ÙÜ™\ÜÈH›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Yœ›ÙÜ™\ÜÑ]J›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİœ›ÙÜ™\ÜÑ]HH›ÙÜ™\ÜÃBˆH[ÙHÃBˆÛ˜\Úİœ›ÙÜ™\ÜÕØ\ĞØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ›ÙÜ™\ÜÈİÜ™HÛİ[›İ™H™XYÈ]ÈØ]Ú\İÜH\ÈXœÙ[œ›ÛH\È˜XÚİ\˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBˆYˆ]˜][™ÜÈH\Ù\”˜][™ÓX[˜YÙ\‹œÚ\™Yœ˜][™ÜĞ[™›İ\Ê›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ\Ù\”˜][™ÜÈH˜][™ÜËœ˜][™ÜÃBˆÛ˜\Úİ\Ù\”˜][™Ó›İ\ÈH˜][™ÜË››İ\ÃBˆH[ÙHÃBˆÛ˜\Úİœ˜][™ÜÕÙ\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ˜][™ÜÈİÜ™HÛİ[›İ™H™XYÈ]È˜][™ÜÈ\™HXœÙ[œ›ÛH\È˜XÚİ\˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBˆYˆ]ÛÛXİ[ÛœÈHXœ˜\SX[˜YÙ\‹œÚ\™Y˜ÛÛXİ[ÛœÊ›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ˜ÛÛXİ[ÛœÈHÛÛXİ[ÛœË›X\
+˜XÚİ\ÛÛXİ[Û‹š[š]
+œ›ÛNŠJCBˆH[ÙHÃBˆÛ˜\Úİ˜ÛÛXİ[ÛœÕÙ\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈXœ˜\HİÜ™HÛİ[›İ™H™XYÈ]ÈÛÛXİ[ÛœÈ\™HXœÙ[œ›ÛH\È˜XÚİ\˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBˆYˆ]Ø][ÙÜÈHØ][ÙÓX[˜YÙ\‹œÚ\™Y˜Ø][ÙÜÑ›Ü˜XÚİ\
+›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ˜Ø][ÙÜÈHØ][ÙÜÃBˆH[ÙHÃBˆÛ˜\Úİ˜Ø][ÙÜÕÙ\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈØ][ÙÈİÜ™HÛİ[›İ™H™XYÈ]ÈØ][ÙÈÜ™\š[™È\ÈXœÙ[œ›ÛH\È˜XÚİ\˜]\ˆ[ˆ™XÛÜ™Y\ÈY˜][È‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBƒBˆ]˜XÚÙ\”İ]HH[˜ÛYTš]˜]PÛİY˜XÚÙ\Ü™Y[X[ÃBˆÈ˜XÚÙ\“X[˜YÙ\‹œÚ\™Y˜XÚÙ\”İ]Q›Ü”š]˜]PÛİY^Ü
+Bˆ›Ü”›Ùš[Nˆ›Ùš[KšYBˆ
+CBˆˆ˜XÚÙ\“X[˜YÙ\‹œÚ\™Y˜XÚÙ\”İ]J›Ü”›Ùš[Nˆ›Ùš[KšY
+CBˆYˆ]˜XÚÙ\”İ]HÃBˆÛ˜\Úİ˜XÚÙ\”İ]HH[˜ÛYTš]˜]PÛİY˜XÚÙ\Ü™Y[X[ÃBˆÈ˜XÚÙ\”İ]CBˆˆÙ[‹˜XÚÙ\”İ]UÚ]İ]Ü™Y[X[Ê˜XÚÙ\”İ]JCBˆÛ˜\Úİ˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YCBˆ[˜ÛYTš]˜]PÛİY˜XÚÙ\Ü™Y[X[ÃBˆH[ÙHÃBˆÛ˜\Úİ˜XÚÙ\”İ]UØ\ĞØ\\™YH˜[ÙCBˆÛ˜\Úİ˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ˜XÚÙ\ˆİ]HÛİ[›İ™H™XYÈ]È˜XÚÙ\ˆY]Y]H\ÈXœÙ[œ›ÛH\È˜XÚİ\˜]\ˆ[ˆ™XÛÜ™Y\È\ØÛÛ›™XİY‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBˆÛ˜\ÚİœÙ][™ÜÈHØ\\™T›Ùš[TØÛÜYÙ][™ÜÊ›Ü”›Ùš[Nˆ›Ùš[KšY
+CBƒBˆYˆ]\İÜQ]HH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™YœİÜ™J›Üˆ›Ùš[KšY
+K™]J›Ü’Ù^NˆœÙX\˜Ú\İÜHŠHÃBˆYˆ]]Y\šY\ÈH˜XÚİ\ÙX\˜Ú\İÜK™XÛÙY]Y\šY\Êœ›ÛNˆ\İÜQ]JHÃBˆÛ˜\ÚİœÙX\˜Ú\İÜHH˜XÚİ\ÙX\˜Ú\İÜJ]Y\šY\Îˆ]Y\šY\ËØ\ĞØ\\™YˆYJCBˆCBˆH[ÙHÃBˆÛ˜\ÚİœÙX\˜Ú\İÜHH˜XÚİ\ÙX\˜Ú\İÜJØ\ĞØ\\™YˆYJCBˆCBˆHØ\\™T›Ùš[TÛİ\˜Ù\ÊBˆ[Îˆ	œÛ˜\ÚİBˆ›Ùš[RQˆ›Ùš[KšYBˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]Nˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]KBˆ™\]Z\™T™XYX›T™XY\‘^[œÚ[Û“Y]Y]Nˆ™\]Z\™T™XYX›T™XY\‘^[œÚ[Û“Y]Y]CBˆ
+CBˆÚYˆ[ÜÊ“ÔÊCBˆYˆ]ÛÛXİ[ÛœÈHX[™ØSXœ˜\SX[˜YÙ\‹œÚ\™Y˜ÛÛXİ[ÛœÔÛ˜\Úİ
+›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ›X[™ØPÛÛXİ[ÛœÈHÛÛXİ[ÛœË›X\ÃBˆ˜XÚİ\X[™ØPÛÛXİ[ÛŠBˆYˆ	šYBˆ˜[YNˆ	›˜[YKBˆ][\Îˆ	š][\ËBˆ\ØÜš\[Ûˆ	™\ØÜš\[ÛƒBˆ
+CBˆCBˆH[ÙHÃBˆÛ˜\Úİ›X[™ØPÛÛXİ[ÛœÕÙ\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ™XY\ˆXœ˜\H\È[œ™XYX›NÈÛZ]Y˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆYˆ]›ÙÜ™\ÜÈHX[™ØT™XY[™Ô›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Yœ›ÙÜ™\ÜÔÛ˜\Úİ
+›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜÈH›ÙÜ™\ÜËœ™YXÙJ[ÎˆÔİš[™ÎˆX[™ØT›ÙÜ™\Ü×J
+JHÃBˆ	Ôİš[™Ê	KšÙ^JWHH	K˜[YCBˆCBˆH[ÙHÃBˆÛ˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜÕØ\ĞØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ™XY\ˆ›ÙÜ™\ÜÈ\È[œ™XYX›NÈÛZ]Y˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆYˆ]Ø][ÙÜÈHX[™ØPØ][ÙÓX[˜YÙ\‹œÚ\™Y˜Ø][ÙÜÔÛ˜\Úİ
+›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ›X[™ØPØ][ÙÜÈHØ][ÙÜÃBˆH[ÙHÃBˆÛ˜\Úİ›X[™ØPØ][ÙÜÕÙ\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ™XY\ˆØ][ÙÜÈ\™H[œ™XYX›NÈÛZ]Y˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆYˆ]İ\İÛPØ][ÙÜÈHØ[™[İ\İÛPØ][ÙÓX[˜YÙ\‹œÚ\™Y˜Ø][ÙÜÔÛ˜\Úİ
+›Ü”›Ùš[Nˆ›Ùš[KšY
+HÃBˆÛ˜\Úİ˜İ\İÛPØ][ÙÜÈHİ\İÛPØ][ÙÜÃBˆH[ÙHÃBˆÛ˜\Úİ˜İ\İÛPØ][ÙÜÕÙ\™PØ\\™YH˜[ÙCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+›Ùš[KšY
+IÜÈ™XY\ˆİ\İÛHØ][ÙÜÈ\™H[œ™XYX›NÈÛZ]Y˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆÙ[™YƒBˆ™]\›ˆÛ˜\ÚİBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ\\™TÙ\šXÙ\ÔØÛÜYÙ][™ÜÊ
+HOˆÔİš[™Îˆ]WOÈÃBˆ]İÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÙ\šXÙ\ÃBˆ]ÛXZ[“˜[YNˆİš[™ÃBˆYˆ›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÃBˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQÃBˆÛXZ[“˜[YHH[™K›XZ[‹˜[™RY[YšY\ˆÏÈ˜\‘XÛ\ÙHƒBˆH[ÙHÃBˆÛXZ[“˜[YHH›Ùš[TÙ][™ÜÔİÜ™KœİZ]S˜[YJ›Üˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQ
+CBˆCBˆ]ÛXZ[ˆH\Ù\‘Y˜][Ëœİ[™\™œ\œÚ\İ[ÛXZ[Š›Ü“˜[YNˆÛXZ[“˜[YJHÏÈÎ—CBƒBˆ˜\ˆ™\İ[ˆÔİš[™Îˆ]WHHÎ—CBˆ›Üˆ
+Ù^KÊH[ˆÛXZ[ˆÚ\™HXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHœÙ\šXÙ\ÃBˆ	‰ˆP˜XÚİ\]Kš\Õ\YÜ“YØXŞT™XY\”Ûİ\˜ÙTÙ][™ÊÙ^JHÃBˆİX\™]˜[YHHİÜ™K›Øš™Xİ
+›Ü’Ù^NˆÙ^JKBˆ]]HHOÈ›Ü\S\İÙ\šX[^˜][Û‹™]JBˆœ›ÛT›Ü\S\İˆ˜[YKBˆ›Ü›X]ˆ˜š[˜\KBˆÜ[ÛœÎˆBˆ
+KBˆ]K˜Ûİ[HX^[][T›Ùš[TÙ][™Õ˜[YP]\È[ÙHÃBˆ™]\›ˆš[BˆCBˆ™\İ[ÚÙ^WHH]CBˆCBˆ™]\›ˆ˜XÚİ\]KœÙ\šXÙ\ÔÙ][™ÜÑ›Ü‘^\š[Y[[ÛİYŞ[˜Ê™\İ[
+CBˆCBƒBˆÚYˆ[ÜÊ“ÔÊCBˆİ]XÈ[˜ÈØ\\™T™XY\‘^[œÚ[Û”İ]JBˆY]Y]TİÜ™Nˆ\Ù\‘Y˜][ËBˆ™Y™\™[˜ÙTİÜ™Nˆ\Ù\‘Y˜][ÃBˆ
+H›İÜÈOˆ˜XÚİ\™XY\‘^[œÚ[Û”İ]HÃBˆH˜XÚİ\™XY\‘^[œÚ[Û”İ]K˜Ø\\™JBˆœ›ÛNˆY]Y]TİÜ™KBˆ™Y™\™[˜ÙTİÜ™Nˆ™Y™\™[˜ÙTİÜ™CBˆ
+CBˆCBƒBˆËËÈ\Y\È[\İY™XY\ˆ˜XÚİ\Y]Y]H˜[œØXİ[Û˜[KˆH™Z™XİYBˆËËÈ[˜ÛÛZ[™È^[ØY\È›İ]šY[˜ÙH]H[™XYK]™\šYšYYØØ[İÜ™CBˆËËÈ\ÈÛÜœ\ÛÈ\È]]\İ™]™\ˆÙ]HYØXŞHZYÜ˜][Ûˆ]X\˜[[™CBˆËËÈ]Ø]\È™XY\ˆ[™ÛÛ\]YÙ™›[™HİÛ›ØYÈ]İ\\ƒBˆ\ØØ\™X›T™\İ[Bˆİ]XÈ[˜È™\İÜ™T™XY\‘^[œÚ[Û”İ]T™\Ù\š[™ÓØØ[Û‘˜Z[\™JBˆÈİ]Nˆ˜XÚİ\™XY\‘^[œÚ[Û”İ]KBˆY]Y]TİÜ™Nˆ\Ù\‘Y˜][ËBˆ™Y™\™[˜ÙTİÜ™Nˆ\Ù\‘Y˜][ËBˆÛÛ^ˆİš[™ËBˆÜİ™\İÜ™U™\šYšXØ][Ûˆ
+
+
+H›İÜÈOˆ›ÚY
+OÈHš[Bˆ
+HOˆ›ÛÛÃBˆÈÃBˆHİ]Kœ™\İÜ™JBˆÎˆY]Y]TİÜ™KBˆ™Y™\™[˜ÙTİÜ™Nˆ™Y™\™[˜ÙTİÜ™KBˆÜİ™\İÜ™U™\šYšXØ][ÛˆÜİ™\İÜ™U™\šYšXØ][ÛƒBˆ
+CBˆ™]\›ˆYCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Z™XİY™XY\ˆ^[œÚ[ÛˆY]Y]H›Üˆ
+ÛÛ^
+NÈ^\İ[™ÈØØ[™XY\ˆİ]HØ\È™\Ù\™Y‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBˆÙ[™YƒBƒBˆš]˜]H[˜È™\İÜ™T›Ùš[TÛİ\˜Ù\ÊBˆÈÛ˜\Úİˆ˜XÚİ\›Ùš[TÛ˜\ÚİBˆ[ÈİÜ™Nˆ\Ù\‘Y˜][ËBˆ›Ùš[RQˆURQBˆ™\Ù\š[™Ñ]šXÙSØØ[]š[ĞÛİYİ]Nˆ›ÛÛH˜[ÙCBˆ
+HOˆ›ÛÛÃBƒBˆ]İ\œ™[]š[Ôİ]HH™\Ù\š[™Ñ]šXÙSØØ[]š[ĞÛİYİ]CBˆÈ]š[ÔYÚ[”İÜ™JY˜][ÎˆİÜ™JK›ØY
+
+CBˆˆš[Bˆ]]š[Ô™\İÜ™T[ˆHÛ˜\Úİ›]š[ÔYÚ[œË›X\È[˜ÛÛZ[™È[ƒBˆİX\™]İ\œ™[]š[Ôİ]H[ÙHÃBˆ™]\›ˆ^\š[Y[[ÛİY]š[Ô™\İÜ™T[ŠBˆİ]Nˆ[˜ÛÛZ[™ËBˆ]šXÙSØØ[Ûİ\˜ÙRQÎˆ×CBˆ
+CBˆCBˆ™]\›ˆ˜XÚİ\]K›]š[Ô™\İÜ™T[‘›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆ[˜ÛÛZ[™Îˆ[˜ÛÛZ[™ËBˆİ\œ™[ˆİ\œ™[]š[Ôİ]CBˆ
+CBˆCBˆ]™\Ù\™Y]šXÙSØØ[]š[ÔÛİ\˜ÙRQÎˆÙ]İš[™ÏƒBˆYˆ]]š[Ô™\İÜ™T[ˆÃBˆ™\Ù\™Y]šXÙSØØ[]š[ÔÛİ\˜ÙRQÈH]š[Ô™\İÜ™T[‹™]šXÙSØØ[Ûİ\˜ÙRQÃBˆH[ÙHYˆ]İ\œ™[]š[Ôİ]HÃBˆËÈHZ\ÜÚ[™ÈØ\\™YÛXZ[ˆ\È›ÈÛİ\˜ÙKY[][Ûˆ]]Üš]KƒBˆ™\Ù\™Y]šXÙSØØ[]š[ÔÛİ\˜ÙRQÈHÙ]
+Bˆİ\œ™[]š[Ôİ]Kœ™\ÜÚ]ÜšY\Ë›X\
+šY
+CBˆ
+Èİ\œ™[]š[Ôİ]KœØÜ˜\\œË›X\
+šY
+CBˆ
+CBˆH[ÙHÃBˆ™\Ù\™Y]šXÙSØØ[]š[ÔÛİ\˜ÙRQÈH×CBˆCBƒBˆÙ[‹œ™\İÜ™TÙ\šXÙ\ÔÙ][™ÜÊBˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜËBˆØ\\™YÛÛ\][NˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜÕÙ\™PØ\\™YBˆÎˆİÜ™KBˆ™\Ù\š[™Îˆ™\Ù\™Y]šXÙSØØ[]š[ÔÛİ\˜ÙRQÃBˆ
+CBƒBˆYˆ]]š[ÈH]š[Ô™\İÜ™T[Ëœİ]KBˆ][˜ÛÙYHOÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJ]š[ÊHÃBˆİÜ™KœÙ]
+[˜ÛÙY›Ü’Ù^Nˆ›]š[ÔYÚ[œÔİ]KŒˆŠCBˆCBƒBˆYˆ]ÚŞTİ™X[HHÛ˜\ÚİœÚŞTİ™X[KÚŞTİ™X[Kš\ÔØY™PÛİYÛ˜\ÚİÃBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹™]Q[˜ÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBˆYˆ][˜ÛÙYHOÈ[˜ÛÙ\‹™[˜ÛÙJÚŞTİ™X[JK[˜ÛÙY˜Ûİ[HLÌÌÃBˆİÜ™KœÙ]
+[˜ÛÙY›Ü’Ù^NˆÚŞTİ™X[TYÚ[“X[˜YÙ\‹œ[™[™ÔØY™PÛİYÛ˜\ÚİÙ^JCBˆCBˆCBƒBˆ]™XY\ÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH™\İÜ™T›Ùš[T™XY\ÛÛ™šYİ\˜][ÛŠBˆÛ˜\ÚİBˆ[ÎˆİÜ™KBˆ›Ùš[RQˆ›Ùš[RQBˆ
+CBƒBˆİX\™]Ù\šXÙ\ÈHÛ˜\ÚİœÙ\šXÙ\Ë]YÛœÈHÛ˜\Úİœİ™[Z[ĞYÛœÈ[ÙHÃBˆ™]\›ˆ™XY\ÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YBˆCBƒBˆYˆ›Ùš[RQOH›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQÃBˆ™\İÜ™PXİ]™T›Ùš[TÛİ\˜Ù\ÊÙ\šXÙ\ÎˆÙ\šXÙ\ËYÛœÎˆYÛœÊCBˆ™]\›ˆ™XY\ÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YBˆCBƒBˆÙ\šXÙTİÜ™TØÛÜKœ™\İÜ™TÛİ\˜Ù\ÊBˆÙ\šXÙ\ÎˆÙ\šXÙ\Ë›X\ÃBˆÙ\šXÙTİÜ™TØÛÜK”™\İÜ™YÙ\šXÙJBˆYˆ	šYBˆ\›ˆ	\›BˆœÛÛ“Y]Y]Nˆ	šœÛÛ“Y]Y]KBˆœÔØÜš\ˆ	šœÔØÜš\Bˆ\ĞXİ]™Nˆ	š\ĞXİ]™KBˆÛÜ[™^ˆ	œÛÜ[™^Bˆ
+CBˆKBˆYÛœÎˆYÛœË›X\ÃBˆÙ\šXÙTİÜ™TØÛÜK”™\İÜ™YYÛŠBˆYˆ	šYBˆÛÛ™šYİ\™YT“ˆ	˜ÛÛ™šYİ\™YT“BˆX[šY™\İ”ÓÓˆ	›X[šY™\İ”ÓÓ‹Bˆ\ĞXİ]™Nˆ	š\ĞXİ]™KBˆÛÜ[™^ˆ	œÛÜ[™^Bˆ
+CBˆKBˆÚŞTİ™X[Tİ]Q]NˆÛ˜\ÚİœÚŞTİ™X[Tİ]Q]KBˆ›Ü”›Ùš[Nˆ›Ùš[RQBˆ
+CBˆ™]\›ˆ™XY\ÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YBˆCBƒBˆš]˜]H[˜È™\İÜ™T›Ùš[T™XY\ÛÛ™šYİ\˜][ÛŠBˆÈÛ˜\Úİˆ˜XÚİ\›Ùš[TÛ˜\ÚİBˆ[ÈİÜ™Nˆ\Ù\‘Y˜][ËBˆ›Ùš[RQˆURQBˆ\›Z]Õ[œ›Üİ\™Y›Ùš[Nˆ›ÛÛH˜[ÙCBˆ
+HOˆ›ÛÛÃBˆÚYˆ[ÜÊ“ÔÊCBˆİX\™]›Ü›PØ\Xš[]Y\Ë˜İ\œ™[œİ\ÜÔ™XY\ˆ[ÙHÈ™]\›ˆYHCBˆ]™XY\“Y]Y]TİÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÃBˆÈ\Ù\‘Y˜][Ëœİ[™\™BˆˆİÜ™CBˆİX\™]™XY\”İ]HHÛ˜\Úİœ™XY\‘^[œÚ[ÛœÔİ]CBˆÏÈÛ˜\Úİ˜ZYÚİTİ]K›X\
+˜XÚİ\™XY\‘^[œÚ[Û”İ]K›ZYÜ˜][™ÓYØXŞPZYÚİJH[ÙHÃBˆ™]\›ˆÛ˜\Úİœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]HOHš[BˆCBˆİX\™]˜]ĞÛÛ™šYİ\˜][Û‘]HHÛ˜\Úİœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]H[ÙHÃBˆ™]\›ˆÙ[‹œ™\İÜ™T™XY\‘^[œÚ[Û”İ]T™\Ù\š[™ÓØØ[Û‘˜Z[\™JBˆ™XY\”İ]KBˆY]Y]TİÜ™Nˆ™XY\“Y]Y]TİÜ™KBˆ™Y™\™[˜ÙTİÜ™NˆİÜ™KBˆÛÛ^ˆœ›Ùš[H
+›Ùš[RQ
+HƒBˆ
+CBˆCBˆİX\™]ÛÛ™šYİ\˜][Û‘]HH˜XÚİ\›Ùš[TÛ˜\ÚİBˆ˜›İ[™Y™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]J˜]ĞÛÛ™šYİ\˜][Û‘]JH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Z™XİY™XY\ˆš]˜]KXÛİYÛÛ™šYİ\˜][Ûˆ›Üˆ›Ùš[H
+›Ùš[RQ
+NÈ^\İ[™ÈØØ[™XY\ˆÛÛ™šYİ\˜][ÛˆØ\È™\Ù\™Y‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆ˜\ˆÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH˜[ÙCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆXZ[XİÜ‹˜\Üİ[YR\ÛÛ]YÃBˆÈÃBˆ]ÛÛ™šYİ\˜][ÛˆHH”ÓÓ‘XÛÙ\Š
+K™XÛÙJBˆ™XY\‘^[œÚ[Û”š]˜]PÛİYÛÛ™šYİ\˜][Û‹œÙ[‹Bˆœ›ÛNˆÛÛ™šYİ\˜][Û‘]CBˆ
+CBˆ]™]š[İ\ÔÛİ\˜Ù\ÈHH™XY\‘^[œÚ[Û”\œÚ\İ[˜ÙCBˆ˜\Z[™Ô™Y™\™[˜ÙSİ™\›^JBˆÎˆ™XY\‘^[œÚ[Û”\œÚ\İ[˜ÙK›ØY[œİ[YÛİ\˜Ù\ÊBˆœ›ÛNˆ™XY\“Y]Y]TİÜ™CBˆ
+KBˆœ›ÛNˆİÜ™CBˆ
+CBˆ]™\İÜ™YHÙ[‹œ™\İÜ™T™XY\‘^[œÚ[Û”İ]T™\Ù\š[™ÓØØ[Û‘˜Z[\™JBˆ™XY\”İ]KBˆY]Y]TİÜ™Nˆ™XY\“Y]Y]TİÜ™KBˆ™Y™\™[˜ÙTİÜ™NˆİÜ™KBˆÛÛ^ˆœ›Ùš[H
+›Ùš[RQ
+H‹BˆÜİ™\İÜ™U™\šYšXØ][ÛˆÃBˆH™XY\‘^[œÚ[Û”\œÚ\İ[˜ÙK˜\Tš]˜]PÛİYÛÛ™šYİ\˜][ÛŠBˆÛÛ™šYİ\˜][Û‹Bˆ›Ùš[RQˆ›Ùš[RQBˆY]Y]TİÜ™Nˆ™XY\“Y]Y]TİÜ™KBˆ™Y™\™[˜ÙTİÜ™NˆİÜ™KBˆ™]š[İ\ÔÛİ\˜Ù\Îˆ™]š[İ\ÔÛİ\˜Ù\ËBˆÜİ]]][Û•™\šYšXØ][ÛˆÃBˆİX\™™XY\“Y]Y]TİÜ™KœŞ[˜Ú›Ûš^™J
+KBˆİÜ™KœŞ[˜Ú›Ûš^™J
+KBˆ\Ù\‘Y˜][Ëœİ[™\™œŞ[˜Ú›Ûš^™J
+H[ÙHÃBˆ›İÈ™XY\‘^[œÚ[Û‘\œ›Ü‹œ\œÚ\İ[˜ÙQ˜Z[Y
+Bˆ”™XY\ˆš]˜]KXÛİY™\İÜ™HØ\È›İ\œÚ\İYƒBˆ
+CBˆCBˆCBˆ
+CBˆCBˆ
+CBˆÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH™\İÜ™YBˆİX\™™\İÜ™Y\\›Z]Õ[œ›Üİ\™Y›Ùš[KBˆ›Ùš[RQOH›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQ[ÙHÈ™]\›ˆCBˆÈÃBˆÈHH™XY\‘^[œÚ[Û“X[˜YÙ\‹œÚ\™Yœ™[ØYY\‘^\›˜[™\İÜ™J
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™\İÜ™Y™XY\ˆš]˜]KXÛİYÛÛ™šYİ\˜][Ûˆ›Üˆ›Ùš[H
+›Ùš[RQ
+K]HXİ]™H™XY\ˆİ]HÛİ[›İ™[ØY‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Z™XİY™XY\ˆš]˜]KXÛİYÛÛ™šYİ\˜][Ûˆ›Üˆ›Ùš[H
+›Ùš[RQ
+NÈ^\İ[™ÈØØ[™XY\ˆÛÛ™šYİ\˜][ÛˆØ\È™\Ù\™Y‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆCBˆCBˆ™]\›ˆÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YBˆÙ[ÙCBˆ™]\›ˆYCBˆÙ[™YƒBˆCBƒBˆš]˜]H[˜È™\İÜ™PXİ]™T›Ùš[TÛİ\˜Ù\ÊBˆÙ\šXÙ\ÎˆĞ˜XÚİ\Ù\šXÙWKBˆYÛœÎˆĞ˜XÚİ\İ™[Z[ĞYÛ—CBˆ
+HÃBˆ]Ù\šXÙTİÜ™HHÙ\šXÙTİÜ™KœÚ\™YBˆ›Üˆ^\İ[™È[ˆÙ\šXÙTİÜ™K™Ù]Ù\šXÙ\Ê
+HÃBˆÙ\šXÙTİÜ™Kœ™[[İ™J^\İ[™ÊCBˆCBˆ›Üˆ
+[™^Ù\šXÙJH[ˆÙ\šXÙ\Ë™[[Y\˜]Y
+
+HÃBƒBˆİX\™]ØÜš\HÙ\šXÙTİÜ™TØÛÜKœÙXİ\™YØÜš\›Ü”™\İÜ™JBˆÙ\šXÙKšœÔØÜš\BˆÙ\šXÙRQˆÙ\šXÙKšYBˆ›Ùš[RQˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆ
+H[ÙHÈÛÛ[YHCBˆÙ\šXÙTİÜ™KœİÜ™TÙ\šXÙJBˆYˆÙ\šXÙKšYBˆ\›ˆÙ\šXÙK\›BˆœÛÛ“Y]Y]NˆÙ\šXÙKšœÛÛ“Y]Y]KBˆœÔØÜš\ˆØÜš\Bˆ\ĞXİ]™NˆÙ\šXÙKš\ĞXİ]™KBˆÛÜ[™^ˆ[
+[™^
+CBˆ
+CBˆCBƒBˆ]İ™[Z[ÔİÜ™HHİ™[Z[ĞYÛ”İÜ™KœÚ\™YBˆİ™[Z[ÔİÜ™Kœ™[[İ™P[
+
+CBˆ›Üˆ
+[™^YÛŠH[ˆYÛœË™[[Y\˜]Y
+
+HÃBƒBˆİX\™Tİ™[Z[ĞÛÛ™šYİ\™YT“˜][š\Õ[œ™\ÛÛ™Y™Y™\™[˜ÙJYÛ‹˜ÛÛ™šYİ\™YT“
+H[ÙHÃBˆÛÛ[YCBˆCBˆİX\™]X[šY™\İ]HHYÛ‹›X[šY™\İ”ÓÓ‹™]J\Ú[™Îˆ]
+KBˆ]X[šY™\İHOÈ”ÓÓ‘XÛÙ\Š
+K™XÛÙJİ™[Z[ÓX[šY™\İœÙ[‹œ›ÛNˆX[šY™\İ]JKBˆX[šY™\İœİ\ÜÒ[œİ[X›T™\Ûİ\˜Ù\È[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ”ÚÚ\[™È[˜[Yİ™[Z[ÈYÛˆœ›ÛH›Ùš[HÛ˜\Úİˆ
+YÛ‹šY
+H‹\Nˆ”İ™[Z[ÈŠCBˆÛÛ[YCBˆCBˆİ™[Z[ÔİÜ™KœİÜ™PYÛŠBˆYˆYÛ‹šYBˆÛÛ™šYİ\™YT“ˆYÛ‹˜ÛÛ™šYİ\™YT“BˆX[šY™\İ”ÓÓˆYÛ‹›X[šY™\İ”ÓÓ‹Bˆ\ĞXİ]™NˆYÛ‹š\ĞXİ]™KBˆÛÜ[™^ˆ[
+[™^
+CBˆ
+CBˆCBƒBˆ\ÚÈÈXZ[XİÜˆ[ƒBˆÙ\šXÙSX[˜YÙ\‹œÚ\™Y›ØYÙ\šXÙ\Ñœ›ÛPÛİY
+
+CBˆİ™[Z[ĞYÛ“X[˜YÙ\‹œÚ\™Y›ØYYÛœÊ
+CBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ\\™T›Ùš[TÛİ\˜Ù\ÊBˆ[ÈÛ˜\Úİˆ[›İ]˜XÚİ\›Ùš[TÛ˜\ÚİBˆ›Ùš[RQˆURQBˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]Nˆ›ÛÛBˆ™\]Z\™T™XYX›T™XY\‘^[œÚ[Û“Y]Y]Nˆ›ÛÛBˆ
+H›İÜÈÃBˆ]İÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™YœİÜ™J›Üˆ›Ùš[RQ
+CBˆÚYˆ[ÜÊ“ÔÊCBˆÈÃBˆ]™XY\“Y]Y]TİÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÃBˆÈ\Ù\‘Y˜][Ëœİ[™\™BˆˆİÜ™CBˆÛ˜\Úİœ™XY\‘^[œÚ[ÛœÔİ]HHHØ\\™T™XY\‘^[œÚ[Û”İ]JBˆY]Y]TİÜ™Nˆ™XY\“Y]Y]TİÜ™KBˆ™Y™\™[˜ÙTİÜ™NˆİÜ™CBˆ
+CBˆHØ]ÚÃBˆYˆ™\]Z\™T™XYX›T™XY\‘^[œÚ[Û“Y]Y]HÃBˆ›İÈ\œ›ÜƒBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\ˆ›Ùš[H
+›Ùš[RQ
+IÜÈ™XY\ˆ^[œÚ[ÛˆY]Y]H\È[œ™XYX›NÈÛZ]Yœ›ÛHÛİYÛ˜\Úİ‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆYˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]HÃBˆ˜\ˆÛÛ™šYİ\˜][Û‘]Nˆ]OÃBˆ˜XÚİ\X[˜YÙ\‹œÚ\™Yœ\™›Ü›SÛ“XZ[•™XYÃBˆXZ[XİÜ‹˜\Üİ[YR\ÛÛ]YÃBˆÈÃBˆ]ÛÛ™šYİ\˜][ÛˆHH™XY\‘^[œÚ[Û“X[˜YÙ\‹œÚ\™YBˆ˜Ø\\™Tš]˜]PÛİYÛÛ™šYİ\˜][ÛŠ›Üˆ›Ùš[RQ
+CBˆ][˜ÛÙ\ˆH”ÓÓ‘[˜ÛÙ\Š
+CBˆ[˜ÛÙ\‹›İ]]›Ü›X][™ÈHËœÛÜYÙ^\×CBˆÛÛ™šYİ\˜][Û‘]HH˜XÚİ\›Ùš[TÛ˜\ÚİBˆ˜›İ[™Y™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]JBˆH[˜ÛÙ\‹™[˜ÛÙJÛÛ™šYİ\˜][ÛŠCBˆ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\ˆ›Ùš[H
+›Ùš[RQ
+IÜÈ™XY\ˆš]˜]KXÛİYÛÛ™šYİ\˜][Ûˆ\È[œ™XYX›NÈÛZ]Y˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆCBˆCBˆÛ˜\Úİœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]HHÛÛ™šYİ\˜][Û‘]CBˆCBˆÙ[™YƒBˆİX\™T›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\È[ÙHÈ™]\›ˆCBƒBˆ\X[X\ÈØ\\™YÛİ\˜Ù\ÈH
+BˆÙ\šXÙ\ÎˆĞ˜XÚİ\Ù\šXÙWKBˆYÛœÎˆĞ˜XÚİ\İ™[Z[ĞYÛ—KBˆÚŞTİ™X[Tİ]Nˆ]OËBˆÚŞTİ™X[Tİ]UØ\ĞØ\\™Yˆ›ÛÛBˆ
+CBˆ]Ø\\™YHÙ\šXÙTİÜ™TØÛÜKÚ]™XYÛ›TİÜ™J›Ü”›Ùš[Nˆ›Ùš[RQ
+HÈÛÛ^Oˆ™\İ[Ø\\™YÛİ\˜Ù\Ë\œ›Üˆ[ƒBˆ™\İ[ÃBˆ]Ù\šXÙT™\]Y\İH”Ñ™]Ú™\]Y\İ”ÓX[˜YÙYØš™XİŠ[]S˜[YNˆ”Ù\šXÙQ[]HŠCBˆ]Ù\šXÙQ[]Y\ÈHHÛÛ^™™]Ú
+Ù\šXÙT™\]Y\İ
+CBˆ˜\ˆÙ\šXÙT›İÜÕÙ\™PÛÛ\]HHYCBˆ]Ù\šXÙ\ÈHÙ\šXÙQ[]Y\Ë˜ÛÛ\XİX\È[]HOˆ˜XÚİ\Ù\šXÙOÈ[ƒBˆİX\™]YH[]K˜[YJ›Ü’Ù^NˆšYŠH\ÏÈURQ[ÙHÃBˆÙ\šXÙT›İÜÕÙ\™PÛÛ\]HH˜[ÙCBˆ™]\›ˆš[BˆCBˆ™]\›ˆ˜XÚİ\Ù\šXÙJBˆYˆYBˆ\›ˆ[]K˜[YJ›Ü’Ù^Nˆ\›ŠH\ÏÈİš[™ÈÏÈˆ‹BˆœÛÛ“Y]Y]Nˆ[]K˜[YJ›Ü’Ù^NˆšœÛÛ“Y]Y]HŠH\ÏÈİš[™ÈÏÈˆ‹BˆœÔØÜš\ˆ[]K˜[YJ›Ü’Ù^NˆšœÔØÜš\ŠH\ÏÈİš[™ÈÏÈˆ‹Bˆ\ĞXİ]™Nˆ[]K˜[YJ›Ü’Ù^Nˆš\ĞXİ]™HŠH\ÏÈ›ÛÛÏÈYKBˆÛÜ[™^ˆ[]K˜[YJ›Ü’Ù^NˆœÛÜ[™^ŠH\ÏÈ[ÏÈBˆ
+CBˆCBƒBˆ]YÛ”™\]Y\İH”Ñ™]Ú™\]Y\İ”ÓX[˜YÙYØš™XİŠ[]S˜[YNˆ”İ™[Z[ĞYÛ‘[]HŠCBˆ]YÛ‘[]Y\ÈHHÛÛ^™™]Ú
+YÛ”™\]Y\İ
+CBˆ˜\ˆYÛ”›İÜÕÙ\™PÛÛ\]HHYCBˆ]YÛœÈHYÛ‘[]Y\Ë˜ÛÛ\XİX\È[]HOˆ˜XÚİ\İ™[Z[ĞYÛÈ[ƒBˆİX\™]YH[]K˜[YJ›Ü’Ù^NˆšYŠH\ÏÈURQ[ÙHÃBˆYÛ”›İÜÕÙ\™PÛÛ\]HH˜[ÙCBˆ™]\›ˆš[BˆCBˆ]\œÚ\İYH[]K˜[YJ›Ü’Ù^Nˆ˜ÛÛ™šYİ\™YT“ŠH\ÏÈİš[™ÈÏÈˆƒBˆ]ÛÛ™šYİ\™YT“Hİ™[Z[ĞÛÛ™šYİ\™YT“˜][œ™\ÛÛ™JBˆYÛ’QˆYBˆ\œÚ\İYT“ˆ\œÚ\İYBˆ›Ùš[RQˆ›Ùš[RQBˆ
+CBˆİX\™Tİ™[Z[ĞÛÛ™šYİ\™YT“˜][š\Õ[œ™\ÛÛ™Y™Y™\™[˜ÙJÛÛ™šYİ\™YT“
+H[ÙHÃBˆYÛ”›İÜÕÙ\™PÛÛ\]HH˜[ÙCBˆ™]\›ˆš[BˆCBˆ™]\›ˆ˜XÚİ\İ™[Z[ĞYÛŠBˆYˆYBˆÛÛ™šYİ\™YT“ˆÛÛ™šYİ\™YT“BˆX[šY™\İ”ÓÓˆ[]K˜[YJ›Ü’Ù^Nˆ›X[šY™\İ”ÓÓˆŠH\ÏÈİš[™ÈÏÈˆ‹Bˆ\ĞXİ]™Nˆ[]K˜[YJ›Ü’Ù^Nˆš\ĞXİ]™HŠH\ÏÈ›ÛÛÏÈYKBˆÛÜ[™^ˆ[]K˜[YJ›Ü’Ù^NˆœÛÜ[™^ŠH\ÏÈ[ÏÈBˆ
+CBˆCBˆİX\™Ù\šXÙT›İÜÕÙ\™PÛÛ\]KBˆYÛ”›İÜÕÙ\™PÛÛ\]KBˆÙ\šXÙ\Ë˜Ûİ[OHÙ\šXÙQ[]Y\Ë˜Ûİ[BˆYÛœË˜Ûİ[OHYÛ‘[]Y\Ë˜Ûİ[[ÙHÃBˆ›İÈÛØÛØQ\œ›ÜŠ˜ÛÙ\’[˜[Y˜[YJCBˆCBƒBˆ]İ]T™\]Y\İH”Ñ™]Ú™\]Y\İ”ÓX[˜YÙYØš™XİŠ[]S˜[YNˆ”ÚŞTİ™X[Tİ]Q[]HŠCBˆİ]T™\]Y\İœ™YXØ]HH”Ô™YXØ]J›Ü›X]ˆšYOH	P‹ÚŞTİ™X[Tİ]Q[]KœÚ[™Û]Û’Q
+CBˆİ]T™\]Y\İ™™]Ú[Z]HCBˆ]İ]Q[]HHHÛÛ^™™]Ú
+İ]T™\]Y\İ
+K™š\œİBˆ]ÚŞTİ™X[Tİ]Nˆ]OÃBˆ]ÚŞTİ™X[Tİ]UØ\ĞØ\\™Yˆ›ÛÛBˆYˆİ]Q[]HOHš[ÃBˆÚŞTİ™X[Tİ]HHš[BˆÚŞTİ™X[Tİ]UØ\ĞØ\\™YHYCBˆH[ÙHYˆ]œÛÛˆHİ]Q[]OË˜[YJ›Ü’Ù^NˆšœÛÛ”İ]HŠH\ÏÈİš[™ËBˆ]]HHœÛÛ‹™]J\Ú[™Îˆ]
+KBˆ]K˜Ûİ[H
+ˆWÌ
+ˆWÌÃBˆÚŞTİ™X[Tİ]HH]CBˆÚŞTİ™X[Tİ]UØ\ĞØ\\™YHYCBˆH[ÙHÃBˆÚŞTİ™X[Tİ]HHš[BˆÚŞTİ™X[Tİ]UØ\ĞØ\\™YH˜[ÙCBˆCBˆ™]\›ˆ
+BˆÙ\šXÙ\ËBˆYÛœËBˆÚŞTİ™X[Tİ]KBˆÚŞTİ™X[Tİ]UØ\ĞØ\\™YBˆ
+CBˆCBˆCBƒBˆYˆØ\ÙHœİXØÙ\ÜÊ]˜[Y\ÊOÈHØ\\™YÃBˆÛ˜\ÚİœÙ\šXÙ\ÈH˜[Y\ËœÙ\šXÙ\ÃBˆÛ˜\Úİœİ™[Z[ĞYÛœÈH˜[Y\Ë˜YÛœÃBˆÛ˜\ÚİœÚŞTİ™X[Tİ]Q]HH˜[Y\ËœÚŞTİ™X[Tİ]CBˆYˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]KBˆ]›Ü›PØ\Xš[]Y\Ë˜İ\œ™[œİ\ÜÔÚŞTİ™X[TYÚ[œËBˆ˜[Y\ËœÚŞTİ™X[Tİ]UØ\ĞØ\\™YÃBˆYˆ]İ]Q]HH˜[Y\ËœÚŞTİ™X[Tİ]HÃBˆ˜\ˆØY™TÛ˜\ÚİˆÚŞTİ™X[P˜XÚİ\Û˜\ÚİÃBˆ]Ø\\™HHÃBˆXZ[XİÜ‹˜\Üİ[YR\ÛÛ]YÃBˆØY™TÛ˜\ÚİHÚŞTİ™X[TYÚ[“X[˜YÙ\‹˜ÛÛ\]Tš]˜]PÛİYY]Y]TÛ˜\Úİ
+Bˆœ›ÛT\œÚ\İYİ]Q]Nˆİ]Q]CBˆ
+CBˆCBˆCBˆYˆ™XYš\ÓXZ[•™XYÃBˆØ\\™J
+CBˆH[ÙHÃBˆ\Ü]Ú]Y]YK›XZ[‹œŞ[˜Ê^Xİ]NˆØ\\™JCBˆCBˆÛ˜\ÚİœÚŞTİ™X[HHØY™TÛ˜\ÚİBˆH[ÙHÃBˆÛ˜\ÚİœÚŞTİ™X[HHÚŞTİ™X[P˜XÚİ\Û˜\Úİ
+Bˆ™\ÜÚ]ÜšY\Îˆ×KBˆYÚ[œÎˆ×KBˆÜ™X]Y]ˆ]J[YR[\˜[Ú[˜ÙLNMÌˆ
+KBˆ\ÔØY™PÛİYÛ˜\ÚİˆYKBˆš]˜]PÛİYÛÛ™šYİ\˜][Û’\ĞÛÛ\]NˆYCBˆ
+CBˆCBˆCBˆH[ÙHÃBˆYˆØ\ÙH™˜Z[\™J]\œ›ÜŠOÈHØ\\™YÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\ˆÛİ\˜ÙH™]Ú˜Z[Y›Üˆ›Ùš[H
+›Ùš[RQ
+Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\ˆÛİ[›İ™XYHÙ\šXÙ\È]X˜\ÙH›Üˆ›Ùš[H
+›Ùš[RQ
+NÈ]ÈÛİ\˜Ù\È\™HXœÙ[œ›ÛH\È˜XÚİ\˜]\ˆ[ˆ™XÛÜ™Y\È[\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBƒBˆ]ÛXZ[“˜[YHH›Ùš[RQOH›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQBˆÈ
+[™K›XZ[‹˜[™RY[YšY\ˆÏÈ˜\‘XÛ\ÙHŠCBˆˆ›Ùš[TÙ][™ÜÔİÜ™KœİZ]S˜[YJ›Üˆ›Ùš[RQ
+CBˆ]ÛXZ[ˆH\Ù\‘Y˜][Ëœİ[™\™œ\œÚ\İ[ÛXZ[Š›Ü“˜[YNˆÛXZ[“˜[YJHÏÈÎ—CBˆ˜\ˆÙ\šXÙ\ÔÙ][™ÜÎˆÔİš[™Îˆ]WHHÎ—CBˆ›Üˆ
+Ù^KÊH[ˆÛXZ[ˆÚ\™HXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHœÙ\šXÙ\ÃBˆ	‰ˆP˜XÚİ\]Kš\Õ\YÜ“YØXŞT™XY\”Ûİ\˜ÙTÙ][™ÊÙ^JCBˆ	‰ˆP˜XÚİ\]K˜ÛİY[œØY™TÙ\šXÙ\ÔÙ][™ÜÒÙ^\Ë˜ÛÛZ[œÊÙ^JHÃBˆİX\™]˜[YHHİÜ™K›Øš™Xİ
+›Ü’Ù^NˆÙ^JKBˆ]]HHOÈ›Ü\S\İÙ\šX[^˜][Û‹™]JBˆœ›ÛT›Ü\S\İˆ˜[YKBˆ›Ü›X]ˆ˜š[˜\KBˆÜ[ÛœÎˆBˆ
+K]K˜Ûİ[HX^[][T›Ùš[TÙ][™Õ˜[YP]\È[ÙHÃBˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜÈHÎ—CBˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜÕÙ\™PØ\\™YH˜[ÙCBˆ™]\›ƒBˆCBˆÙ\šXÙ\ÔÙ][™ÜÖÚÙ^WHH]CBˆCBˆYˆ]ØY™TÙ][™ÜÈH˜XÚİ\]KœÙ\šXÙ\ÔÙ][™ÜÑ›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆÙ\šXÙ\ÔÙ][™ÜÃBˆ
+HÃBˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜÈHØY™TÙ][™ÜÃBˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜÕÙ\™PØ\\™YHYCBˆCBƒBˆYˆ[˜ÛYPÛİYÛİ\˜ÙSY]Y]KBˆ]›Ü›PØ\Xš[]Y\Ë˜İ\œ™[œİ\ÜÓ]š[ÔYÚ[œÈÃBˆ]]š[ÔİÜ™HH]š[ÔYÚ[”İÜ™JY˜][ÎˆİÜ™JCBˆ]İ]HH]š[ÔİÜ™K›ØY
+
+CBˆYˆ[]š[ÔİÜ™Kœİ]UÜš]\Ôİ\Ü[™YÃBˆÛ˜\Úİ›]š[ÔYÚ[œÈHİ]CBˆCBˆH[ÙHYˆ]]HHİÜ™K™]J›Ü’Ù^Nˆ›]š[ÔYÚ[œÔİ]KŒˆŠKBˆ]İ]HHOÈ”ÓÓ‘XÛÙ\Š
+K™XÛÙJBˆ]š[ÔİÜ™YYÚ[œÔİ]KœÙ[‹Bˆœ›ÛNˆ]CBˆ
+HÃBˆÛ˜\Úİ›]š[ÔYÚ[œÈHİ]CBˆCBˆCBƒBˆš]˜]Hİ]XÈ]]šXÙSØØ[›Ùš[TÙ][™ÒÙ^\ÎˆÙ]İš[™ÏˆHÃBˆœÙX\˜Ú\İÜH‹Bˆ™XÛ\ÙTÙ\šXÙ\ÔÙ][™ÜÔÙYYYŒH‹Bˆ˜\X\˜[˜ÙSZYÜ˜]YŒH‹Bˆ™^\š[Y[[T”™[ØY\ÚYØXÚRÙ^\ÓZYÜ˜]Y‹BˆœÛİ\˜ÙRX[™XÛÜ™ÕŒH‹BˆœÛİ\˜ÙRX[\İZ[PÚXÚÕ[Y\İ[\‹Bˆ˜XÚÙ\”[™[™ĞÜ™Y[X[[][ÛœËŒH‹Bˆ˜XÚÙ\”[™[™Ñ\ØØ\™Y›Ùš[PÛX[\ŒH‹Bˆ˜Zİ\İÜUÜš]T™XÙZ\ËŒH‹Bˆ›ØØ[›İYšXØ][Û‘]\™SY]Y]T™Yœ™\Ú]\È‹Bˆ”™XY\‹\ØØ[S[Ù[˜[YHƒBˆCBƒBˆš]˜]Hİ]XÈ]]šXÙSØØ[›Ùš[TÙ][™Ô™Yš^\ÈHÃBˆ›Xœ˜\PÛÛXİ[ÛœÈ‹Bˆ™[˜X›YØ][ÙÜÈ‹Bˆ›X[™ØSXœ˜\PÛÛXİ[ÛœÈ‹Bˆ›X[™ØT™XY[™Ô›ÙÜ™\ÜÈ‹BˆšØ[™[“X[™ØPØ][ÙÜÈ‹BˆšØ[™[İ\İÛPØ][ÙÜÈ‹BˆšØ[™[”™XY\“YØXŞU[˜]˜Z[X›UŒH‹Bˆœ™XY\‘^[œÚ[ÛœË›YØXŞT™XÛÛ›™XİYÙ\ˆ‹Bˆ›YYXTİ]PÛİYÚ]İ\Ü[™Y‹Bˆ™^\š[Y[[ÛİYŞ[˜È‹Bˆ™^\š[Y[[PÛİYŞ[˜È‹Bˆ™^\š[Y[[ÛÛÙÛQš]™TŞ[˜È‹Bˆ™^\š[Y[[Û™Qš]™TŞ[˜ÈƒBˆCBƒBˆİ]XÈ]X^[][T›Ùš[TÙ][™Õ˜[YP]\ÈHLLˆ
+ˆWÌBˆİ]XÈ]X^[][T›Ùš[TÙ][™ÒÙ^\ÈHWÌBƒBˆİ]XÈ[˜ÈØ\œšY\Ô›Ùš[TØÛÜYÙ][™ÊÈÙ^Nˆİš[™ÊHOˆ›ÛÛÃBˆ\ÑXÛ\ÙTÙ][™ÒÙ^JÙ^JCBˆ	‰ˆXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHœ›Ùš[CBˆ	‰ˆY]šXÙSØØ[›Ùš[TÙ][™ÒÙ^\Ë˜ÛÛZ[œÊÙ^JCBˆ	‰ˆY]šXÙSØØ[›Ùš[TÙ][™Ô™Yš^\Ë˜ÛÛZ[œÊÚ\™NˆÙ^Kš\Ô™Yš^
+CBˆCBƒBˆİ]XÈ[˜È˜[Y]Y˜XÚİ\Ù][™Õ˜[YJœ›ÛH]Nˆ]K›Ü’Ù^HÙ^Nˆİš[™ÊHOˆ[OÈÃBˆİX\™]K˜Ûİ[HX^[][T›Ùš[TÙ][™Õ˜[YP]\È[ÙHÈ™]\›ˆš[CBˆYˆ]ØÛÜHHYYXTİ]TÙ][™Ô™YÚ\İKœØÛÜJ›ÜˆÙ^JHÃBˆİX\™ØÛÜK˜\Y\ÕĞİ\œ™[]›Ü›H[ÙHÈ™]\›ˆš[CBˆ™]\›ˆYYXTİ]TÙ][™Õ˜[YU˜[Y]Ü‹˜[Y]Y˜[YJœ›ÛNˆ]K›Ü’Ù^NˆÙ^JCBˆCBˆ™]\›ˆOÈ›Ü\S\İÙ\šX[^˜][Û‹œ›Ü\S\İ
+Bˆœ›ÛNˆ]KBˆÜ[ÛœÎˆ×KBˆ›Ü›X]ˆš[Bˆ
+CBˆCBƒBˆİ]XÈ[˜ÈÙ\šXÙ\ÔÙ][™Ô\XÚ\]\Ò[”š]˜]PÛİY
+ÈÙ^Nˆİš[™ÊHOˆ›ÛÛÃBˆXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHœÙ\šXÙ\ÃBˆ	‰ˆP˜XÚİ\]K˜ÛİY[œØY™TÙ\šXÙ\ÔÙ][™ÜÒÙ^\Ë˜ÛÛZ[œÊÙ^JCBˆ	‰ˆP˜XÚİ\]Kš\Õ\YÜ“YØXŞT™XY\”Ûİ\˜ÙTÙ][™ÊÙ^JCBˆCBƒBˆİ]XÈ[˜ÈZ\ÜÚ[™Ğ]]Üš]]]™TÙ\šXÙ\ÔÙ][™ÒÙ^\ÊBˆİ\œ™[ˆÙ]İš[™Ï‹Bˆ[˜ÛÛZ[™ÎˆÙ]İš[™Ï‹BˆØ\\™YÛÛ\][Nˆ›ÛÛBˆ
+HOˆÔİš[™×HÃBˆİX\™Ø\\™YÛÛ\][H[ÙHÈ™]\›ˆ×HCBˆ™]\›ˆİ\œ™[™š[\ˆÃBˆÙ\šXÙ\ÔÙ][™Ô\XÚ\]\Ò[”š]˜]PÛİY
+	
+CBˆ	‰ˆZ[˜ÛÛZ[™Ë˜ÛÛZ[œÊ	
+CBˆKœÛÜY
+
+CBˆCBƒBˆš]˜]Hİ]XÈ[˜È™\İÜ™TÙ\šXÙ\ÔÙ][™ÜÊBˆÈÙ][™ÜÎˆÔİš[™Îˆ]WKBˆØ\\™YÛÛ\][Nˆ›ÛÛBˆÈİÜ™Nˆ\Ù\‘Y˜][ËBˆ™\Ù\š[™È]šXÙSØØ[Ûİ\˜ÙRQÎˆÙ]İš[™ÏƒBˆ
+HÃBˆ]Ù^\ÈHÜ™\™Y˜]ÔÙ\šXÙ\ÔÙ][™ÒÙ^\ÊÙ][™ÜÊCBˆ][˜ÛÛZ[™ÒÙ^\ÈHÙ]
+Ù^\ÊCBˆ]Z\ÜÚ[™ÒÙ^\ÈHZ\ÜÚ[™Ğ]]Üš]]]™TÙ\šXÙ\ÔÙ][™ÒÙ^\ÊBˆİ\œ™[ˆÙ]
+İÜ™K™Xİ[Û˜\T™\™\Ù[][ÛŠ
+KšÙ^\ÊKBˆ[˜ÛÛZ[™Îˆ[˜ÛÛZ[™ÒÙ^\ËBˆØ\\™YÛÛ\][NˆØ\\™YÛÛ\][CBˆ
+CBˆ›ÜˆÙ^H[ˆZ\ÜÚ[™ÒÙ^\ÈÃBˆ]™\Ù]˜[YHH^\š[Y[[ÛİYØØ[Ûİ\˜ÙTÙ[Xİ[Û”ÛXŞKœ™\İÜ™Y˜[YJBˆÔİš[™×J
+KBˆ›Ü’Ù^NˆÙ^KBˆİ\œ™[İÜ™NˆİÜ™KBˆ™\Ù\š[™Îˆ]šXÙSØØ[Ûİ\˜ÙRQÃBˆ
+CBˆYˆ]™]Z[™YH™\Ù]˜[YH\ÏÈÔİš[™×K\™]Z[™Yš\Ñ[\HÃBˆİÜ™KœÙ]
+™]Z[™Y›Ü’Ù^NˆÙ^JCBˆH[ÙHÃBˆİÜ™Kœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆÙ^JCBˆCBˆCBˆ›ÜˆÙ^H[ˆÙ^\Ëœ™Yš^
+X^[][T›Ùš[TÙ][™ÒÙ^\ÊHÃBˆİX\™]]HHÙ][™ÜÖÚÙ^WKBˆ]XÛÙY˜[YHH˜[Y]Y˜XÚİ\Ù][™Õ˜[YJBˆœ›ÛNˆ]KBˆ›Ü’Ù^NˆÙ^CBˆ
+H[ÙHÈÛÛ[YHCBˆ]˜[YHH^\š[Y[[ÛİYØØ[Ûİ\˜ÙTÙ[Xİ[Û”ÛXŞKœ™\İÜ™Y˜[YJBˆXÛÙY˜[YKBˆ›Ü’Ù^NˆÙ^KBˆİ\œ™[İÜ™NˆİÜ™KBˆ™\Ù\š[™Îˆ]šXÙSØØ[Ûİ\˜ÙRQÃBˆ
+CBˆİÜ™KœÙ]
+˜[YK›Ü’Ù^NˆÙ^JCBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈÜ™\™Y˜]ÔÙ\šXÙ\ÔÙ][™ÒÙ^\ÊBˆÈÙ][™ÜÎˆÔİš[™Îˆ]WCBˆ
+HOˆÔİš[™×HÃBˆÙ][™ÜËšÙ^\Ë™š[\ˆÃBˆÙ\šXÙ\ÔÙ][™Ô\XÚ\]\Ò[”š]˜]PÛİY
+	
+CBˆKœÛÜYÈËšÈ[ƒBˆ]Ò\Ô™YÚ\İ\™YHYYXTİ]TÙ][™Ô™YÚ\İKœØÛÜJ›ÜˆÊHOHš[Bˆ]šÒ\Ô™YÚ\İ\™YHYYXTİ]TÙ][™Ô™YÚ\İKœØÛÜJ›ÜˆšÊHOHš[BˆYˆÒ\Ô™YÚ\İ\™YOHšÒ\Ô™YÚ\İ\™YÈ™]\›ˆÒ\Ô™YÚ\İ\™YCBˆ™]\›ˆÈšÃBˆCBˆCBƒBˆš]˜]Hİ]XÈ[˜È\ÑXÛ\ÙTÙ][™ÒÙ^JÈÙ^Nˆİš[™ÊHOˆ›ÛÛÃBˆYˆÙ^Kš\Ô™Yš^
+”™XY\‹ˆŠHÈ™]\›ˆYHCBˆİX\™]š\œİHÙ^K™š\œİš\œİš\ĞTĞÒRKš\œİš\ÓİÙ\˜Ø\ÙH[ÙHÈ™]\›ˆ˜[ÙHCBˆ™]\›ˆZÙ^Kš\Ô™Yš^
+˜ÛÛKˆŠCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ\\™T›Ùš[TØÛÜYÙ][™ÜÊ›Ü”›Ùš[H›Ùš[RQˆURQ
+HOˆÔİš[™Îˆ]WHÃBˆ]İÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™YœİÜ™J›Üˆ›Ùš[RQ
+CBˆ]ÛXZ[“˜[YHH›Ùš[RQOH›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQBˆÈ
+[™K›XZ[‹˜[™RY[YšY\ˆÏÈ˜\‘XÛ\ÙHŠCBˆˆ›Ùš[TÙ][™ÜÔİÜ™KœİZ]S˜[YJ›Üˆ›Ùš[RQ
+CBˆ]ÛXZ[ˆH\Ù\‘Y˜][Ëœİ[™\™œ\œÚ\İ[ÛXZ[Š›Ü“˜[YNˆÛXZ[“˜[YJHÏÈÎ—CBƒBˆ˜\ˆÙY[ˆHÙ]
+YYXTİ]TÙ][™Ô™YÚ\İK˜[Ù^\Ë™š[\ŠØ\œšY\Ô›Ùš[TØÛÜYÙ][™ÊJCBˆ˜\ˆÙ^\ÈHÙY[‹œÛÜY
+
+CBˆÙ^\Ë˜\[™
+ÛÛ[ÓÙˆÛXZ[‹šÙ^\Ë™š[\ˆÃBˆØ\œšY\Ô›Ùš[TØÛÜYÙ][™Ê	
+H	‰ˆÙY[‹š[œÙ\
+	
+Kš[œÙ\YBˆKœÛÜY
+
+JCBƒBˆ˜\ˆ™\İ[ˆÔİš[™Îˆ]WHHÎ—CBˆ˜\ˆÚÚ\Yİ™\œÚ^™YÙ^\ÈHBˆ›ÜˆÙ^H[ˆÙ^\ÈÃBˆİX\™™\İ[˜Ûİ[X^[][T›Ùš[TÙ][™ÒÙ^\È[ÙHÈœ™XZÈCBˆİX\™]˜[YHHİÜ™K›Øš™Xİ
+›Ü’Ù^NˆÙ^JKBˆ›Ü\S\İÙ\šX[^˜][Û‹œ›Ü\S\İ
+˜[YK\Õ˜[Y›Üˆ˜š[˜\JKBˆ]]HHOÈ›Ü\S\İÙ\šX[^˜][Û‹™]JBˆœ›ÛT›Ü\S\İˆ˜[YKBˆ›Ü›X]ˆ˜š[˜\KBˆÜ[ÛœÎˆBˆ
+H[ÙHÃBˆÛÛ[YCBˆCBˆİX\™]K˜Ûİ[HX^[][T›Ùš[TÙ][™Õ˜[YP]\È[ÙHÃBˆÚÚ\Yİ™\œÚ^™YÙ^\È
+ÏHCBˆÛÛ[YCBˆCBˆ™\İ[ÚÙ^WHH]CBˆCBˆYˆÚÚ\Yİ™\œÚ^™YÙ^\ÈˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆÚÚ\Y
+ÚÚ\Yİ™\œÚ^™YÙ^\ÊHİ™\œÚ^™Y›Ùš[HÙ][™ÊÊH›Üˆ›Ùš[H
+›Ùš[RQ
+H‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆCBˆ™]\›ˆ™\İ[BˆCBƒBˆš]˜]H[˜È\ÔÚŞTİ™X[P˜XÚİ\ÛXZ[”™XYJ
+HOˆ›ÛÛÃBˆÚŞTİ™X[P˜XÚİ\ÛXZ[”™XY[™\ÜÊ
+HOHœ™XYCBˆCBƒBˆš]˜]H[˜ÈÚŞTİ™X[P˜XÚİ\ÛXZ[”™XY[™\ÜÊ
+HOˆ^\š[Y[[ÛİY˜XÚİ\ÛXZ[”™XY[™\ÜÈÃBˆÚYˆÜÊSÔÊH	‰ˆ]\™Ù][š\›Û›Y[
+XXĞØ][\İ
+CBˆ˜\ˆ™XY[™\ÜÈH^\š[Y[[ÛİY˜XÚİ\ÛXZ[”™XY[™\ÜË›ØY[™ÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ™XY[™\ÜÈHXZ[XİÜ‹˜\Üİ[YR\ÛÛ]YÃBˆ]X[˜YÙ\ˆHÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™YBˆYˆX[˜YÙ\‹š\ÓØYYÈ™]\›ˆœ™XYHCBˆ™]\›ˆX[˜YÙ\‹›\İ\œ›Ü“Y\ÜØYÙHOHš[È›ØY[™Èˆ[˜]˜Z[X›CBˆCBˆCBˆ™]\›ˆ™XY[™\ÜÃBˆÙ[ÙCBˆ™]\›ˆœ™XYCBˆÙ[™YƒBˆCBƒBˆ[˜È™\İÜ™SX[X[˜XÚİ\
+ˆœ›ÛH\›ˆT“ˆØÛÜNˆX[X[˜XÚİ\™\İÜ™TØÛÜBˆ
+H\Ş[˜ÈOˆ›ÛÛÂˆ™XÛÜ™X[X[™\İÜ™T™\İ[
+˜Z[\™T™X\ÛÛˆš[
+Bˆ]™Y›YÚˆX[X[™\İÜ™T™Y›YÚˆÈÂˆ™Y›YÚHHX[X[™\İÜ™T™Y›YÚ
+œ›ÛNˆ\›
+BˆHØ]ÚÂˆ]Y\ÜØYÙHH
+\œ›Üˆ\ÏÈØØ[^™Y\œ›ÜŠOË™\œ›Ü‘\ØÜš\[Û‚ˆÏÈ\œ›Ü‹›ØØ[^™Y\ØÜš\[Û‚ˆ™XÛÜ™X[X[™\İÜ™T™\İ[
+˜Z[\™T™X\ÛÛˆY\ÜØYÙJBˆÙÙÙ\‹œÚ\™Y›ÙÊ˜XÚİ\™\İÜ™H˜[Y][Ûˆ˜Z[Yˆ
+Y\ÜØYÙJH‹\Nˆ‘\œ›ÜˆŠBˆ™]\›ˆ˜[ÙBˆBˆÚYˆÜÊSÔÊBˆİX\™]Ş[˜ÔÙ\ÜÚ[ÛˆH]ØZ]XZ[XİÜ‹œ[Š›ÙNˆÃBˆ^\š[Y[[ÛİYŞ[˜ÓX[˜YÙ\‹œÚ\™Y˜™YÚ[“X[X[™\İÜ™JBˆÙY\ĞÚ[™Ù\ÓÛ•\Ñ]šXÙNˆØÛÜKšÙY\ĞÚ[™Ù\ÓÛ•\Ñ]šXÙCBˆ
+CBˆJH[ÙHÂˆÙÙÙ\‹œÚ\™Y›ÙÊˆ˜XÚİ\™\İÜ™HØZ]Y™XØ]\ÙHHÛİYÜ\˜][Ûˆ\Èİ[Xİ]™H‹ˆ\NˆÛİYŞ[˜È‚ˆ
+Bˆ™XÛÜ™X[X[™\İÜ™T™\İ[
+ˆ˜Z[\™T™X\ÛÛˆHÛİYŞ[˜ÈÜˆ™\İÜ™H\Èİ[[›š[™ËˆØZ]›Üˆ]Èš[š\Ú[ˆ[\ÜH˜XÚİ\YØZ[‹ˆ‚ˆ
+Bˆ™]\›ˆ˜[ÙBˆBƒBˆ]İXØÙYYYˆ›ÛÛBˆYˆØ]˜Z[X›JSÔÈMËŒ
+ŠHÃBˆİXØÙYYYH]ØZ]YYXTİ]TŞ[˜ÓX[˜YÙ\‹œÚ\™YBˆœ\™›Ü›P]]Üš]]]™TÛ˜\Úİ™\İÜ™HÃBˆ]ØZ]Ù[‹œ™\İÜ™P˜XÚİ\
+œ›ÛNˆ\›
+CBˆCBˆH[ÙHÃBˆİXØÙYYYH]ØZ]™\İÜ™P˜XÚİ\
+œ›ÛNˆ\›
+CBˆCBˆ]™\]Z\™\Ô™[][˜ÚH]ØZ]XZ[XİÜ‹œ[ˆÂˆ^\š[Y[[ÛİYŞ[˜ÓX[˜YÙ\‹œÚ\™Y™š[š\ÚX[X[™\İÜ™JˆŞ[˜ÔÙ\ÜÚ[Û‹ˆİXØÙYYYˆİXØÙYYYˆ
+BˆİX\™İXØÙYYYˆ]™Y™\œ™Y›Ùš[RQH™Y›YÚœ™Y™\œ™YXİ]™T›Ùš[RQˆ™Y™\œ™Y›Ùš[RQOH›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQ[ÙHÂˆ™]\›ˆ˜[ÙBˆBˆ™]\›ˆ›Ùš[SX[˜YÙ\‹œÚ\™YœİYÙT™\İÜ™Y›Ùš[Q›Ü“™^][˜Ú
+ˆ™Y™\œ™Y›Ùš[RQˆ
+BˆBˆYˆİXØÙYYYÂˆ™XÛÜ™X[X[™\İÜ™T™\İ[
+ˆ˜Z[\™T™X\ÛÛˆš[ˆ[\ÜY™XÛÜ™Ûİ[ˆ™Y›YÚØ]Ú™XÛÜ™Ûİ[ˆ™\]Z\™\Ô™[][˜Úˆ™\]Z\™\Ô™[][˜Úˆ
+BˆH[ÙHYˆ\İX[X[™\İÜ™Q˜Z[\™T™X\ÛÛˆOHš[Âˆ™XÛÜ™X[X[™\İÜ™T™\İ[
+ˆ˜Z[\™T™X\ÛÛˆ•H˜XÚİ\Ûİ[›İ™H\YYˆ›È™\İÜ™Y]HØ\ÈÙ[XİYÈØZ]›Üˆ[HÛİYÜ\˜][ÛˆÈš[š\Ú[™HYØZ[‹ˆ‚ˆ
+BˆBˆ™]\›ˆİXØÙYYYˆÙ[ÙBˆ]İXØÙYYYH]ØZ]™\İÜ™P˜XÚİ\
+œ›ÛNˆ\›
+BˆYˆİXØÙYYYÂˆ™XÛÜ™X[X[™\İÜ™T™\İ[
+ˆ˜Z[\™T™X\ÛÛˆš[ˆ[\ÜY™XÛÜ™Ûİ[ˆ™Y›YÚØ]Ú™XÛÜ™Ûİ[ˆ
+BˆBˆ™]\›ˆİXØÙYYYˆÙ[™Y‚ˆB‚ˆš]˜]H[˜ÈX[X[™\İÜ™T™Y›YÚ
+œ›ÛH\›ˆT“
+H›İÜÈOˆX[X[™\İÜ™T™Y›YÚÂˆ]]HHH›İ[™YØØ[İÜ™T™XY\‹œ™XY
+ˆœ›ÛNˆ\›ˆX^[][P]\ÎˆÙ[‹›X^[][SX[X[˜XÚİ\š[P]\Âˆ
+BˆİX\™]Øš™XİHH”ÓÓ”Ù\šX[^˜][Û‹šœÛÛ“Øš™Xİ
+Ú]ˆ]JH\ÏÈÔİš[™Îˆ[WH[ÙHÂˆ›İÈ˜XÚİ\™\İÜ™Q\œ›Ü‹š[˜[YØİ[Y[ˆB‚ˆ]™\œÚ[ÛˆH
+Øš™XİÈ™\œÚ[Ûˆ—H\ÏÈİš[™ÊHÏÈŒKŒ‚ˆİX\™Ù[‹˜ÛÛ\\™TØÚ[XU™\œÚ[ÛŠˆ™\œÚ[Û‹ˆÎˆ˜XÚİ\]K˜İ\œ™[ÛİYØÚ[XU™\œÚ[Û‚ˆ
+HOH›Ü™\™Y\ØÙ[™[™È[ÙHÂˆ›İÈ˜XÚİ\™\İÜ™Q\œ›Ü‹[œİ\ÜY™\œÚ[ÛŠ™\œÚ[ÛŠBˆB‚ˆ]Û›İÛ”^[ØYÙ^\ÎˆÙ]İš[™ÏˆHÂˆœ›Ùš[\È‹œ›ÙÜ™\ÜÑ]H‹˜ÛÛXİ[ÛœÈ‹œÙ][™ÜÈ‹œÙ\šXÙ\È‹ˆœİ™[Z[ĞYÛœÈ‹˜Ø][ÙÜÈ‹˜XÚÙ\”İ]H‚ˆBˆİX\™ZÛ›İÛ”^[ØYÙ^\Ëš\Ñ\Ú›Ú[
+Ú]ˆÙ]
+Øš™XİšÙ^\ÊJH[ÙHÂˆ›İÈ˜XÚİ\™\İÜ™Q\œ›Ü‹›Z\ÜÚ[™Ğ˜XÚİ\^[ØYˆB‚ˆ[˜È›ÙÜ™\ÜĞÛİ[
+[ˆ˜[YNˆ[OÊHOˆ[ÂˆİX\™]›ÙÜ™\ÜÈH˜[YH\ÏÈÔİš[™Îˆ[WH[ÙHÈ™]\›ˆBˆ][İšYPÛİ[H
+›ÙÜ™\ÜÖÈ›[İšYT›ÙÜ™\ÜÈ—H\ÏÈĞ[WJOË˜Ûİ[ÏÈˆ]\\ÛÙPÛİ[H
+›ÙÜ™\ÜÖÈ™\\ÛÙT›ÙÜ™\ÜÈ—H\ÏÈĞ[WJOË˜Ûİ[ÏÈˆ™]\›ˆ[İšYPÛİ[
+È\\ÛÙPÛİ[ˆB‚ˆ]›Ùš[\ÈHØš™XİÈœ›Ùš[\È—H\ÏÈÖÔİš[™Îˆ[WWBˆ]›Ùš[T™XÛÜ™Ûİ[H›Ùš[\ÏËœ™YXÙJ[Îˆ
+HÈÛİ[›Ùš[H[‚ˆÛİ[
+ÏH›ÙÜ™\ÜĞÛİ[
+[ˆ›Ùš[VÈœ›ÙÜ™\ÜÑ]H—JBˆHÏÈˆ]Ø]Ú™XÛÜ™Ûİ[H›Ùš[T™XÛÜ™Ûİ[ˆˆÈ›Ùš[T™XÛÜ™Ûİ[ˆˆ›ÙÜ™\ÜĞÛİ[
+[ˆØš™XİÈœ›ÙÜ™\ÜÑ]H—JBˆ]™Y™\œ™YXİ]™T›Ùš[RQH
+Øš™XİÈ˜Xİ]™T›Ùš[RQ—H\ÏÈİš[™ÊBˆ™›]X\
+URQš[š]
+]ZYİš[™ÎŠJB‚ˆ™]\›ˆX[X[™\İÜ™T™Y›YÚ
+ˆØ]Ú™XÛÜ™Ûİ[ˆØ]Ú™XÛÜ™Ûİ[ˆ™Y™\œ™YXİ]™T›Ùš[RQˆ™Y™\œ™YXİ]™T›Ùš[RQˆ
+BˆBƒBˆ[˜È™\İÜ™P˜XÚİ\
+Bˆœ›ÛH\›ˆT“Bˆ™\Ù\™\ÔŞ[˜ÙYYYXTİ]Nˆ›ÛÛH˜[ÙCBˆ
+H\Ş[˜ÈOˆ›ÛÛÃBˆÈÃBˆ]œÛÛ‘]HHH›İ[™YØØ[İÜ™T™XY\‹œ™XY
+Bˆœ›ÛNˆ\›BˆX^[][P]\ÎˆÙ[‹›X^[][SX[X[˜XÚİ\š[P]\ÃBˆ
+CBˆ]XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆXÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBƒBˆ˜\ˆ˜XÚİ\]Nˆ˜XÚİ\]CBƒBˆÈÃBˆ˜XÚİ\]HHHXÛÙ\‹™XÛÙJ˜XÚİ\]KœÙ[‹œ›ÛNˆœÛÛ‘]JCBˆ˜XÚİ\]HHZYÜ˜][™Ó]š[ÔÚ\™Y^[ØYÑ›Ü”™\İÜ™J˜XÚİ\]JCBˆÙÙÙ\‹œÚ\™Y›ÙÊ˜XÚİ\XÛÙYİXØÙ\ÜÙ[H‹\Nˆ’[™›ÈŠCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ”İ[™\™XÛÙH˜Z[Y][\[™È[šY[™\İÜ™Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹\Nˆ’[™›ÈŠCBƒBˆİX\™]XÛÙY˜XÚİ\]HHS[šY[XÛÙJœ›ÛNˆœÛÛ‘]JH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ“[šY[XÛÙH[ÛÈ˜Z[Y‹\Nˆ‘\œ›ÜˆŠCBˆ™]\›ˆ˜[ÙCBˆCBˆ]˜XÚİ\]HHZYÜ˜][™Ó]š[ÔÚ\™Y^[ØYÑ›Ü”™\İÜ™JXÛÙY˜XÚİ\]JCBƒBˆÙÙÙ\‹œÚ\™Y›ÙÊ“[šY[XÛÙHİXØÙYYYÚ]\X[]H‹\Nˆ’[™›ÈŠCBˆ][[™YØÛÜHHXİ]™T›Ùš[TØÛÜUÚÙ[Š
+CBˆ]™\İÜ™Tİ\HH]ØZ]™YÚ[”Ú\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠBˆ›Üˆ˜XÚİ\]KBˆ^XİYØÛÜNˆ[[™YØÛÜCBˆ
+CBˆ]Ú\™TÙ\šXÙ\Õ˜[œØXİ[ÛˆH™\İÜ™Tİ\˜[œØXİ[ÛƒBˆ]™\İÜ™TØÛÜHH™\İÜ™Tİ\œØÛÜCBƒBˆ]İÛœÕÜ]™[Ûİ\˜Ù\ÈH\Y\ÕÜ]™[Ûİ\˜ÙQ]JBˆ˜XÚİ\]KBˆXİ]™T›Ùš[RQˆ™\İÜ™TØÛÜKœ›Ùš[RQBˆ
+CBˆİX\™]ØZ]™\İÜ™TÚŞTİ™X[TÛ˜\Úİ[™ØZ]Y”İ\ÜY
+BˆİÛœÕÜ]™[Ûİ\˜Ù\ÈÈ˜XÚİ\]KœÚŞTİ™X[Hˆš[Bˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]ØZ]™\İÜ™S]š[ÔÛ˜\ÚİY”İ\ÜY
+BˆİÛœÕÜ]™[Ûİ\˜Ù\ÈÈ˜XÚİ\]K›]š[ÔYÚ[œÈˆš[Bˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]Üİ\HH]ØZ]\P˜XÚİ\]RY”ØÛÜR\Ğİ\œ™[
+Bˆ˜XÚİ\]KBˆ™\Ù\š[™ÓYØXŞPÛİYYYXTİ]Nˆ™\Ù\™\ÔŞ[˜ÙYYYXTİ]KBˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆ]Üİ\TØÛÜHHÜİ\KœØÛÜCBˆ]ØZ]ÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™Y˜Ø\\™TÛİ\˜ÙQY˜][Ôİ]JBˆ^XİYØÛÜQÙ[™\˜][ÛˆÜİ\TØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛƒBˆ
+CBˆ]ØZ]™\Z\Xİ]™T›Ùš[TÚŞTİ™X[Tİ]RY“™YYY
+Bˆ˜XÚİ\]KBˆ^XİYØÛÜNˆÜİ\TØÛÜCBˆ
+CBˆİX\™]ØZ]™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\”™\İÜ™JBˆ^XİYØÛÜNˆÜİ\TØÛÜKBˆÛ\˜]\Ò[™\™XY\”[[YNˆYCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆÛÛ\]TÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆYCBˆCBƒBˆ][[™YØÛÜHHXİ]™T›Ùš[TØÛÜUÚÙ[Š
+CBˆ]™\İÜ™Tİ\HH]ØZ]™YÚ[”Ú\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠBˆ›Üˆ˜XÚİ\]KBˆ^XİYØÛÜNˆ[[™YØÛÜCBˆ
+CBˆ]Ú\™TÙ\šXÙ\Õ˜[œØXİ[ÛˆH™\İÜ™Tİ\˜[œØXİ[ÛƒBˆ]™\İÜ™TØÛÜHH™\İÜ™Tİ\œØÛÜCBˆ]İÛœÕÜ]™[Ûİ\˜Ù\ÈH\Y\ÕÜ]™[Ûİ\˜ÙQ]JBˆ˜XÚİ\]KBˆXİ]™T›Ùš[RQˆ™\İÜ™TØÛÜKœ›Ùš[RQBˆ
+CBˆİX\™]ØZ]™\İÜ™TÚŞTİ™X[TÛ˜\Úİ[™ØZ]Y”İ\ÜY
+BˆİÛœÕÜ]™[Ûİ\˜Ù\ÈÈ˜XÚİ\]KœÚŞTİ™X[Hˆš[Bˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]ØZ]™\İÜ™S]š[ÔÛ˜\ÚİY”İ\ÜY
+BˆİÛœÕÜ]™[Ûİ\˜Ù\ÈÈ˜XÚİ\]K›]š[ÔYÚ[œÈˆš[Bˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]Üİ\HH]ØZ]\P˜XÚİ\]RY”ØÛÜR\Ğİ\œ™[
+Bˆ˜XÚİ\]KBˆ™\Ù\š[™ÓYØXŞPÛİYYYXTİ]Nˆ™\Ù\™\ÔŞ[˜ÙYYYXTİ]KBˆ^XİYØÛÜNˆ™\İÜ™TØÛÜCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆ]Üİ\TØÛÜHHÜİ\KœØÛÜCBˆ]ØZ]ÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™Y˜Ø\\™TÛİ\˜ÙQY˜][Ôİ]JBˆ^XİYØÛÜQÙ[™\˜][ÛˆÜİ\TØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛƒBˆ
+CBˆ]ØZ]™\Z\Xİ]™T›Ùš[TÚŞTİ™X[Tİ]RY“™YYY
+Bˆ˜XÚİ\]KBˆ^XİYØÛÜNˆÜİ\TØÛÜCBˆ
+CBˆİX\™]ØZ]™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\”™\İÜ™JBˆ^XİYØÛÜNˆÜİ\TØÛÜKBˆÛ\˜]\Ò[™\™XY\”[[YNˆYCBˆ
+H[ÙHÃBˆ]ØZ]™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆ˜[ÙCBˆCBˆÛÛ\]TÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠÚ\™TÙ\šXÙ\Õ˜[œØXİ[ÛŠCBˆ™]\›ˆYCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ‘˜Z[YÈ™\İÜ™H˜XÚİ\ˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹\Nˆ‘\œ›ÜˆŠCBˆ™]\›ˆ˜[ÙCBˆCBˆCBƒBˆš]˜]H[˜ÈS[šY[XÛÙJœ›ÛHœÛÛ‘]Nˆ]JHOˆ˜XÚİ\]OÈÃBˆİX\™]œÛÛˆHOÈ”ÓÓ”Ù\šX[^˜][Û‹šœÛÛ“Øš™Xİ
+Ú]ˆœÛÛ‘]JH\ÏÈÔİš[™Îˆ[WH[ÙHÃBˆ™]\›ˆš[BˆCBƒBˆ][šY[XÛÙ\ˆH”ÓÓ‘XÛÙ\Š
+CBˆ[šY[XÛÙ\‹™]QXÛÙ[™Ôİ˜]YŞHHš\ÛÎŒCBƒBˆ]Ü™X]Y]Nˆ]CBˆYˆ]]Tİš[™ÈHœÛÛ–È˜Ü™X]Y]H—H\ÏÈİš[™ÈÃBˆ]›Ü›X]\ˆHTÓÎŒQ]Q›Ü›X]\Š
+CBˆÜ™X]Y]HH›Ü›X]\‹™]Jœ›ÛNˆ]Tİš[™ÊHÏÈ]J
+CBˆH[ÙHÃBˆÜ™X]Y]HH]J
+CBˆCBƒBˆ]™\œÚ[ÛˆHœÛÛ–È™\œÚ[Ûˆ—H\ÏÈİš[™ÈÏÈŒKŒƒBˆ]XØÙ[ÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È˜XØÙ[ÛÛÜˆ—JCBˆ]Ù][™ÜÑÜ˜YY[ÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–ÈœÙ][™ÜÑÜ˜YY[ÛÛÜˆ—JCBˆ]™XY\XØÙ[ÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–Èœ™XY\XØÙ[ÛÛÜˆ—JCBˆ]™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–Èœ™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆ—JCBˆ]Y“[™İXYÙHHœÛÛ–ÈY“[™İXYÙH—H\ÏÈİš[™ÈÏÈ™[‹UTÈƒBˆ]Ù[XİY\X\˜[˜ÙHH˜XÚİ\]KœØ[š]^™Y\X\˜[˜ÙJœÛÛ–ÈœÙ[XİY\X\˜[˜ÙH—H\ÏÈİš[™ÊCBˆ]™XY\”Ù[XİY\X\˜[˜ÙHH˜XÚİ\]KœØ[š]^™Y\X\˜[˜ÙJœÛÛ–Èœ™XY\”Ù[XİY\X\˜[˜ÙH—H\ÏÈİš[™ÈÏÈÙ[XİY\X\˜[˜ÙJCBˆ]™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YHœÛÛ–Èœ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ][˜X›TİX]\ĞQY˜][HœÛÛ–È™[˜X›TİX]\ĞQY˜][—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Y˜][İX]S[™İXYÙHHœÛÛ–È™Y˜][İX]S[™İXYÙH—H\ÏÈİš[™ÈÏÈ™[™ÈƒBˆ]^Y\”İX]P\X\˜[˜ÙQ[˜X›YHœÛÛ–Èœ^Y\”İX]P\X\˜[˜ÙQ[˜X›Y—H\ÏÈ›ÛÛBˆÏÈœÛÛ–È™[˜X›U“ÔİX]QY]Y[H—H\ÏÈ›ÛÛBˆÏÈYCBˆ]™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙHHœÛÛ–Èœ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙH—H\ÏÈİš[™ÈÏÈ™[™ÈƒBˆ]™Y™\œ™Y[š[YP]Y[Ó[™İXYÙHHœÛÛ–Èœ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙH—H\ÏÈİš[™ÈÏÈšœˆƒBˆ][\^Y\ˆHÙ][™ÜË››Ü›X[^™Y[\^Y\ŠœÛÛ–Èš[\^Y\ˆ—H\ÏÈİš[™ÈÏÈœÛÛ–Èœ^Y\ÚÚXÙH—H\ÏÈİš[™ÊCBˆ]ÚİÔØÚY[UXˆHœÛÛ–ÈœÚİÔØÚY[UXˆ—H\ÏÈ›ÛÛÏÈYCBˆ]ÚİÓØØ[ØÚY[U[YHHœÛÛ–ÈœÚİÓØØ[ØÚY[U[YH—H\ÏÈ›ÛÛÏÈYCBˆ]Y˜][ØÚY[S[ÙHHØÚY[S[ÙKœØ[š]^™Y˜]Õ˜[YJœÛÛ–È™Y˜][ØÚY[S[ÙH—H\ÏÈİš[™ÊCBˆ]ØÚY[UÚ[™İÑ^\ÈHØÚY[UÚ[™İËœØ[š]^™Y^\ÊœÛÛ–ÈœØÚY[UÚ[™İÑ^\È—H\ÏÈ[
+CBˆ]ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÈH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û”İXœØÜš\[ÛœÊBˆœÛÛ–È›ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÈ—H\ÏÈİš[™ÃBˆ
+CBˆ]ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÈH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÊBˆœÛÛ–È›ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÈ—H\ÏÈİš[™ÃBˆ
+CBˆ]ØØ[›İYšXØ][Û‘\\ÛÙSXY[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û‘\\ÛÙSXY[YJBˆœÛÛ–È›ØØ[›İYšXØ][Û‘\\ÛÙSXY[YH—H\ÏÈ[Bˆ
+CBˆ]ØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YJBˆœÛÛ–È›ØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YH—H\ÏÈ[Bˆ
+CBˆ]ØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÈHœÛÛ–È›ØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[È—H\ÏÈ›ÛÛBƒBˆ]Y˜][^X˜XÚÔÜYYH˜XÚİ\]KœØ[š]^™YY˜][^X˜XÚÔÜYY
+BˆœÛÛ–È™Y˜][^X˜XÚÔÜYY—H\ÏÈİX›CBˆ
+CBˆ]ÛÜYY^Y\ˆH˜XÚİ\]KœØ[š]^™YÛÜYY^Y\ŠBˆœÛÛ–ÈšÛÜYY^Y\ˆ—H\ÏÈİX›CBˆ
+CBˆ]^\›˜[^Y\ˆHœÛÛ–È™^\›˜[^Y\ˆ—H\ÏÈİš[™ÈÏÈ››Û™HƒBˆ]™Y™\‘İÛ›ØYYYYXHHœÛÛ–Èœ™Y™\‘İÛ›ØYYYYXH—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ][Ø^\Ó[™ØØ\HHœÛÛ–È˜[Ø^\Ó[™ØØ\H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^Y\”^X˜XÚÓØÚÑ[˜X›YHœÛÛ–Èœ^Y\”^X˜XÚÓØÚÑ[˜X›Y—H\ÏÈ›ÛÛÏÈ^Y\”^X˜XÚÓØÚÔÙ][™ÜË™Y˜][[˜X›YBˆ][šTÚÚ\[˜X›YHœÛÛ–È˜[šTÚÚ\[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ][›Ñ‘[˜X›YHœÛÛ–Èš[›Ñ‘[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ][›Ñ\[˜X›YHœÛÛ–Èš[›Ñ\[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ][šTÚÚ\]]ÔÚÚ\HœÛÛ–È˜[šTÚÚ\]]ÔÚÚ\—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]ÚÚ\\Ñ[˜X›YHœÛÛ–ÈœÚÚ\\Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]ÚÚ\\Ğ[Ø^\Õš\ÚX›HHœÛÛ–ÈœÚÚ\\Ğ[Ø^\Õš\ÚX›H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]ÚİÓ™^\\ÛÙP]ÛˆHœÛÛ–ÈœÚİÓ™^\\ÛÙP]Ûˆ—H\ÏÈ›ÛÛÏÈYCBˆ]ÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆHœÛÛ–ÈœÚİÑ\\ÛÙPœ›İÜÙ\]Ûˆ—H\ÏÈ›ÛÛÏÈœÛÛ–ÈœÚİÕ“Ñ\\ÛÙPœ›İÜÙ\]Ûˆ—H\ÏÈ›ÛÛÏÈYCBˆ]ÚİÔ^Y\”Ù\šXÙ\Ğ]ÛˆHœÛÛ–ÈœÚİÔ^Y\”Ù\šXÙ\Ğ]Ûˆ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]ÚİÓ™^\\ÛÙTÜİ\]ÛˆHœÛÛ–ÈœÚİÓ™^\\ÛÙTÜİ\]Ûˆ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™^\\ÛÙU™\ÚÛH˜XÚİ\]KœØ[š]^™Y™^\\ÛÙU™\ÚÛ
+BˆœÛÛ–È›™^\\ÛÙU™\ÚÛ—H\ÏÈİX›CBˆ
+CBˆ]™^\\ÛÙTÚÚ\š[\‘[˜X›YHœÛÛ–È›™^\\ÛÙTÚÚ\š[\‘[˜X›Y—H\ÏÈ›ÛÛÏÈ™^\\ÛÙQš[\”Ù][™ÜË™Y˜][[˜X›YBˆ]^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YHœÛÛ–Èœ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›Y—H\ÏÈ›ÛÛÏÈœÛÛ–È›ĞœšYÚ™\ÜÑÙ\İ\™Q[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^Y\•›Û[YQÙ\İ\™Q[˜X›YHœÛÛ–Èœ^Y\•›Û[YQÙ\İ\™Q[˜X›Y—H\ÏÈ›ÛÛÏÈœÛÛ–È›Õ›Û[YQÙ\İ\™Q[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YHœÛÛ–Èœ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]^Y\Ù[\•\^T]\ÙQ[˜X›YHœÛÛ–Èœ^Y\Ù[\•\^T]\ÙQ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]^Y\‘İX›U\ÙYZÑ[˜X›YHœÛÛ–Èœ^Y\‘İX›U\ÙYZÑ[˜X›Y—H\ÏÈ›ÛÛÏÈœÛÛ–È›ÑİX›U\ÙYZÑ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]^Y\‘İX›U\ÙYZÔÙXÛÛ™ÈH˜XÚİ\]KœØ[š]^™Y^Y\‘İX›U\ÙYZÔÙXÛÛ™ÊBˆœÛÛ–Èœ^Y\‘İX›U\ÙYZÔÙXÛÛ™È—H\ÏÈİX›CBˆÏÈœÛÛ–È›ÑİX›U\ÙYZÔÙXÛÛ™È—H\ÏÈİX›CBˆ
+CBˆ]^Y\“Ü[”İX]\Ñ[˜X›YHœÛÛ–Èœ^Y\“Ü[”İX]\Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈœÛÛ–È›ÓÜ[”İX]\Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YHœÛÛ–Èœ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›Y—H\ÏÈ›ÛÛÏÈœÛÛ–È›ÓÜ[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›YHœÛÛ–Èœ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]\‘›Ü™YÜ›İ[™”Ô˜]ÈH˜XÚİ\]K›Ü[Û˜[[
+Bˆœ›ÛNˆœÛÛ–È›\‘›Ü™YÜ›İ[™”È—KBˆY˜][˜[YNˆÌBˆ
+CBˆ]\‘›Ü™YÜ›İ[™”ÈH\‘›Ü™YÜ›İ[™”Ô˜]ÈOHŒÈŒˆÌBˆ]\”™[™\˜XÚÙ[™H˜XÚİ\]KœØ[š]^™YT”™[™\˜XÚÙ[™
+œÛÛ–È›\”™[™\˜XÚÙ[™—H\ÏÈİš[™ÊCBˆ]\“Y][]X[]T›Ùš[HH˜XÚİ\]KœØ[š]^™YT“Y][]X[]T›Ùš[JœÛÛ–È›\“Y][]X[]T›Ùš[H—H\ÏÈİš[™ÊCBˆ]\•\ØØ[[™Ó[ÙHH˜XÚİ\]KœØ[š]^™YT•\ØØ[[™Ó[ÙJœÛÛ–È›\•\ØØ[[™Ó[ÙH—H\ÏÈİš[™ÊCBˆ]\“™]\˜[\ØØ[\ˆH˜XÚİ\]KœØ[š]^™YT“™]\˜[\ØØ[\ŠœÛÛ–È›\“™]\˜[\ØØ[\ˆ—H\ÏÈİš[™ÊCBˆ]\“™]\˜[\ØØ[\•ˆH˜XÚİ\]KœØ[š]^™YT“™]\˜[\ØØ[\ŠœÛÛ–È›\“™]\˜[\ØØ[\•ˆ—H\ÏÈİš[™ÊCBˆ]\”^Y\”ÚÚ[ˆH˜XÚİ\]KœØ[š]^™YT”^Y\”ÚÚ[ŠœÛÛ–È›\”^Y\”ÚÚ[ˆ—H\ÏÈİš[™ÊCBˆ]\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È›\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜˆ—JCBˆ]\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È›\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜˆ—JCBˆ]\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›YHœÛÛ–È›\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›Y—H\ÏÈ›ÛÛÏÈT”^Y\”ÚÚ[”Ù][™ÜË™Y˜][[š[X][ÛœÑ[˜X›YBˆ]\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›HHœÛÛ–È›\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›H—H\ÏÈ›ÛÛÏÈT”^Y\”ÚÚ[”Ù][™ÜË™Y˜][[ÛÛ›ÛÓÛ›CBˆ]\”Xİ\™R[”Xİ\™Q[˜X›YHœÛÛ–È›\”Xİ\™R[”Xİ\™Q[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]\\^]Xİ\™R[”Xİ\™Q[˜X›YHœÛÛ–È›\\^]Xİ\™R[”Xİ\™Q[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]\’“[ÙHHT’“[ÙJ˜]Õ˜[YNˆœÛÛ–È›\’“[ÙH—H\ÏÈİš[™ÈÏÈT’“[ÙK™Y˜][[ÙKœ˜]Õ˜[YJOËœ˜]Õ˜[YHÏÈT’“[ÙK™Y˜][[ÙKœ˜]Õ˜[YCBˆ]\”İ\œ›İ[™Ûİ[™[˜X›YHœÛÛ–È›\”İ\œ›İ[™Ûİ[™[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]Ø]ÚÙÙ]\‘[˜X›YHœÛÛ–ÈØ]ÚÙÙ]\‘[˜X›Y—H\ÏÈ›ÛÛÏÈØ]ÚÙÙ]\”Ù][™ÜË™Y˜][[˜X›YBˆ]ÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YHœÛÛ–ÈœÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^\š[Y[[™X]\™\Ñ[˜X›YHœÛÛ–È™^\š[Y[[™X]\™\Ñ[˜X›Y—H\ÏÈ›ÛÛBˆ]^\š[Y[[™X]\™\Ó\İÚ[™ÙY]H˜XÚİ\]KœØ[š]^™Y^\š[Y[[™X]\™\Ó\İÚ[™ÙY]
+BˆœÛÛ–È™^\š[Y[[™X]\™\Ó\İÚ[™ÙY]—H\ÏÈİX›CBˆ
+CBˆ]^\š[Y[[T”™[ØY[˜X›YHœÛÛ–È™^\š[Y[[T”™[ØY[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›YHœÛÛ–È™^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]^\š[Y[[T”™[ØYÙ[[\‘[˜X›YHœÛÛ–È™^\š[Y[[T”™[ØYÙ[[\‘[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^\š[Y[[T”™[ØYÚYšS[Z]PˆH^\š[Y[[™X]\™Tİ]Kœ™\ÛÛ™YT”™[ØYÚYšS[Z]PŠ˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆœÛÛ–È™^\š[Y[[T”™[ØYÚYšS[Z]Pˆ—KY˜][˜[YNˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÚYšQY˜][[Z]PŠJCBˆ]^\š[Y[[T”™[ØYÙ[[\“[Z]PˆH^\š[Y[[™X]\™Tİ]Kœ™\ÛÛ™YT”™[ØYÙ[[\“[Z]PŠ˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆœÛÛ–È™^\š[Y[[T”™[ØYÙ[[\“[Z]Pˆ—KY˜][˜[YNˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÙ[[\‘Y˜][[Z]PŠJCBˆ]^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YHHœÛÛ–È™^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YH—H\ÏÈ›ÛÛÏÈYCBˆ]^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜÈHœÛÛ–È™^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜÈ—H\ÏÈ›ÛÛÏÈYCBˆ]^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\ÈHœÛÛ–È™^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^\š[Y[[T”™[ØY]]ĞÛX\ˆHœÛÛ–È™^\š[Y[[T”™[ØY]]ĞÛX\ˆ—H\ÏÈ›ÛÛÏÈYCBˆ]^\š[Y[[PÛİYŞ[˜Ñ[˜X›YHœÛÛ–È™^\š[Y[[PÛİYŞ[˜Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBƒBˆ]İX]Q›Ü™YÜ›İ[™ÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–ÈœİX]Q›Ü™YÜ›İ[™ÛÛÜˆ—JCBˆ]İX]Tİ›ÚÙPÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–ÈœİX]Tİ›ÚÙPÛÛÜˆ—JCBˆ]İX]Tİ›ÚÙUÚYH˜XÚİ\]KœØ[š]^™YİX]Tİ›ÚÙUÚY
+BˆœÛÛ–ÈœİX]Tİ›ÚÙUÚY—H\ÏÈİX›CBˆ
+CBˆ]İX]Q›ÛÚ^™HH˜XÚİ\]KœØ[š]^™YİX]Q›ÛÚ^™JBˆœÛÛ–ÈœİX]Q›ÛÚ^™H—H\ÏÈİX›CBˆ
+CBˆ]İX]U™\XØ[Ù™œÙ]H˜XÚİ\]KœØ[š]^™YİX]U™\XØ[Ù™œÙ]
+BˆœÛÛ–ÈœİX]U™\XØ[Ù™œÙ]—H\ÏÈİX›CBˆ
+CBˆ]İX]\Õš\ÚX›HHœÛÛ–ÈœİX]\Õš\ÚX›H—H\ÏÈ›ÛÛÏÈ˜[ÙCBƒBˆ]ÚİÒØ[™[ˆHœÛÛ–ÈœÚİÒØ[™[ˆ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]YTÜ\ÚØÜ™Y[ˆHœÛÛ–ÈšYTÜ\ÚØÜ™Y[ˆ—H\ÏÈ›ÛÛBˆ][ÙTİÚ]Ú[š[X][Û‘[˜X›YHœÛÛ–È›[ÙTİÚ]Ú[š[X][Û‘[˜X›Y—H\ÏÈ›ÛÛÏÈ[ÙTİÚ]Ú[š[X][Û”Ù][™ÜË™Y˜][[˜X›YBˆ]Ø[™[]]Õ\]S[Ù[\ÈHœÛÛ–ÈšØ[™[]]Õ\]S[Ù[\È—H\ÏÈ›ÛÛÏÈYCBˆ]ÙX\ÛÛ“Y[HHœÛÛ–ÈœÙX\ÛÛ“Y[H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Üš^›Û[\\ÛÙS\İHœÛÛ–ÈšÜš^›Û[\\ÛÙS\İ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]YYXQ]Z[]P\ÛÜšÑ[˜X›YHœÛÛ–È›YYXQ]Z[]P\ÛÜšÑ[˜X›Y—H\ÏÈ›ÛÛÏÈYYXQ]Z[]P\ÛÜšÔÙ][™ÜË™Y˜][[˜X›YBˆ]YYXQ]Z[[\›˜]TÜİ\‘[˜X›YHœÛÛ–È›YYXQ]Z[[\›˜]TÜİ\‘[˜X›Y—H\ÏÈ›ÛÛÏÈYYXQ]Z[[\›˜]TÜİ\”Ù][™ÜË™Y˜][[˜X›YBˆ]YYXQ]Z[Ú[Z[\•]\Ñ[˜X›YHœÛÛ–È›YYXQ]Z[Ú[Z[\•]\Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈYYXQ]Z[Ú[Z[\•]\ÔÙ][™ÜË™Y˜][[˜X›YBˆ]\ÙPÛ\ÜÚXÔØÚY[URHHœÛÛ–È\ÙPÛ\ÜÚXÔØÚY[URH—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]\›Ğ˜[›™\Ø][ÙÒYH˜XÚİ\]KœØ[š]^™Y›Û‘[\Tİš[™ÊœÛÛ–Èš\›Ğ˜[›™\Ø][ÙÒY—H\ÏÈİš[™ËY˜][˜[YNˆ™[™[™ÈŠCBˆ]\›Ğ˜[›™\™Z]š[ÜˆH˜XÚİ\]KœØ[š]^™Y\›Ğ˜[›™\™Z]š[ÜŠœÛÛ–Èš\›Ğ˜[›™\™Z]š[Üˆ—H\ÏÈİš[™ÊCBˆ]ÛYPØ][ÙÓ^[İ]İ™\œšY\ÈHœÛÛ–ÈšÛYPØ][ÙÓ^[İ]İ™\œšY\È—H\ÏÈİš[™ÈÏÈˆƒBˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YHœÛÛ–ÈšÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›Y—H\ÏÈ›ÛÛBˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]HH˜XÚİ\]KœØ[š]^™YÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]JœÛÛ–ÈšÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]H—H\ÏÈİš[™ÊCBˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]HH˜XÚİ\]KœØ[š]^™YÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]JœÛÛ–ÈšÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]H—H\ÏÈİš[™ÊCBˆ]\\™›Ü›X[˜ÙSİ™\›^Q[˜X›YHœÛÛ–È˜\\™›Ü›X[˜ÙSİ™\›^Q[˜X›Y—H\ÏÈ›ÛÛÏÈ\\™›Ü›X[˜ÙSİ™\›^TÙ][™ÜË™Y˜][[˜X›YBˆ]^\š[Y[[YYXQ\ÚYÛ”™\Ù]H˜XÚİ\]KœØ[š]^™Y^\š[Y[[YYXQ\ÚYÛ”™\Ù]
+œÛÛ–È™^\š[Y[[YYXQ\ÚYÛ”™\Ù]—H\ÏÈİš[™ÊCBˆ]^\š[Y[[\›Ğ›YY]™[H˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ğ›YY]™[
+œÛÛ–È™^\š[Y[[\›Ğ›YY]™[—H\ÏÈİš[™ÊCBˆ]^\š[Y[[ÛYPØ\™Ú\HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[ÛYPØ\™Ú\JœÛÛ–È™^\š[Y[[ÛYPØ\™Ú\H—H\ÏÈİš[™ÊCBˆ]^\š[Y[[][QÜ˜YY[[]HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[][QÜ˜YY[[]JœÛÛ–È™^\š[Y[[][QÜ˜YY[[]H—H\ÏÈİš[™ÊCBˆ]^\š[Y[[\›ÒZYÚØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›ÒZYÚØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[\›ÒZYÚØØ[H—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][\›ÒZYÚØØ[JJCBˆ]^\š[Y[[\›Ğ›YYİ™[™İH˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ğ›YYİ™[™İ
+˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[\›Ğ›YYİ™[™İ—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][\›Ğ›YYİ™[™İ
+JCBˆ]^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[H—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][\›Ñ˜YQ\İ[˜ÙTØØ[JJCBˆ]^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[H—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][ÙXİ[Û”ÜXÚ[™ÔØØ[JJCBˆ]^\š[Y[[Ø\™˜Y]\ÔØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ø\™˜Y]\ÔØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ø\™˜Y]\ÔØØ[H—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ø\™˜Y]\ÔØØ[JJCBˆ]^\š[Y[[YYXPØ\™ØØ[HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[YYXPØ\™ØØ[J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[YYXPØ\™ØØ[H—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][YYXPØ\™ØØ[JJCBˆ]^\š[Y[[Û\ÜÔİ™[™İH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Û\ÜÔİ™[™İ
+˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[Û\ÜÔİ™[™İ—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Û\ÜÔİ™[™İ
+JCBˆ]^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÈH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÊ˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÈ—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ü˜YY[˜\ÙQ\šÛ™\ÜÊJCBˆ]^\š[Y[[Ü˜YY[XØÙ[[[œÚ]HH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[XØÙ[[[œÚ]J˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ü˜YY[XØÙ[[[œÚ]H—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ü˜YY[XØÙ[[[œÚ]JJCBˆ]^\š[Y[[Ü˜YY[ØÜ›Û[İ[ÛˆH˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[ØÜ›Û[İ[ÛŠ˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ü˜YY[ØÜ›Û[İ[Ûˆ—KY˜][˜[YNˆ^\š[Y[[š\İX[[š[™Ë™Y˜][Ü˜YY[ØÜ›Û[İ[ÛŠJCBˆ]^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœÈHœÛÛ–È™^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœÈ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]^\š[Y[[Ü˜YY[ÛÛÜHH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ü˜YY[ÛÛÜH—JCBˆ]^\š[Y[[Ü˜YY[ÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ü˜YY[ÛÛÜˆ—JCBˆ]^\š[Y[[Ü˜YY[ÛÛÜÈH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È™^\š[Y[[Ü˜YY[ÛÛÜÈ—JCBˆ]][ÜÜ\™Tİ[HH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™Tİ[JœÛÛ–È˜][ÜÜ\™Tİ[H—H\ÏÈİš[™ÊCBˆ]][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJœÛÛ–È˜][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙH—H\ÏÈİš[™ÊCBˆ]][ÜÜ\™TÛÛYÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–È˜][ÜÜ\™TÛÛYÛÛÜˆ—JCBˆ]™XY\][ÜÜ\™Tİ[HH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™Tİ[JœÛÛ–Èœ™XY\][ÜÜ\™Tİ[H—H\ÏÈİš[™ÈÏÈ][ÜÜ\™Tİ[JCBˆ]™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHH˜XÚİ\]KœØ[š]^™Y][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJœÛÛ–Èœ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙH—H\ÏÈİš[™ÈÏÈ][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJCBˆ]™XY\][ÜÜ\™TÛÛYÛÛÜˆH˜XÚİ\]K˜˜XÚİ\ÛÛÜ‘]Jœ›ÛNˆœÛÛ–Èœ™XY\][ÜÜ\™TÛÛYÛÛÜˆ—JCBˆ]YYXQ]Z[[[Y[Ü™\ˆH˜XÚİ\]KœØ[š]^™YYYXQ]Z[[[Y[Ü™\ŠœÛÛ–È›YYXQ]Z[[[Y[Ü™\ˆ—H\ÏÈİš[™ÊCBˆ]YYXQ]Z[Y[‘[[Y[ÈH˜XÚİ\]KœØ[š]^™YYYXQ]Z[Y[‘[[Y[ÊœÛÛ–È›YYXQ]Z[Y[‘[[Y[È—H\ÏÈİš[™ÊCBˆ]™XY\‘]Z[[[Y[Ü™\ˆH˜XÚİ\]KœØ[š]^™Y™XY\‘]Z[[[Y[Ü™\ŠœÛÛ–Èœ™XY\‘]Z[[[Y[Ü™\ˆ—H\ÏÈİš[™ÊCBˆ]™XY\‘]Z[Y[‘[[Y[ÈH˜XÚİ\]KœØ[š]^™Y™XY\‘]Z[Y[‘[[Y[ÊœÛÛ–Èœ™XY\‘]Z[Y[‘[[Y[È—H\ÏÈİš[™ÊCBˆ]YYXPÛÛ[[œÔÜ˜Z]HœÛÛ–È›YYXPÛÛ[[œÔÜ˜Z]—H\ÏÈ[ÏÈÃBˆ]YYXPÛÛ[[œÓ[™ØØ\HHœÛÛ–È›YYXPÛÛ[[œÓ[™ØØ\H—H\ÏÈ[ÏÈCBƒBˆ]™XY[™Ó[ÙHH˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆœÛÛ–Èœ™XY[™Ó[ÙH—KY˜][˜[YNˆŠCBˆ]Ø[™[”™XY\“[ÙHH
+œÛÛ–ÈšØ[™[”™XY\“[ÙH—H\ÏÈİš[™ÊK›X\
+˜XÚİ\]KœØ[š]^™YØ[™[”™XY\“[ÙJCBˆÏÈ˜XÚİ\]KšØ[™[”™XY\“[ÙT˜]Õ˜[YJ›Ü”™XY[™Ó[ÙNˆ™XY[™Ó[ÙJCBˆ]Ø[™[”™XY\“[ÙSİ™\œšY\ÈH˜XÚİ\]KœØ[š]^™YØ[™[”™XY\“[ÙSİ™\œšY\ÊœÛÛ–ÈšØ[™[”™XY\“[ÙSİ™\œšY\È—H\ÏÈÔİš[™Îˆİš[™×JCBˆ]™XY\‘İÛœØ[\R[XYÙ\ÈHœÛÛ–Èœ™XY\‘İÛœØ[\R[XYÙ\È—H\ÏÈ›ÛÛÏÈYCBˆ]™XY\Ü›Ü›Ü™\œÈHœÛÛ–Èœ™XY\Ü›Ü›Ü™\œÈ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\‘\ØX›T]ZXÚĞXİ[ÛœÈHœÛÛ–Èœ™XY\‘\ØX›T]ZXÚĞXİ[ÛœÈ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\‘\ØX›QİX›U\HœÛÛ–Èœ™XY\‘\ØX›QİX›U\—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\“]™U^HœÛÛ–Èœ™XY\“]™U^—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\’YP˜\œÓÛ”İÚ\HHœÛÛ–Èœ™XY\’YP˜\œÓÛ”İÚ\H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\˜XÚÙÜ›İ[™ÛÛÜˆH˜XÚİ\]KœØ[š]^™Y™XY\˜XÚÙÜ›İ[™ÛÛÜŠœÛÛ–Èœ™XY\˜XÚÙÜ›İ[™ÛÛÜˆ—H\ÏÈİš[™ÊCBˆ]™XY\“ÜšY[][ÛˆH˜XÚİ\]KœØ[š]^™Y™XY\“ÜšY[][ÛŠœÛÛ–Èœ™XY\“ÜšY[][Ûˆ—H\ÏÈİš[™ÊCBˆ]™XY\•\›Û™\ÈH˜XÚİ\]KœØ[š]^™Y™XY\•\›Û™\ÊœÛÛ–Èœ™XY\•\›Û™\È—H\ÏÈİš[™ÊCBˆ]™XY\’[™\\›Û™\ÈHœÛÛ–Èœ™XY\’[™\\›Û™\È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\[š[X]TYÙU˜[œÚ][ÛœÈHœÛÛ–Èœ™XY\[š[X]TYÙU˜[œÚ][ÛœÈ—H\ÏÈ›ÛÛÏÈYCBˆ]™XY\•\ØØ[R[XYÙ\ÈHœÛÛ–Èœ™XY\•\ØØ[R[XYÙ\È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\•\ØØ[SX^ZYÚH˜XÚİ\]KœØ[š]^™Y™XY\•\ØØ[SX^ZYÚ
+˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆœÛÛ–Èœ™XY\•\ØØ[SX^ZYÚ—KY˜][˜[YNˆŒ
+JCBˆ]™XY\•\ØØ[S[Ù[˜[YHHœÛÛ–Èœ™XY\•\ØØ[S[Ù[˜[YH—H\ÏÈİš[™ÈÏÈ“›Û™HƒBˆ]™XY\”YÙ\ÕÔ™[ØYH˜XÚİ\]KœØ[š]^™Y™XY\”YÙ\ÕÔ™[ØY
+˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆœÛÛ–Èœ™XY\”YÙ\ÕÔ™[ØY—KY˜][˜[YNˆÊJCBˆ]™XY\”YÙYYÙS^[İ]H˜XÚİ\]KœØ[š]^™Y™XY\”YÙYYÙS^[İ]
+œÛÛ–Èœ™XY\”YÙYYÙS^[İ]—H\ÏÈİš[™ÊCBˆ]™XY\”YÙYYÙSÙ™œÙ]HœÛÛ–Èœ™XY\”YÙYYÙSÙ™œÙ]—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ÈH˜XÚİ\]KœØ[š]^™Y™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ÊœÛÛ–Èœ™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\È—H\ÏÈÔİš[™Îˆ›ÛÛJCBˆ]™XY\”Ü]ÚYR[XYÙ\ÈHœÛÛ–Èœ™XY\”Ü]ÚYR[XYÙ\È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\”™]™\œÙTÜ]Ü™\ˆHœÛÛ–Èœ™XY\”™]™\œÙTÜ]Ü™\ˆ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\•™\XØ[[™š[š]TØÜ›ÛHœÛÛ–Èœ™XY\•™\XØ[[™š[š]TØÜ›Û—H\ÏÈ›ÛÛÏÈYCBˆ]™XY\”[\˜›ŞHœÛÛ–Èœ™XY\”[\˜›Ş—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\”[\˜›Ş[[İ[H˜XÚİ\]KœØ[š]^™Y™XY\”[\˜›Ş[[İ[
+˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–Èœ™XY\”[\˜›Ş[[İ[—KY˜][˜[YNˆMJJCBˆ]™XY\”[\˜›ŞÜšY[][ÛˆH˜XÚİ\]KœØ[š]^™Y™XY\”[\˜›ŞÜšY[][ÛŠœÛÛ–Èœ™XY\”[\˜›ŞÜšY[][Ûˆ—H\ÏÈİš[™ÊCBˆ]™XY\“ÜšY[][Û“ØÚÑ[˜X›YHœÛÛ–Èœ™XY\“ÜšY[][Û“ØÚÑ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\“ÜšY[][Û“ØÚÓX\ÚÈH˜XÚİ\]KœØ[š]^™Y™XY\“ÜšY[][Û“ØÚÓX\ÚÊœÛÛ–Èœ™XY\“ÜšY[][Û“ØÚÓX\ÚÈ—H\ÏÈİš[™ÊCBˆ]™XY\”™XY™\ÚÛ\˜Ù[H˜XÚİ\]KœØ[š]^™Y™XY\”™XY™\ÚÛ\˜Ù[
+œÛÛ–Èœ™XY\”™XY™\ÚÛ\˜Ù[—H\ÏÈİX›JCBƒBˆ]™XY\‘›ÛÚ^™HH˜XÚİ\]KœØ[š]^™Y™XY\‘›ÛÚ^™JBˆœÛÛ–Èœ™XY\‘›ÛÚ^™H—H\ÏÈİX›CBˆ
+CBˆ]™XY\‘›Û˜[Z[HHœÛÛ–Èœ™XY\‘›Û˜[Z[H—H\ÏÈİš[™ÈÏÈ‹X\K\Ş\İ[HƒBˆ]™XY\‘›ÛÙZYÚHœÛÛ–Èœ™XY\‘›ÛÙZYÚ—H\ÏÈİš[™ÈÏÈ››Ü›X[ƒBˆ]™XY\ÛÛÜ”™\Ù]H˜XÚİ\]KœØ[š]^™Y™XY\ÛÛÜ”™\Ù]
+œÛÛ–Èœ™XY\ÛÛÜ”™\Ù]—H\ÏÈ[
+CBˆ]™XY\•^[YÛ›Y[HœÛÛ–Èœ™XY\•^[YÛ›Y[—H\ÏÈİš[™ÈÏÈ›YƒBˆ]™XY\“[™TÜXÚ[™ÈH˜XÚİ\]KœØ[š]^™Y™XY\“[™TÜXÚ[™ÊBˆœÛÛ–Èœ™XY\“[™TÜXÚ[™È—H\ÏÈİX›CBˆ
+CBˆ]™XY\“X\™Ú[ˆH˜XÚİ\]KœØ[š]^™Y™XY\“X\™Ú[ŠBˆœÛÛ–Èœ™XY\“X\™Ú[ˆ—H\ÏÈİX›CBˆ
+CBƒBˆ]]]ĞÛX\ØXÚQ[˜X›YHœÛÛ–È˜]]ĞÛX\ØXÚQ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]]]ĞÛX\ØXÚU™\ÚÛPˆH˜XÚİ\]KœØ[š]^™Y]]ĞÛX\ØXÚU™\ÚÛPŠBˆœÛÛ–È˜]]ĞÛX\ØXÚU™\ÚÛPˆ—H\ÏÈİX›CBˆ
+CBˆ]YÚ]X[]U™\ÚÛH˜XÚİ\]KœØ[š]^™YYÚ]X[]U™\ÚÛ
+BˆœÛÛ–ÈšYÚ]X[]U™\ÚÛ—H\ÏÈİX›CBˆ
+CBˆ]˜XÚÙÜ›İ[™Ô\[[™Q[˜X›YHœÛÛ–È˜˜XÚÙÜ›İ[™Ô\[[™Q[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YHœÛÛ–Èœ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]™XY\‘İÛ›ØYÕÚYšSÛ›HHœÛÛ–Èœ™XY\‘İÛ›ØYÕÚYšSÛ›H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]™XY\‘İÛ›ØYÔ\˜[[[Z]H˜XÚİ\]KœØ[š]^™Y™XY\‘İÛ›ØYÔ\˜[[[Z]
+˜XÚİ\]K›Ü[Û˜[[
+œ›ÛNˆœÛÛ–Èœ™XY\‘İÛ›ØYÔ\˜[[[Z]—KY˜][˜[YNˆŠJCBˆ]]]Õ\]TÙ\šXÙ\Ñ[˜X›YHœÛÛ–È˜]]Õ\]TÙ\šXÙ\Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]Ù\šXÙ\Ğ]]Ó[ÙQ[˜X›YHœÛÛ–ÈœÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›Y—H\ÏÈ›ÛÛÏÈ]]Ó[ÙTÙ][™ÜË™Y˜][[˜X›YBˆ]Ù\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YHœÛÛ–ÈœÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›Y—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ù\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›YHœÛÛ–ÈœÙ\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›Y—H\ÏÈ›ÛÛÏÈ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙTÙ][™ÜË™Y˜][[˜X›YBˆ]Ù\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÈH˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+˜XÚİ\]Kœİš[™Ó\İ
+œ›ÛNˆœÛÛ–ÈœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÈ—JJCBˆ]Ù\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈH˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+˜XÚİ\]Kœİš[™Ó\İ
+œ›ÛNˆœÛÛ–ÈœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈ—JJCBˆ]Ù\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙHH]]Ó[ÙT]X[]T™Y™\™[˜ÙKœØ[š]^™Y˜]Õ˜[YJœÛÛ–ÈœÙ\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙH—H\ÏÈİš[™ÊCBˆ]Ù\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]HH˜XÚİ\]KœØ[š]^™YÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]JBˆ˜XÚİ\]K›Ü[Û˜[İX›Jœ›ÛNˆœÛÛ–ÈœÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]H—KY˜][˜[YNˆÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜË™Y˜][Z[š[][TÚ[Z[\š]JCBˆ
+CBˆ]Ù\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ÈHœÛÛ–ÈœÙ\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[È—H\ÏÈ›ÛÛÏÈÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜË™Y˜][›ÜZ\ÛX]ÚY™\İ[ÃBˆ]Ù\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›YHœÛÛ–ÈœÙ\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›Y—H\ÏÈ›ÛÛÏÈÙ\šXÙ\ÔÚY]™\Ù[][Û”Ù][™ÜË™Y˜][İ™[Z[Ôİ[Q[˜X›YBˆ]Ù\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ÈHİ™X[S[™İXYÙQš[\‹œØ[š]^™Y[™İXYÙS\İ
+˜XÚİ\]Kœİš[™Ó\İ
+œ›ÛNˆœÛÛ–ÈœÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\È—JJCBˆ]Ù\šXÙ\ÒY[”İ™X[S[™İXYÙ\ÈHİ™X[S[™İXYÙQš[\‹œØ[š]^™Y[™İXYÙS\İ
+˜XÚİ\]Kœİš[™Ó\İ
+œ›ÛNˆœÛÛ–ÈœÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\È—JJCBˆ]Ù\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]HHœÛÛ–ÈœÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ù\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ÈHœÛÛ–ÈœÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ù\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚHœÛÛ–ÈœÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\Ú—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ù\šXÙ\ÒY[”İ™X[T]X[]Y\ÈHİ™X[S[™İXYÙQš[\‹œØ[š]^™Y]X[]RZYÚÊ˜XÚİ\]Kš[\İ
+œ›ÛNˆœÛÛ–ÈœÙ\šXÙ\ÒY[”İ™X[T]X[]Y\È—JJCBˆ]Ù\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]HHœÛÛ–ÈœÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ù\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÎˆÔİš[™×OÃBˆYˆ]˜]ÔÛİ\˜ÙRYÈHœÛÛ–ÈœÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÈ—H\ÏÈÔİš[™×HÃBˆÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÈHİ™X[S[™İXYÙQš[\‹œØ[š]^™Y^˜T[\ÔÛİ\˜ÙRYÊ˜]ÔÛİ\˜ÙRYÊCBˆH[ÙHÃBˆÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÈHš[BˆCBˆ]Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YHœÛÛ–È™Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›Y—H\ÏÈ›ÛÛÏÈYCBˆ]Ú]X”™[X\ÙU\]P]˜Z[X›HHœÛÛ–È™Ú]X”™[X\ÙU\]P]˜Z[X›H—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ú]X”™[X\ÙS]\İ™\œÚ[ÛˆHœÛÛ–È™Ú]X”™[X\ÙS]\İ™\œÚ[Ûˆ—H\ÏÈİš[™ÈÏÈˆƒBˆ]Ú]X”™[X\ÙUT“HœÛÛ–È™Ú]X”™[X\ÙUT“—H\ÏÈİš[™ÈÏÈˆƒBˆ]Ú]X”™[X\ÙTÚİĞ[\[™[™ÈHœÛÛ–È™Ú]X”™[X\ÙTÚİĞ[\[™[™È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[ÛˆHœÛÛ–È™Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[Ûˆ—H\ÏÈİš[™ÈÏÈˆƒBˆ]š[\’Üœ›ÜÛÛ[HœÛÛ–È™š[\’Üœ›Üˆ—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]Ù[XİYÚ[Z[\š]P[ÛÜš]HH˜XÚİ\]KœØ[š]^™YÚ[Z[\š]P[ÛÜš]JœÛÛ–ÈœÙ[XİYÚ[Z[\š]P[ÛÜš]H—H\ÏÈİš[™ÊCBˆ]\™›Ü›X[˜ÙS[ÙQ[˜X›YHœÛÛ–Èœ\™›Ü›X[˜ÙS[ÙQ[˜X›Y—H\ÏÈ›ÛÛÏÈ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™Y˜][[˜X›YBˆ]\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[ÈHœÛÛ–Èœ\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[È—H\ÏÈ›ÛÛÏÈ˜[ÙCBˆ]˜]Ô\™›Ü›X[˜ÙS[ÙSİ™\œšY\ÈHœÛÛ–Èœ\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\È—H\ÏÈÔİš[™Îˆ›ÛÛHÏÈÎ—CBˆ]\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\ÈH˜]Ô\™›Ü›X[˜ÙS[ÙSİ™\œšY\Ë™š[\ˆÈ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË˜[š[YPØ][ÙÒYË˜ÛÛZ[œÊ	šÙ^JHCBˆ]Ø[™[’ÛYTÙ[XİYÛİ\˜ÙRQHœÛÛ–ÈšØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQ—H\ÏÈİš[™ÈÏÈˆƒBˆ]Ø[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ÈH˜XÚİ\]Kœİš[™Ó\İ
+œ›ÛNˆœÛÛ–ÈšØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\È—JCBƒBˆËÈ[šY[™\İÜ™HX^HØ[˜YÙH[™\[™[šY[Ë]H\İXİ]™CBˆËÈÛXZ[ˆ\È]]Üš]]]™HÛ›HÚ[ˆ]È[\™H^[ØYXÛÙ\ËˆCBˆËÈX[›Ü›YYY[X™\ˆ]\İ›İ\›ˆH™\İ[ÈH\X[™\XÙ[Y[ƒBˆ]XÛÙYÛÛXİ[ÛœÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞ˜XÚİ\ÛÛXİ[Û—KœÙ[‹Bˆœ›ÛNˆœÛÛ–È˜ÛÛXİ[ÛœÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙY›ÙÜ™\ÜÑ]HHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆ›ÙÜ™\ÜÑ]KœÙ[‹Bˆœ›ÛNˆœÛÛ–Èœ›ÙÜ™\ÜÑ]H—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙY˜XÚÙ\”İ]HHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆ˜XÚÙ\”İ]KœÙ[‹Bˆœ›ÛNˆœÛÛ–È˜XÚÙ\”İ]H—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙYØ][ÙÜÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞØ][Ù×KœÙ[‹Bˆœ›ÛNˆœÛÛ–È˜Ø][ÙÜÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙYÙ\šXÙ\ÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞ˜XÚİ\Ù\šXÙWKœÙ[‹Bˆœ›ÛNˆœÛÛ–ÈœÙ\šXÙ\È—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]ÛÛXİ[ÛœÈHXÛÙYÛÛXİ[ÛœÈÏÈ×CBˆ]›ÙÜ™\ÜÑ]HHXÛÙY›ÙÜ™\ÜÑ]HÏÈ›ÙÜ™\ÜÑ]J
+CBˆ]˜XÚÙ\”İ]HHXÛÙY˜XÚÙ\”İ]HÏÈ˜XÚÙ\”İ]J
+CBˆ]Ø][ÙÜÈHXÛÙYØ][ÙÜÈÏÈ×CBˆ]Ù\šXÙ\ÈHXÛÙYÙ\šXÙ\ÈÏÈ×CBƒBˆ]İ™[Z[ĞYÛœÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞ˜XÚİ\İ™[Z[ĞYÛ—KœÙ[‹Bˆœ›ÛNˆœÛÛ–Èœİ™[Z[ĞYÛœÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBƒBˆ˜\ˆÚŞTİ™X[NˆÚŞTİ™X[P˜XÚİ\Û˜\ÚİÈHš[BˆYˆ]ÚŞTİ™X[U˜[YHHœÛÛ–ÈœÚŞTİ™X[H—KBˆ”ÓÓ”Ù\šX[^˜][Û‹š\Õ˜[Y”ÓÓ“Øš™Xİ
+ÚŞTİ™X[U˜[YJKBˆ]ÚŞTİ™X[R”ÓÓˆHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™XİˆÚŞTİ™X[U˜[YJHÃBˆÚŞTİ™X[HHOÈ[šY[XÛÙ\‹™XÛÙJÚŞTİ™X[P˜XÚİ\Û˜\ÚİœÙ[‹œ›ÛNˆÚŞTİ™X[R”ÓÓŠCBˆCBƒBˆ˜\ˆ]š[ÔYÚ[œÎˆ]š[ÔİÜ™YYÚ[œÔİ]OÈHš[BˆYˆ]]š[Õ˜[YHHœÛÛ–È›]š[ÔYÚ[œÈ—KBˆ”ÓÓ”Ù\šX[^˜][Û‹š\Õ˜[Y”ÓÓ“Øš™Xİ
+]š[Õ˜[YJKBˆ]]š[Ò”ÓÓˆHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™Xİˆ]š[Õ˜[YJHÃBˆ]š[ÔYÚ[œÈHOÈ[šY[XÛÙ\‹™XÛÙJ]š[ÔİÜ™YYÚ[œÔİ]KœÙ[‹œ›ÛNˆ]š[Ò”ÓÓŠCBˆCBƒBˆ]XÛÙYX[™ØPÛÛXİ[ÛœÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞ˜XÚİ\X[™ØPÛÛXİ[Û—KœÙ[‹Bˆœ›ÛNˆœÛÛ–È›X[™ØPÛÛXİ[ÛœÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙYX[™ØT™XY[™Ô›ÙÜ™\ÜÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆÔİš[™ÎˆX[™ØT›ÙÜ™\Ü×KœÙ[‹Bˆœ›ÛNˆœÛÛ–È›X[™ØT™XY[™Ô›ÙÜ™\ÜÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙYX[™ØPØ][ÙÜÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆÓX[™ØPØ][Ù×KœÙ[‹Bˆœ›ÛNˆœÛÛ–È›X[™ØPØ][ÙÜÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙYİ\İÛPØ][ÙÜÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆÒØ[™[İ\İÛPØ][Ù×KœÙ[‹Bˆœ›ÛNˆœÛÛ–È˜İ\İÛPØ][ÙÜÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]XÛÙYØ[™[“[Ù[\ÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞ˜XÚİ\Ø[™[“[Ù[WKœÙ[‹Bˆœ›ÛNˆœÛÛ–ÈšØ[™[“[Ù[\È—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]X[™ØPÛÛXİ[ÛœÈHXÛÙYX[™ØPÛÛXİ[ÛœÈÏÈ×CBˆ]X[™ØT™XY[™Ô›ÙÜ™\ÜÈHXÛÙYX[™ØT™XY[™Ô›ÙÜ™\ÜÈÏÈÎ—CBˆ]X[™ØPØ][ÙÜÈHXÛÙYX[™ØPØ][ÙÜÈÏÈ×CBˆ]İ\İÛPØ][ÙÜÈHXÛÙYİ\İÛPØ][ÙÜÈÏÈ×CBˆ]Ø[™[“[Ù[\ÈHXÛÙYØ[™[“[Ù[\ÈÏÈ×CBƒBˆ˜\ˆZYÚİTİ]Nˆ˜XÚİ\ZYÚİTİ]OÃBˆYˆ]ZYÚİQXİHœÛÛ–È˜ZYÚİTİ]H—H\ÏÈÔİš[™Îˆ[WKBˆ]]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™XİˆZYÚİQXİ
+KBˆ]XÛÙYHOÈ[šY[XÛÙ\‹™XÛÙJ˜XÚİ\ZYÚİTİ]KœÙ[‹œ›ÛNˆ]JHÃBˆZYÚİTİ]HH˜XÚİ\]K˜ZYÚİTİ]UÚ]İ]^Xİ]X›T^[ØYÊXÛÙY
+CBˆCBƒBˆ˜\ˆ™XY\‘^[œÚ[ÛœÔİ]Nˆ˜XÚİ\™XY\‘^[œÚ[Û”İ]OÃBˆYˆ]™XY\‘^[œÚ[ÛœÑXİ[Û˜\HHœÛÛ–Èœ™XY\‘^[œÚ[ÛœÔİ]H—H\ÏÈÔİš[™Îˆ[WKBˆ]]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™Xİˆ™XY\‘^[œÚ[ÛœÑXİ[Û˜\JKBˆ]XÛÙYHOÈ[šY[XÛÙ\‹™XÛÙJ˜XÚİ\™XY\‘^[œÚ[Û”İ]KœÙ[‹œ›ÛNˆ]JHÃBˆ™XY\‘^[œÚ[ÛœÔİ]HHXÛÙYœØ[š]^™Y
+
+CBˆH[ÙHYˆ]ZYÚİTİ]HÃBˆ™XY\‘^[œÚ[ÛœÔİ]HH˜XÚİ\™XY\‘^[œÚ[Û”İ]K›ZYÜ˜][™ÓYØXŞPZYÚİJZYÚİTİ]JCBˆCBƒBˆ]ÙX\˜Ú\İÜHH˜XÚİ\ÙX\˜Ú\İÜJœÛÛ•˜[YNˆœÛÛ–ÈœÙX\˜Ú\İÜH—JCBƒBˆ˜\ˆ™XÛÛ[Y[™][ÛØXÚNˆÕQ”ÙX\˜Ú™\İ[HH×CBˆYˆ]™XÜÑ]HHœÛÛ–Èœ™XÛÛ[Y[™][ÛØXÚH—H\ÏÈÖÔİš[™Îˆ[WWHÃBˆ›ÜˆXİ[ˆ™XÜÑ]HÃBˆYˆ]]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™XİˆXİ
+KBˆ]™XÈHOÈ[šY[XÛÙ\‹™XÛÙJQ”ÙX\˜Ú™\İ[œÙ[‹œ›ÛNˆ]JHÃBˆ™XÛÛ[Y[™][ÛØXÚK˜\[™
+™XÊCBˆCBˆCBˆCBƒBˆ]XÛÙY\Ù\”˜][™ÜÎˆÔİš[™ÎˆİX›WOÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆÔİš[™ÎˆİX›WKœÙ[‹Bˆœ›ÛNˆœÛÛ–È\Ù\”˜][™ÜÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+HÏÈXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆÔİš[™Îˆ[KœÙ[‹Bˆœ›ÛNˆœÛÛ–È\Ù\”˜][™ÜÈ—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+K›X\È	›X\˜[Y\ÊİX›Kš[š]
+HCBˆ]XÛÙY\Ù\”˜][™Ó›İ\ÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆÔİš[™Îˆİš[™×KœÙ[‹Bˆœ›ÛNˆœÛÛ–È\Ù\”˜][™Ó›İ\È—KBˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+CBˆ]\Ù\”˜][™ÜÈH˜XÚİ\]KœØ[š]^™Y\Ù\”˜][™ÜÊXÛÙY\Ù\”˜][™ÜÈÏÈÎ—JCBˆ]\Ù\”˜][™Ó›İ\ÈH˜XÚİ\]KœØ[š]^™Y\Ù\”˜][™Ó›İ\ÊXÛÙY\Ù\”˜][™Ó›İ\ÈÏÈÎ—JCBƒBˆ]YYXTİ]TÙ][™ÜÈH˜XÚİ\]K›YYXTİ]TÙ][™ÜÊœ›ÛR”ÓÓ•˜[YNˆœÛÛ–È›YYXTİ]TÙ][™ÜÈ—JCBˆ]ÛÛXİ[ÛœÔ™\Ù[HXÛÙYÛÛXİ[ÛœÈOHš[Bˆ]›ÙÜ™\ÜÑ]T™\Ù[HXÛÙY›ÙÜ™\ÜÑ]HOHš[Bˆ]˜XÚÙ\”İ]T™\Ù[HXÛÙY˜XÚÙ\”İ]HOHš[Bˆ]Ø][ÙÜÔ™\Ù[HXÛÙYØ][ÙÜÈOHš[Bˆ]Ù\šXÙ\Ô™\Ù[HXÛÙYÙ\šXÙ\ÈOHš[Bˆ]X[™ØPÛÛXİ[ÛœÔ™\Ù[HXÛÙYX[™ØPÛÛXİ[ÛœÈOHš[Bˆ]X[™ØT™XY[™Ô›ÙÜ™\ÜÔ™\Ù[HXÛÙYX[™ØT™XY[™Ô›ÙÜ™\ÜÈOHš[Bˆ]X[™ØPØ][ÙÜÔ™\Ù[HXÛÙYX[™ØPØ][ÙÜÈOHš[Bˆ]İ\İÛPØ][ÙÜÔ™\Ù[HXÛÙYİ\İÛPØ][ÙÜÈOHš[Bˆ]Ø[™[“[Ù[\Ô™\Ù[HXÛÙYØ[™[“[Ù[\ÈOHš[Bˆ]\Ù\”˜][™ÜÔ™\Ù[HXÛÙY\Ù\”˜][™ÜÈOHš[	‰ˆXÛÙY\Ù\”˜][™Ó›İ\ÈOHš[BƒBˆ˜\ˆ[šY[H˜XÚİ\]JBˆ™\œÚ[Ûˆ™\œÚ[Û‹BˆÜ™X]Y]NˆÜ™X]Y]KBˆXØÙ[ÛÛÜˆXØÙ[ÛÛÜ‹BˆÙ][™ÜÑÜ˜YY[ÛÛÜˆÙ][™ÜÑÜ˜YY[ÛÛÜ‹Bˆ™XY\XØÙ[ÛÛÜˆ™XY\XØÙ[ÛÛÜ‹BˆY“[™İXYÙNˆY“[™İXYÙKBˆÙ[XİY\X\˜[˜ÙNˆÙ[XİY\X\˜[˜ÙKBˆ™XY\”Ù[XİY\X\˜[˜ÙNˆ™XY\”Ù[XİY\X\˜[˜ÙKBˆ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›Yˆ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YBˆ™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆ™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜ‹Bˆ[˜X›TİX]\ĞQY˜][ˆ[˜X›TİX]\ĞQY˜][BˆY˜][İX]S[™İXYÙNˆY˜][İX]S[™İXYÙKBˆ^Y\”İX]P\X\˜[˜ÙQ[˜X›Yˆ^Y\”İX]P\X\˜[˜ÙQ[˜X›YBˆ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙNˆ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙKBˆ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙNˆ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙKBˆ[\^Y\ˆ[\^Y\‹BˆÚİÔØÚY[UXˆÚİÔØÚY[UX‹BˆÚİÓØØ[ØÚY[U[YNˆÚİÓØØ[ØÚY[U[YKBˆY˜][ØÚY[S[ÙNˆY˜][ØÚY[S[ÙKBˆØÚY[UÚ[™İÑ^\ÎˆØÚY[UÚ[™İÑ^\ËBˆØØ[›İYšXØ][Û”İXœØÜš\[ÛœÎˆØØ[›İYšXØ][Û”İXœØÜš\[ÛœËBˆØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÎˆØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œËBˆØØ[›İYšXØ][Û‘\\ÛÙSXY[YNˆØØ[›İYšXØ][Û‘\\ÛÙSXY[YKBˆØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YNˆØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YKBˆØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÎˆØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ËBˆY˜][^X˜XÚÔÜYYˆY˜][^X˜XÚÔÜYYBˆÛÜYY^Y\ˆÛÜYY^Y\‹Bˆ^\›˜[^Y\ˆ^\›˜[^Y\‹Bˆ™Y™\‘İÛ›ØYYYYXNˆ™Y™\‘İÛ›ØYYYYXKBˆ[Ø^\Ó[™ØØ\Nˆ[Ø^\Ó[™ØØ\KBˆ^Y\”^X˜XÚÓØÚÑ[˜X›Yˆ^Y\”^X˜XÚÓØÚÑ[˜X›YBˆ[šTÚÚ\[˜X›Yˆ[šTÚÚ\[˜X›YBˆ[›Ñ‘[˜X›Yˆ[›Ñ‘[˜X›YBˆ[›Ñ\[˜X›Yˆ[›Ñ\[˜X›YBˆ[šTÚÚ\]]ÔÚÚ\ˆ[šTÚÚ\]]ÔÚÚ\BˆÚÚ\\Ñ[˜X›YˆÚÚ\\Ñ[˜X›YBˆÚÚ\\Ğ[Ø^\Õš\ÚX›NˆÚÚ\\Ğ[Ø^\Õš\ÚX›KBˆÚİÓ™^\\ÛÙP]ÛˆÚİÓ™^\\ÛÙP]Û‹BˆÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆÚİÑ\\ÛÙPœ›İÜÙ\]Û‹BˆÚİÔ^Y\”Ù\šXÙ\Ğ]ÛˆÚİÔ^Y\”Ù\šXÙ\Ğ]Û‹BˆÚİÓ™^\\ÛÙTÜİ\]ÛˆÚİÓ™^\\ÛÙTÜİ\]Û‹Bˆ™^\\ÛÙU™\ÚÛˆ™^\\ÛÙU™\ÚÛBˆ™^\\ÛÙTÚÚ\š[\‘[˜X›Yˆ™^\\ÛÙTÚÚ\š[\‘[˜X›YBˆ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›Yˆ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YBˆ^Y\•›Û[YQÙ\İ\™Q[˜X›Yˆ^Y\•›Û[YQÙ\İ\™Q[˜X›YBˆ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›Yˆ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YBˆ^Y\Ù[\•\^T]\ÙQ[˜X›Yˆ^Y\Ù[\•\^T]\ÙQ[˜X›YBˆ^Y\‘İX›U\ÙYZÑ[˜X›Yˆ^Y\‘İX›U\ÙYZÑ[˜X›YBˆ^Y\‘İX›U\ÙYZÔÙXÛÛ™Îˆ^Y\‘İX›U\ÙYZÔÙXÛÛ™ËBˆ^Y\“Ü[”İX]\Ñ[˜X›Yˆ^Y\“Ü[”İX]\Ñ[˜X›YBˆ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›Yˆ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YBˆ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›Yˆ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›YBˆ\‘›Ü™YÜ›İ[™”Îˆ\‘›Ü™YÜ›İ[™”ËBˆ\”™[™\˜XÚÙ[™ˆ\”™[™\˜XÚÙ[™Bˆ\“Y][]X[]T›Ùš[Nˆ\“Y][]X[]T›Ùš[KBˆ\•\ØØ[[™Ó[ÙNˆ\•\ØØ[[™Ó[ÙKBˆ\“™]\˜[\ØØ[\ˆ\“™]\˜[\ØØ[\‹Bˆ\“™]\˜[\ØØ[\•ˆ\“™]\˜[\ØØ[\•‹Bˆ\”^Y\”ÚÚ[ˆ\”^Y\”ÚÚ[‹Bˆ\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜˆ\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜ‹Bˆ\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜˆ\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜ‹Bˆ\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›Yˆ\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›YBˆ\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›Nˆ\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›KBˆ\”Xİ\™R[”Xİ\™Q[˜X›Yˆ\”Xİ\™R[”Xİ\™Q[˜X›YBˆ\\^]Xİ\™R[”Xİ\™Q[˜X›Yˆ\\^]Xİ\™R[”Xİ\™Q[˜X›YBˆ\’“[ÙNˆ\’“[ÙKBˆ\”İ\œ›İ[™Ûİ[™[˜X›Yˆ\”İ\œ›İ[™Ûİ[™[˜X›YBˆØ]ÚÙÙ]\‘[˜X›YˆØ]ÚÙÙ]\‘[˜X›YBˆÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YˆÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YBˆ^\š[Y[[™X]\™\Ñ[˜X›Yˆ^\š[Y[[™X]\™\Ñ[˜X›YBˆ^\š[Y[[™X]\™\Ó\İÚ[™ÙY]ˆ^\š[Y[[™X]\™\Ó\İÚ[™ÙY]Bˆ^\š[Y[[T”™[ØY[˜X›Yˆ^\š[Y[[T”™[ØY[˜X›YBˆ^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›Yˆ^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›YBˆ^\š[Y[[T”™[ØYÙ[[\‘[˜X›Yˆ^\š[Y[[T”™[ØYÙ[[\‘[˜X›YBˆ^\š[Y[[T”™[ØYÚYšS[Z]Pˆ^\š[Y[[T”™[ØYÚYšS[Z]P‹Bˆ^\š[Y[[T”™[ØYÙ[[\“[Z]Pˆ^\š[Y[[T”™[ØYÙ[[\“[Z]P‹Bˆ^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YNˆ^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YKBˆ^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜÎˆ^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜËBˆ^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\Îˆ^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\ËBˆ^\š[Y[[T”™[ØY]]ĞÛX\ˆ^\š[Y[[T”™[ØY]]ĞÛX\‹Bˆ^\š[Y[[PÛİYŞ[˜Ñ[˜X›Yˆ^\š[Y[[PÛİYŞ[˜Ñ[˜X›YBˆİX]Q›Ü™YÜ›İ[™ÛÛÜˆİX]Q›Ü™YÜ›İ[™ÛÛÜ‹BˆİX]Tİ›ÚÙPÛÛÜˆİX]Tİ›ÚÙPÛÛÜ‹BˆİX]Tİ›ÚÙUÚYˆİX]Tİ›ÚÙUÚYBˆİX]Q›ÛÚ^™NˆİX]Q›ÛÚ^™KBˆİX]U™\XØ[Ù™œÙ]ˆİX]U™\XØ[Ù™œÙ]BˆİX]\Õš\ÚX›NˆİX]\Õš\ÚX›KBˆÚİÒØ[™[ˆÚİÒØ[™[‹BˆYTÜ\ÚØÜ™Y[ˆYTÜ\ÚØÜ™Y[‹Bˆ[ÙTİÚ]Ú[š[X][Û‘[˜X›Yˆ[ÙTİÚ]Ú[š[X][Û‘[˜X›YBˆØ[™[]]Õ\]S[Ù[\ÎˆØ[™[]]Õ\]S[Ù[\ËBˆÙX\ÛÛ“Y[NˆÙX\ÛÛ“Y[KBˆÜš^›Û[\\ÛÙS\İˆÜš^›Û[\\ÛÙS\İBˆYYXQ]Z[]P\ÛÜšÑ[˜X›YˆYYXQ]Z[]P\ÛÜšÑ[˜X›YBˆYYXQ]Z[[\›˜]TÜİ\‘[˜X›YˆYYXQ]Z[[\›˜]TÜİ\‘[˜X›YBˆYYXQ]Z[Ú[Z[\•]\Ñ[˜X›YˆYYXQ]Z[Ú[Z[\•]\Ñ[˜X›YBˆ\ÙPÛ\ÜÚXÔØÚY[URNˆ\ÙPÛ\ÜÚXÔØÚY[URKBˆ\›Ğ˜[›™\Ø][ÙÒYˆ\›Ğ˜[›™\Ø][ÙÒYBˆ\›Ğ˜[›™\™Z]š[Üˆ\›Ğ˜[›™\™Z]š[Ü‹BˆÛYPØ][ÙÓ^[İ]İ™\œšY\ÎˆÛYPØ][ÙÓ^[İ]İ™\œšY\ËBˆÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YˆÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YBˆÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]NˆÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]KBˆÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]NˆÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]KBˆ\\™›Ü›X[˜ÙSİ™\›^Q[˜X›Yˆ\\™›Ü›X[˜ÙSİ™\›^Q[˜X›YBˆ^\š[Y[[YYXQ\ÚYÛ”™\Ù]ˆ^\š[Y[[YYXQ\ÚYÛ”™\Ù]Bˆ^\š[Y[[\›Ğ›YY]™[ˆ^\š[Y[[\›Ğ›YY]™[Bˆ^\š[Y[[ÛYPØ\™Ú\Nˆ^\š[Y[[ÛYPØ\™Ú\KBˆ^\š[Y[[][QÜ˜YY[[]Nˆ^\š[Y[[][QÜ˜YY[[]KBˆ^\š[Y[[\›ÒZYÚØØ[Nˆ^\š[Y[[\›ÒZYÚØØ[KBˆ^\š[Y[[\›Ğ›YYİ™[™İˆ^\š[Y[[\›Ğ›YYİ™[™İBˆ^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[Nˆ^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[KBˆ^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[Nˆ^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[KBˆ^\š[Y[[Ø\™˜Y]\ÔØØ[Nˆ^\š[Y[[Ø\™˜Y]\ÔØØ[KBˆ^\š[Y[[YYXPØ\™ØØ[Nˆ^\š[Y[[YYXPØ\™ØØ[KBˆ^\š[Y[[Û\ÜÔİ™[™İˆ^\š[Y[[Û\ÜÔİ™[™İBˆ^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÎˆ^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜËBˆ^\š[Y[[Ü˜YY[XØÙ[[[œÚ]Nˆ^\š[Y[[Ü˜YY[XØÙ[[[œÚ]KBˆ^\š[Y[[Ü˜YY[ØÜ›Û[İ[Ûˆ^\š[Y[[Ü˜YY[ØÜ›Û[İ[Û‹Bˆ^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœÎˆ^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœËBˆ^\š[Y[[Ü˜YY[ÛÛÜNˆ^\š[Y[[Ü˜YY[ÛÛÜKBˆ^\š[Y[[Ü˜YY[ÛÛÜˆ^\š[Y[[Ü˜YY[ÛÛÜ‹Bˆ^\š[Y[[Ü˜YY[ÛÛÜÎˆ^\š[Y[[Ü˜YY[ÛÛÜËBˆ][ÜÜ\™Tİ[Nˆ][ÜÜ\™Tİ[KBˆ][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙNˆ][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙKBˆ][ÜÜ\™TÛÛYÛÛÜˆ][ÜÜ\™TÛÛYÛÛÜ‹Bˆ™XY\][ÜÜ\™Tİ[Nˆ™XY\][ÜÜ\™Tİ[KBˆ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙNˆ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙKBˆ™XY\][ÜÜ\™TÛÛYÛÛÜˆ™XY\][ÜÜ\™TÛÛYÛÛÜ‹BˆYYXQ]Z[[[Y[Ü™\ˆYYXQ]Z[[[Y[Ü™\‹BˆYYXQ]Z[Y[‘[[Y[ÎˆYYXQ]Z[Y[‘[[Y[ËBˆ™XY\‘]Z[[[Y[Ü™\ˆ™XY\‘]Z[[[Y[Ü™\‹Bˆ™XY\‘]Z[Y[‘[[Y[Îˆ™XY\‘]Z[Y[‘[[Y[ËBˆYYXPÛÛ[[œÔÜ˜Z]ˆYYXPÛÛ[[œÔÜ˜Z]BˆYYXPÛÛ[[œÓ[™ØØ\NˆYYXPÛÛ[[œÓ[™ØØ\KBˆ™XY[™Ó[ÙNˆ™XY[™Ó[ÙKBˆØ[™[”™XY\“[ÙNˆØ[™[”™XY\“[ÙKBˆØ[™[”™XY\“[ÙSİ™\œšY\ÎˆØ[™[”™XY\“[ÙSİ™\œšY\ËBˆ™XY\‘İÛœØ[\R[XYÙ\Îˆ™XY\‘İÛœØ[\R[XYÙ\ËBˆ™XY\Ü›Ü›Ü™\œÎˆ™XY\Ü›Ü›Ü™\œËBˆ™XY\‘\ØX›T]ZXÚĞXİ[ÛœÎˆ™XY\‘\ØX›T]ZXÚĞXİ[ÛœËBˆ™XY\‘\ØX›QİX›U\ˆ™XY\‘\ØX›QİX›U\Bˆ™XY\“]™U^ˆ™XY\“]™U^Bˆ™XY\’YP˜\œÓÛ”İÚ\Nˆ™XY\’YP˜\œÓÛ”İÚ\KBˆ™XY\˜XÚÙÜ›İ[™ÛÛÜˆ™XY\˜XÚÙÜ›İ[™ÛÛÜ‹Bˆ™XY\“ÜšY[][Ûˆ™XY\“ÜšY[][Û‹Bˆ™XY\•\›Û™\Îˆ™XY\•\›Û™\ËBˆ™XY\’[™\\›Û™\Îˆ™XY\’[™\\›Û™\ËBˆ™XY\[š[X]TYÙU˜[œÚ][ÛœÎˆ™XY\[š[X]TYÙU˜[œÚ][ÛœËBˆ™XY\•\ØØ[R[XYÙ\Îˆ™XY\•\ØØ[R[XYÙ\ËBˆ™XY\•\ØØ[SX^ZYÚˆ™XY\•\ØØ[SX^ZYÚBˆ™XY\•\ØØ[S[Ù[˜[YNˆ™XY\•\ØØ[S[Ù[˜[YKBˆ™XY\”YÙ\ÕÔ™[ØYˆ™XY\”YÙ\ÕÔ™[ØYBˆ™XY\”YÙYYÙS^[İ]ˆ™XY\”YÙYYÙS^[İ]Bˆ™XY\”YÙYYÙSÙ™œÙ]ˆ™XY\”YÙYYÙSÙ™œÙ]Bˆ™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\Îˆ™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ËBˆ™XY\”Ü]ÚYR[XYÙ\Îˆ™XY\”Ü]ÚYR[XYÙ\ËBˆ™XY\”™]™\œÙTÜ]Ü™\ˆ™XY\”™]™\œÙTÜ]Ü™\‹Bˆ™XY\•™\XØ[[™š[š]TØÜ›Ûˆ™XY\•™\XØ[[™š[š]TØÜ›ÛBˆ™XY\”[\˜›Şˆ™XY\”[\˜›ŞBˆ™XY\”[\˜›Ş[[İ[ˆ™XY\”[\˜›Ş[[İ[Bˆ™XY\”[\˜›ŞÜšY[][Ûˆ™XY\”[\˜›ŞÜšY[][Û‹Bˆ™XY\“ÜšY[][Û“ØÚÑ[˜X›Yˆ™XY\“ÜšY[][Û“ØÚÑ[˜X›YBˆ™XY\“ÜšY[][Û“ØÚÓX\ÚÎˆ™XY\“ÜšY[][Û“ØÚÓX\ÚËBˆ™XY\”™XY™\ÚÛ\˜Ù[ˆ™XY\”™XY™\ÚÛ\˜Ù[Bˆ™XY\‘›ÛÚ^™Nˆ™XY\‘›ÛÚ^™KBˆ™XY\‘›Û˜[Z[Nˆ™XY\‘›Û˜[Z[KBˆ™XY\‘›ÛÙZYÚˆ™XY\‘›ÛÙZYÚBˆ™XY\ÛÛÜ”™\Ù]ˆ™XY\ÛÛÜ”™\Ù]Bˆ™XY\•^[YÛ›Y[ˆ™XY\•^[YÛ›Y[Bˆ™XY\“[™TÜXÚ[™Îˆ™XY\“[™TÜXÚ[™ËBˆ™XY\“X\™Ú[ˆ™XY\“X\™Ú[‹Bˆ]]ĞÛX\ØXÚQ[˜X›Yˆ]]ĞÛX\ØXÚQ[˜X›YBˆ]]ĞÛX\ØXÚU™\ÚÛPˆ]]ĞÛX\ØXÚU™\ÚÛP‹BˆYÚ]X[]U™\ÚÛˆYÚ]X[]U™\ÚÛBˆ˜XÚÙÜ›İ[™Ô\[[™Q[˜X›Yˆ˜XÚÙÜ›İ[™Ô\[[™Q[˜X›YBˆ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›Yˆ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YBˆ™XY\‘İÛ›ØYÕÚYšSÛ›Nˆ™XY\‘İÛ›ØYÕÚYšSÛ›KBˆ™XY\‘İÛ›ØYÔ\˜[[[Z]ˆ™XY\‘İÛ›ØYÔ\˜[[[Z]Bˆ]]Õ\]TÙ\šXÙ\Ñ[˜X›Yˆ]]Õ\]TÙ\šXÙ\Ñ[˜X›YBˆÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›YˆÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›YBˆÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YˆÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YBˆÙ\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›YˆÙ\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›YBˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÎˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYËBˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÎˆÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YËBˆÙ\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙNˆÙ\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙKBˆÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]NˆÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]KBˆÙ\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ÎˆÙ\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ËBˆÙ\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›YˆÙ\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›YBˆÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ÎˆÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ËBˆÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\ÎˆÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\ËBˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]NˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]KBˆÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ÎˆÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ËBˆÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚˆÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚBˆÙ\šXÙ\ÒY[”İ™X[T]X[]Y\ÎˆÙ\šXÙ\ÒY[”İ™X[T]X[]Y\ËBˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]NˆÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]KBˆÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÎˆÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYËBˆÚ]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YˆÚ]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YBˆÚ]X”™[X\ÙU\]P]˜Z[X›NˆÚ]X”™[X\ÙU\]P]˜Z[X›KBˆÚ]X”™[X\ÙS]\İ™\œÚ[ÛˆÚ]X”™[X\ÙS]\İ™\œÚ[Û‹BˆÚ]X”™[X\ÙUT“ˆÚ]X”™[X\ÙUT“BˆÚ]X”™[X\ÙTÚİĞ[\[™[™ÎˆÚ]X”™[X\ÙTÚİĞ[\[™[™ËBˆÚ]X”™[X\ÙS\İ›Û\Y™\œÚ[ÛˆÚ]X”™[X\ÙS\İ›Û\Y™\œÚ[Û‹Bˆš[\’Üœ›ÜÛÛ[ˆš[\’Üœ›ÜÛÛ[BˆÙ[XİYÚ[Z[\š]P[ÛÜš]NˆÙ[XİYÚ[Z[\š]P[ÛÜš]KBˆ\™›Ü›X[˜ÙS[ÙQ[˜X›Yˆ\™›Ü›X[˜ÙS[ÙQ[˜X›YBˆ\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[Îˆ\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[ËBˆ\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\Îˆ\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\ËBˆØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQˆØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQBˆØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ÎˆØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ËBˆÛÛXİ[ÛœÎˆÛÛXİ[ÛœËBˆ›ÙÜ™\ÜÑ]Nˆ›ÙÜ™\ÜÑ]KBˆ˜XÚÙ\”İ]Nˆ˜XÚÙ\”İ]KBˆØ][ÙÜÎˆØ][ÙÜËBˆÙ\šXÙ\ÎˆÙ\šXÙ\ËBˆİ™[Z[ĞYÛœÎˆİ™[Z[ĞYÛœËBˆÚŞTİ™X[NˆÚŞTİ™X[KBˆ]š[ÔYÚ[œÎˆ]š[ÔYÚ[œËBˆX[™ØPÛÛXİ[ÛœÎˆX[™ØPÛÛXİ[ÛœËBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÎˆX[™ØT™XY[™Ô›ÙÜ™\ÜËBˆX[™ØPØ][ÙÜÎˆX[™ØPØ][ÙÜËBˆİ\İÛPØ][ÙÜÎˆİ\İÛPØ][ÙÜËBˆØ[™[“[Ù[\ÎˆØ[™[“[Ù[\ËBˆ™XY\‘^[œÚ[ÛœÔİ]Nˆ™XY\‘^[œÚ[ÛœÔİ]KBˆZYÚİTİ]NˆZYÚİTİ]KBˆÙX\˜Ú\İÜNˆÙX\˜Ú\İÜKBˆ™XÛÛ[Y[™][ÛØXÚNˆ™XÛÛ[Y[™][ÛØXÚKBˆ\Ù\”˜][™ÜÎˆ\Ù\”˜][™ÜËBˆ\Ù\”˜][™Ó›İ\Îˆ\Ù\”˜][™Ó›İ\ËBˆYYXTİ]TÙ][™ÜÎˆYYXTİ]TÙ][™ÜËBˆÛÛXİ[ÛœÔ™\Ù[ˆÛÛXİ[ÛœÔ™\Ù[Bˆ›ÙÜ™\ÜÑ]T™\Ù[ˆ›ÙÜ™\ÜÑ]T™\Ù[Bˆ˜XÚÙ\”İ]T™\Ù[ˆ˜XÚÙ\”İ]T™\Ù[BˆØ][ÙÜÔ™\Ù[ˆØ][ÙÜÔ™\Ù[BˆÙ\šXÙ\Ô™\Ù[ˆÙ\šXÙ\Ô™\Ù[BˆX[™ØPÛÛXİ[ÛœÔ™\Ù[ˆX[™ØPÛÛXİ[ÛœÔ™\Ù[BˆX[™ØT™XY[™Ô›ÙÜ™\ÜÔ™\Ù[ˆX[™ØT™XY[™Ô›ÙÜ™\ÜÔ™\Ù[BˆX[™ØPØ][ÙÜÔ™\Ù[ˆX[™ØPØ][ÙÜÔ™\Ù[Bˆİ\İÛPØ][ÙÜÔ™\Ù[ˆİ\İÛPØ][ÙÜÔ™\Ù[BˆØ[™[“[Ù[\Ô™\Ù[ˆØ[™[“[Ù[\Ô™\Ù[Bˆ\Ù\”˜][™ÜÔ™\Ù[ˆ\Ù\”˜][™ÜÔ™\Ù[Bˆ
+CBƒBˆYˆ]›Ùš[\Ò”ÓÓˆHœÛÛ–Èœ›Ùš[\È—KJ›Ùš[\Ò”ÓÓˆ\È”Ó[
+HÃBˆİX\™]XÛÙY›Ùš[\ÈHXÛÙP˜XÚİ\”ÓÓ•˜[YJBˆĞ˜XÚİ\›Ùš[TÛ˜\ÚİKœÙ[‹Bˆœ›ÛNˆ›Ùš[\Ò”ÓÓ‹Bˆ\Ú[™Îˆ[šY[XÛÙ\ƒBˆ
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“[šY[XÛÙH™Y\ÙY[ˆ[œ™XYX›H›Ùš[H›Üİ\ˆ‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆš[BˆCBˆ[šY[œ›Ùš[\ÈHXÛÙY›Ùš[\ÃBˆH[ÙHYˆœÛÛ–Èœ›Ùš[\È—H\È”Ó[ÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ“[šY[XÛÙH›İ[™H[›Ùš[H›Üİ\ÈÛ›H[™\[™[H]]Üš]]]™HÜ[]™[ÛXZ[œÈØ[ˆ™\İÜ™H‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆCBˆ[šY[˜Xİ]™T›Ùš[RQH
+œÛÛ–È˜Xİ]™T›Ùš[RQ—H\ÏÈİš[™ÊK™›]X\
+URQš[š]
+]ZYİš[™ÎŠJCBƒBˆ[šY[œÚ\™\ÔÙ\šXÙ\ÈHœÛÛ–ÈœÚ\™\ÔÙ\šXÙ\È—H\ÏÈ›ÛÛBˆYˆ]Ù\šXÙ\Ò”ÓÓˆHœÛÛ–ÈœÙ\šXÙ\ÔÙ][™ÜÈ—KBˆ]Ù\šXÙ\Ñ]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™XİˆÙ\šXÙ\Ò”ÓÓŠKBˆ]XÛÙYÙ\šXÙ\ÈHOÈ[šY[XÛÙ\‹™XÛÙJÔİš[™Îˆ]WKœÙ[‹œ›ÛNˆÙ\šXÙ\Ñ]JHÃBˆ[šY[œÙ\šXÙ\ÔÙ][™ÜÈHXÛÙYÙ\šXÙ\ÃBˆCBƒBˆYˆ]^[ØYÒ”ÓÓˆHœÛÛ–ÈœÚŞTİ™X[TÚ\™Y^[ØYÈ—KBˆ]^[ØYÑ]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™Xİˆ^[ØYÒ”ÓÓŠKBˆ]XÛÙYHOÈ[šY[XÛÙ\‹™XÛÙJĞ˜XÚİ\ÚŞTİ™X[TÚ\™Y^[ØYKœÙ[‹œ›ÛNˆ^[ØYÑ]JHÃBˆ[šY[œÚŞTİ™X[TÚ\™Y^[ØYÈHXÛÙYBˆCBˆYˆ]^[ØYÒ”ÓÓˆHœÛÛ–È›]š[ÔÚ\™Y^[ØYÈ—KBˆ]^[ØYÑ]HHOÈ”ÓÓ”Ù\šX[^˜][Û‹™]JÚ]”ÓÓ“Øš™Xİˆ^[ØYÒ”ÓÓŠKBˆ]XÛÙYHOÈ[šY[XÛÙ\‹™XÛÙJĞ˜XÚİ\]š[ÔÚ\™Y^[ØYKœÙ[‹œ›ÛNˆ^[ØYÑ]JHÃBˆ[šY[›]š[ÔÚ\™Y^[ØYÈHXÛÙYBˆCBˆ[šY[˜[Ü]™[Ù][™ÜÕÙ\™PØ\\™YH˜[ÙCBˆ]XÛÙYÙ][™ÒÙ^\ÈH˜XÚİ\]K™XÛÙYÜ]™[Ù][™ÒÙ^\ÊBˆœ›ÛR”ÓÓ“Øš™XİˆœÛÛƒBˆ
+CBˆYˆœÛÛ‹šÙ^\Ë˜ÛÛZ[œÊÜ]™[Ù][™ÒÙ^\ÈŠHÃBˆ[šY[™XÛÙYÜ]™[Ù][™ÒÙ^\ÈHXÛÙYÙ][™ÒÙ^\Ëš[\œÙXİ[ÛŠBˆ˜XÚİ\]KœØ[š]^™YXÛ\™YÜ]™[Ù][™ÒÙ^\ÊBˆœÛÛ–ÈÜ]™[Ù][™ÒÙ^\È—H\ÏÈÔİš[™×CBˆ
+CBˆ
+CBˆH[ÙHÃBˆ[šY[™XÛÙYÜ]™[Ù][™ÒÙ^\ÈHXÛÙYÙ][™ÒÙ^\ÃBˆCBˆ™]\›ˆ[šY[BˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™\İÜ™S]š[ÔÛ˜\ÚİY”İ\ÜY
+BˆÈÛ˜\Úİˆ]š[ÔİÜ™YYÚ[œÔİ]OËBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[‹Bˆ™\Ù\š[™Ñ]šXÙSØØ[ÛİYİ]Nˆ›ÛÛH˜[ÙCBˆ
+H\Ş[˜ÈOˆ›ÛÛÃBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]Û˜\Úİ[ÙHÈ™]\›ˆYHCBˆÚYˆÜÊSÔÊH	‰ˆ]\™Ù][š\›Û›Y[
+XXĞØ][\İ
+CBˆİX\™]›Ü›PØ\Xš[]Y\Ë˜İ\œ™[œİ\ÜÓ]š[ÔYÚ[œÈ[ÙHÈ™]\›ˆYHCBˆ]X[˜YÙ\ˆH]š[ÔYÚ[“X[˜YÙ\‹œÚ\™YBˆX[˜YÙ\‹›ØY
+
+CBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]İ]UÔ™\İÜ™Nˆ]š[ÔİÜ™YYÚ[œÔİ]CBˆYˆ™\Ù\š[™Ñ]šXÙSØØ[ÛİYİ]HÃBˆİ]UÔ™\İÜ™HH˜XÚİ\]K›]š[Ô™\İÜ™T[‘›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆ[˜ÛÛZ[™ÎˆÛ˜\ÚİBˆİ\œ™[ˆX[˜YÙ\‹˜˜XÚİ\İ]J
+HÏÈ]š[ÔİÜ™YYÚ[œÔİ]J
+CBˆ
+Kœİ]CBˆH[ÙHÃBˆİ]UÔ™\İÜ™HHÛ˜\ÚİBˆCBˆ]™\İ[H]ØZ]X[˜YÙ\‹œ™\İÜ™P˜XÚİ\İ]JBˆİ]UÔ™\İÜ™KBˆ^XİYØÛÜQÙ[™\˜][Ûˆ^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛƒBˆ
+CBˆİX\™™\İ[œ™\İÜ™UØ\Ô\œÚ\İY\™\İ[Ø\Ò[\œ\Y[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[™YƒBˆ™]\›ˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆ	‰ˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠCBˆ	‰ˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][ÛƒBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™\İÜ™TÚŞTİ™X[TÛ˜\Úİ[™ØZ]Y”İ\ÜY
+BˆÈÛ˜\ÚİˆÚŞTİ™X[P˜XÚİ\Û˜\ÚİËBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆ
+H\Ş[˜ÈOˆ›ÛÛÃBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆİX\™]Û˜\Úİ[ÙHÈ™]\›ˆYHCBƒBˆÚYˆÜÊSÔÊH	‰ˆ]\™Ù][š\›Û›Y[
+XXĞØ][\İ
+CBˆYˆT]›Ü›PØ\Xš[]Y\Ë˜İ\œ™[œİ\ÜÔÚŞTİ™X[TYÚ[œÈÃBˆÈÃBƒBˆH\œÚ\İÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+Û˜\Úİ
+CBˆ™]\›ˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆ	‰ˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠCBˆ	‰ˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][ÛƒBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘˜Z[YÈ™\Ù\™H\ØX›YÚŞTİ™X[H™\İÜ™H\œ›Ü•\OW
+İš[™Ê™Y›Xİ[™Îˆ\JÙˆ\œ›ÜŠJJH‹Bˆ\NˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÈÛİYŞ[˜Èˆˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆCBˆ]ØY™TÛ˜\ÚİHÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİBˆÈ˜XÚİ\]KœÚŞTİ™X[TÛ˜\Úİ›Ü‘^\š[Y[[ÛİYŞ[˜ÊÛ˜\Úİ
+CBˆˆš[BˆYˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİØY™TÛ˜\ÚİOHš[ÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ”™Y\ÙY[˜[YØY™HÚŞTİ™X[H˜XÚİ\Y]Y]H‹\NˆÛİYŞ[˜ÈŠCBˆ™]\›ˆ˜[ÙCBˆCBƒBˆ]X[˜YÙ\ˆHÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™YBˆ]ØZ]X[˜YÙ\‹œ™[ØY\œÚ\İYİ]PY\”™\İÜ™J
+CBˆİX\™X[˜YÙ\‹š\ÓØYYU\ÚËš\ĞØ[˜Ù[YBˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ]ÛÛ^HÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÈ˜ÛİYY]Y]HY\™ÙHˆˆ›X[X[™\İÜ™HƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”ÚŞTİ™X[H
+ÛÛ^
+HÚÚ\Y™XØ]\ÙHHYÚ[ˆX[˜YÙ\ˆY›İš[š\ÚØY[™È‹Bˆ\NˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÈÛİYŞ[˜Èˆˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÈÃBˆYˆ]ØY™TÛ˜\ÚİÃBˆ]™\İ[HH]ØZ]X[˜YÙ\‹œ™\İÜ™TØY™PÛİYÛ˜\Úİ
+ØY™TÛ˜\Úİ
+CBˆYˆ™\İ[š\ĞÛÛ\]HÃBˆÛX\YÜYÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+\ÔØY™PÛİYÛ˜\ÚİˆYJCBˆÙÙÙ\‹œÚ\™Y›ÙÊ”ØY™HÚŞTİ™X[HÛİYY]Y]HY\™ÙY‹\NˆÛİYŞ[˜ÈŠCBˆH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”ØY™HÚŞTİ™X[HÛİYY]Y]H\X[HY\™ÙY[œ™\ÛÛ™YÛİ[W
+™\İ[[œ™\ÛÛ™YXÚØYÙRQË˜Ûİ[
+H‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆCBˆH[ÙHÃBˆH]ØZ]X[˜YÙ\‹œ™\İÜ™SX[X[˜XÚİ\Û˜\Úİ
+Û˜\Úİ
+CBˆÛX\YÜYÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+\ÔØY™PÛİYÛ˜\Úİˆ˜[ÙJCBˆÙÙÙ\‹œÚ\™Y›ÙÊ]]Üš]]]™HÚŞTİ™X[HX[X[˜XÚİ\™\İÜ™Y‹\Nˆ’[™›ÈŠCBˆCBˆ™]\›ˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆ	‰ˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠCBˆ	‰ˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][ÛƒBˆHØ]ÚÃBˆ]ÛÛ^HÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÈ˜ÛİYY]Y]HY\™ÙHˆˆ›X[X[™\İÜ™HƒBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘˜Z[YÚŞTİ™X[H
+ÛÛ^
+H\œ›Ü•\OW
+İš[™Ê™Y›Xİ[™Îˆ\JÙˆ\œ›ÜŠJJH‹Bˆ\NˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÈÛİYŞ[˜Èˆˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[ÙCBˆÈÃBƒBˆH\œÚ\İÜ\]YTÚŞTİ™X[TÛ˜\Úİ
+Û˜\Úİ
+CBˆ™]\›ˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆ	‰ˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠCBˆ	‰ˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][ÛƒBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ‘˜Z[YÈ™\Ù\™HÜ\]YHÚŞTİ™X[H˜XÚİ\\œ›Ü•\OW
+İš[™Ê™Y›Xİ[™Îˆ\JÙˆ\œ›ÜŠJJH‹Bˆ\NˆÛ˜\Úİš\ÔØY™PÛİYÛ˜\ÚİÈÛİYŞ[˜Èˆˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[™YƒBˆCBƒBˆš]˜]H[˜È™\Z\Xİ]™T›Ùš[TÚŞTİ™X[Tİ]RY“™YYY
+BˆÈ˜XÚİ\ˆ˜XÚİ\]KBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆ
+H\Ş[˜ÈÃBˆİX\™T›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\È[ÙHÈ™]\›ˆCBƒBˆİX\™Xİ]™T›Ùš[TØÛÜR\Ğİ\œ™[
+^XİYØÛÜK[˜ÛY[™Ô›Üİ\ˆ˜[ÙJH[ÙHÈ™]\›ˆCBˆ]Xİ]™T›Ùš[RQH^XİYØÛÜKœ›Ùš[RQBˆİX\™]İÛ™\ˆH˜XÚİ\˜Xİ]™T›Ùš[RQİÛ™\ˆOHXİ]™T›Ùš[RQ[ÙHÈ™]\›ˆCBˆİX\™]İ]Q]HH˜XÚİ\œ›Ùš[\ÏÃBˆ™š\œİ
+Ú\™NˆÈ	šYOHXİ]™T›Ùš[RQJOÃBˆœÚŞTİ™X[Tİ]Q]H[ÙHÈ™]\›ˆCBˆÈÃBˆH]ØZ]Ù\šXÙTİÜ™KœÚ\™YœØ]™TÚŞTİ™X[Tİ]Q]JBˆİ]Q]KBˆ^XİYØÛÜQÙ[™\˜][Ûˆ^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛƒBˆ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆÛİ[›İ™\İÜ™HHXİ]™H›Ùš[IÜÈİÛˆÚŞTİ™X[Hİ]HY\ˆ[ˆİÛ™\‹[Z\ÛX]ÚY™\İÜ™Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ƒBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ\YYHXİ]™H›Ùš[IÜÈİÛˆÚŞTİ™X[Hİ]Hİ™\ˆHÜ[]™[İÛ™\‰ÜÈ
+
+İÛ™\ŠJH‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBƒBˆš]˜]H[˜È\Y\ÕÜ]™[Ûİ\˜ÙQ]JÈ˜XÚİ\ˆ˜XÚİ\]KXİ]™T›Ùš[RQˆURQ
+HOˆ›ÛÛÃBˆYˆ˜XÚİ\œÚ\™\ÔÙ\šXÙ\ÈÏÈ›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÈÈ™]\›ˆYHCBƒBˆİX\™İ\œ™[›Ùš[T›Üİ\’\Ô™XYX›J
+H[ÙHÈ™]\›ˆ˜[ÙHCBˆİX\™]İÛ™\ˆH˜XÚİ\˜Xİ]™T›Ùš[RQ[ÙHÈ™]\›ˆYHCBˆ™]\›ˆİÛ™\ˆOHXİ]™T›Ùš[RQBˆCBƒBˆš]˜]H[˜Èİ\œ™[Xİ]™T›Ùš[RQ
+
+HOˆURQÃBˆ˜\ˆYH›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQBˆ\™›Ü›SÛ“XZ[•™XYÃBˆYH›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆCBˆ™]\›ˆYBˆCBƒBˆš]˜]H[˜Èİ\œ™[›Ùš[T›Üİ\’\Ô™XYX›J
+HOˆ›ÛÛÃBˆ˜\ˆ\Ô™XYX›HH˜[ÙCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ\Ô™XYX›HH›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\”İÜ™R\Ô™XYX›CBˆCBˆ™]\›ˆ\Ô™XYX›CBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È\P˜XÚİ\]RY”ØÛÜR\Ğİ\œ™[
+BˆÈ˜XÚİ\ˆ˜XÚİ\]KBˆ™Yœ™\ÚÛİYÛİ\˜Ù\Îˆ›ÛÛH˜[ÙKBˆ™\Ù\š[™ÓYØXŞPÛİYYYXTİ]Nˆ›ÛÛH˜[ÙKBˆ™\Ù\š[™Ñ]šXÙSØØ[™XY\“[Ù[Ù[Xİ[Ûˆ›ÛÛH˜[ÙKBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆ
+HOˆØÛÜY˜XÚİ\\XØ][Û”™\İ[ÈÃBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆX›ÜY™\İÜ™H™XØ]\ÙHHXİ]™H›Ùš[HÚ[™ÙY‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆš[BˆCBˆ]YYXTİ]P]]Üš]HH™\Ù\š[™ÓYØXŞPÛİYYYXTİ]CBˆÈØ\\™SYØXŞPÛİYYYXTİ]P]]Üš]J
+CBˆˆš[Bˆ]\XØ][ÛˆH\P˜XÚİ\]JBˆ˜XÚİ\Bˆ™Yœ™\ÚÛİYÛİ\˜Ù\Îˆ™Yœ™\ÚÛİYÛİ\˜Ù\ËBˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]Nˆ™\Ù\š[™ÓYØXŞPÛİYYYXTİ]KBˆ™\Ù\š[™Ñ]šXÙSØØ[™XY\“[Ù[Ù[Xİ[Ûˆ™\Ù\š[™Ñ]šXÙSØØ[™XY\“[Ù[Ù[Xİ[ÛƒBˆ
+CBˆYˆ]YYXTİ]P]]Üš]HÃBˆ™\İÜ™SYØXŞPÛİYYYXTİ]P]]Üš]JYYXTİ]P]]Üš]JCBˆCBˆİX\™]\XØ][Ûˆ[ÙHÈ™]\›ˆš[CBˆ\™›Ü›SÛ“XZ[•™XYÃBˆÛYPØ][ÙÓ^[İ]İÜ™KœÚ\™Yœ™[ØYœ›ÛTİÜ˜YÙJ
+CBˆXÛ\ÙU[YKœÚ\™Yœ™[ØY›ÜXİ]™T›Ùš[J
+CBˆ[ÛÜš]SX[˜YÙ\‹œÚ\™Yœ™[ØY›ÜXİ]™T›Ùš[J
+CBˆXØÙ[ÛÛÜ“X[˜YÙ\‹œÚ\™Yœ™[ØY›ÜXİ]™T›Ùš[J
+CBˆÙ][™ÜË˜İ\œ™[Ëœ™[ØY›ÜXİ]™T›Ùš[J
+CBˆCBƒBˆ™]\›ˆØÛÜY˜XÚİ\\XØ][Û”™\İ[
+BˆØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ŠBˆ›Ùš[RQˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆÙ\šXÙ\ÑÙ[™\˜][ÛˆÙ\šXÙTİÜ™TØÛÜK™Ù[™\˜][Û‹Bˆ›Üİ\‘Ù[™\˜][Ûˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛƒBˆ
+KBˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆ\XØ][Û‹˜]]Üš]]]™U˜XÚÙ\”›Ùš[RQÃBˆ
+CBˆCBƒBˆš]˜]H[˜È\TÚ\™TÙ\šXÙ\Ó[ÙRY“™YYY
+È˜XÚİ\ˆ˜XÚİ\]JHÃBˆİX\™]Ú\™\ÔÙ\šXÙ\ÈH˜XÚİ\œÚ\™\ÔÙ\šXÙ\ËBˆÚ\™\ÔÙ\šXÙ\ÈOH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\È[ÙHÈ™]\›ˆCBˆ›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÈHÚ\™\ÔÙ\šXÙ\ÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆÙ\šXÙTİÜ™TØÛÜK˜Xİ]™T›Ùš[QYÚ[™ÙJ
+CBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ\YYH˜XÚİ\	ÜÈÚ\™HÙ\šXÙ\È[ÙH
+
+Ú\™\ÔÙ\šXÙ\ÊJH™Y›Ü™H™\İÜš[™ÈÛİ\˜Ù\È‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™YÚ[”Ú\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠBˆ›Üˆ˜XÚİ\ˆ˜XÚİ\]KBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[ƒBˆ
+H›İÜÈOˆÚ\™TÙ\šXÙ\Ô™\İÜ™Tİ\ÃBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ›İÈ˜XÚİ\™\İÜ™Q\œ›Ü‹˜Xİ]™T›Ùš[PÚ[™ÙYBˆCBˆ]™]š[İ\Õ˜[YHH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÃBˆ]™\]Y\İY˜[YHH˜XÚİ\œÚ\™\ÔÙ\šXÙ\ÈÏÈ™]š[İ\Õ˜[YCBˆ]Xİ]™T›Ùš[RQH›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆ]\™Ù]\Ù\ÔÚ\™YY˜][ÈH™\]Y\İY˜[YCBˆXİ]™T›Ùš[RQOH›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQBˆ]\™Ù]İÜ™UT“H\™Ù]\Ù\ÔÚ\™YY˜][ÃBˆÈÙ\šXÙTİÜ™TØÛÜKœÚ\™YİÜ™UT“BˆˆÙ\šXÙTİÜ™TØÛÜKœØÛÜYİÜ™UT“
+›Ü”›Ùš[NˆXİ]™T›Ùš[RQ
+CBƒBˆÙ\šXÙTİÜ™TØÛÜKÚ[Ú[™ÙPXİ]™T›Ùš[J
+CBˆ]\™Ù]İÜ™TÛ˜\ÚİHHÙ\šXÙTİÜ™TØÛÜK˜Ø\\™TİÜ™Qš[TÛ˜\Úİ
+Bˆ]ˆ\™Ù]İÜ™UT“BˆØÛÜY˜][›Ùš[RQˆ\™Ù]\Ù\ÔÚ\™YY˜][ÈÈš[ˆXİ]™T›Ùš[RQBˆ
+CBˆ]\™Ù]Ù][™ÜÈHØ\\™TÙ\šXÙ\ÔÙ][™ÜÑ›Ü”›Û˜XÚÊBˆ›Ùš[RQˆXİ]™T›Ùš[RQBˆ\Ù\ÔÚ\™YY˜][Îˆ\™Ù]\Ù\ÔÚ\™YY˜][ÃBˆ
+CBˆ]˜[œØXİ[ÛˆHÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠBˆ™]š[İ\Õ˜[YNˆ™]š[İ\Õ˜[YKBˆ™\]Y\İY˜[YNˆ™\]Y\İY˜[YKBˆXİ]™T›Ùš[RQˆXİ]™T›Ùš[RQBˆ\™Ù]\Ù\ÔÚ\™YY˜][Îˆ\™Ù]\Ù\ÔÚ\™YY˜][ËBˆ\™Ù]İÜ™TÛ˜\Úİˆ\™Ù]İÜ™TÛ˜\ÚİBˆ\™Ù]Ù][™ÜĞ™Y›Ü™U˜[œÚ][Ûˆ\™Ù]Ù][™ÜÃBˆ
+CBƒBˆYˆ˜[œØXİ[Û‹™YİÚ]ÚÃBˆ›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÈH™\]Y\İY˜[YCBˆÙ\šXÙTİÜ™TØÛÜK˜Xİ]™T›Ùš[QYÚ[™ÙJ›İYSØœÙ\™\œÎˆ˜[ÙJCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ\YYH˜XÚİ\	ÜÈÚ\™HÙ\šXÙ\È[ÙH
+
+™\]Y\İY˜[YJJH™Y›Ü™H™\İÜš[™ÈÛİ\˜Ù\È‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBˆ]Üİ˜[œÚ][Û”ØÛÜHHXİ]™T›Ùš[TØÛÜUÚÙ[ŠBˆ›Ùš[RQˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQBˆÙ\šXÙ\ÑÙ[™\˜][ÛˆÙ\šXÙTİÜ™TØÛÜK™Ù[™\˜][Û‹Bˆ›Üİ\‘Ù[™\˜][Ûˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛƒBˆ
+CBˆİX\™˜[œØXİ[Û‹˜Xİ]™T›Ùš[RQOHÜİ˜[œÚ][Û”ØÛÜKœ›Ùš[RQBˆÜİ˜[œÚ][Û”ØÛÜKœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ›İÈ˜XÚİ\™\İÜ™Q\œ›Ü‹˜Xİ]™T›Ùš[PÚ[™ÙYBˆCBˆ™]\›ˆÚ\™TÙ\šXÙ\Ô™\İÜ™Tİ\
+Bˆ˜[œØXİ[Ûˆ˜[œØXİ[Û‹BˆØÛÜNˆÜİ˜[œÚ][Û”ØÛÜCBˆ
+CBˆCBƒBˆš]˜]H[˜ÈØ\\™TÙ\šXÙ\ÔÙ][™ÜÑ›Ü”›Û˜XÚÊBˆ›Ùš[RQˆURQBˆ\Ù\ÔÚ\™YY˜][Îˆ›ÛÛBˆ
+HOˆÔİš[™Îˆ]WHÃBˆ]ÛXZ[“˜[YHH\Ù\ÔÚ\™YY˜][ÃBˆÈ
+[™K›XZ[‹˜[™RY[YšY\ˆÏÈ˜\‘XÛ\ÙHŠCBˆˆ›Ùš[TÙ][™ÜÔİÜ™KœİZ]S˜[YJ›Üˆ›Ùš[RQ
+CBˆ]ÛXZ[ˆH\Ù\‘Y˜][Ëœİ[™\™œ\œÚ\İ[ÛXZ[Š›Ü“˜[YNˆÛXZ[“˜[YJHÏÈÎ—CBˆ™]\›ˆÛXZ[‹œ™YXÙJ[ÎˆÔİš[™Îˆ]WJ
+JHÈ™\İ[[H[ƒBˆİX\™[KšÙ^HOH™XÛ\ÙTÙ\šXÙ\ÔÙ][™ÜÔÙYYYŒHƒBˆXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›Üˆ[KšÙ^JHOHœÙ\šXÙ\ËBˆ]]HHOÈ›Ü\S\İÙ\šX[^˜][Û‹™]JBˆœ›ÛT›Ü\S\İˆ[K˜[YKBˆ›Ü›X]ˆ˜š[˜\KBˆÜ[ÛœÎˆBˆ
+H[ÙHÈ™]\›ˆCBˆ™\İ[Ù[KšÙ^WHH]CBˆCBˆCBƒBˆš]˜]H[˜È™\İÜ™TÙ\šXÙ\ÔÙ][™ÜĞY\‘˜Z[Y˜[œÚ][ÛŠBˆÈ˜[œØXİ[ÛˆÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛƒBˆ
+HÃBˆ]›Ùš[RQH˜[œØXİ[Û‹˜Xİ]™T›Ùš[RQBˆ]İÜ™HH˜[œØXİ[Û‹\™Ù]\Ù\ÔÚ\™YY˜][ÃBˆÈ\Ù\‘Y˜][Ëœİ[™\™Bˆˆ›Ùš[TÙ][™ÜÔİÜ™KœÚ\™YœİÜ™J›Üˆ›Ùš[RQ
+CBˆ]ÛXZ[“˜[YHH˜[œØXİ[Û‹\™Ù]\Ù\ÔÚ\™YY˜][ÃBˆÈ
+[™K›XZ[‹˜[™RY[YšY\ˆÏÈ˜\‘XÛ\ÙHŠCBˆˆ›Ùš[TÙ][™ÜÔİÜ™KœİZ]S˜[YJ›Üˆ›Ùš[RQ
+CBˆ]İ\œ™[ÛXZ[ˆH\Ù\‘Y˜][Ëœİ[™\™œ\œÚ\İ[ÛXZ[Š›Ü“˜[YNˆÛXZ[“˜[YJHÏÈÎ—CBˆ›ÜˆÙ^H[ˆİ\œ™[ÛXZ[‹šÙ^\ÈÚ\™HÙ^HOH™XÛ\ÙTÙ\šXÙ\ÔÙ][™ÜÔÙYYYŒHƒBˆXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHœÙ\šXÙ\ÈÃBˆİÜ™Kœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆÙ^JCBˆCBˆ›Üˆ
+Ù^K]JH[ˆ˜[œØXİ[Û‹\™Ù]Ù][™ÜĞ™Y›Ü™U˜[œÚ][ÛˆÃBˆİX\™]˜[YHHOÈ›Ü\S\İÙ\šX[^˜][Û‹œ›Ü\S\İ
+Bˆœ›ÛNˆ]KBˆÜ[ÛœÎˆ×KBˆ›Ü›X]ˆš[Bˆ
+H[ÙHÈÛÛ[YHCBˆİÜ™KœÙ]
+˜[YK›Ü’Ù^NˆÙ^JCBˆCBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™\İÜ™TÚ\™TÙ\šXÙ\Ó[ÙPY\‘˜Z[Y™\İÜ™JBˆÈ˜[œØXİ[ÛˆÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛƒBˆ
+H\Ş[˜ÈÃBˆYˆ˜[œØXİ[Û‹™YİÚ]ÚÃBˆ›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÈH˜[œØXİ[Û‹œ™]š[İ\Õ˜[YCBˆÙ\šXÙTİÜ™TØÛÜK˜Xİ]™T›Ùš[QYÚ[™ÙJ›İYSØœÙ\™\œÎˆ˜[ÙJCBˆH[ÙHÃBˆÙ\šXÙTİÜ™TØÛÜKÚ[Ú[™ÙPXİ]™T›Ùš[J
+CBˆCBˆYˆ]Û˜\ÚİH˜[œØXİ[Û‹\™Ù]İÜ™TÛ˜\ÚİÃBˆÈÃBˆHÙ\šXÙTİÜ™TØÛÜKœ™\İÜ™TİÜ™Qš[TÛ˜\Úİ
+Û˜\Úİ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ˜Z[YÈ™\İÜ™HH™KX][\Ù\šXÙ\È]X˜\ÙNˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBˆÙ\šXÙTİÜ™TØÛÜK™\ØØ\™İÜ™Qš[TÛ˜\Úİ
+Û˜\Úİ
+CBˆCBˆ™\İÜ™TÙ\šXÙ\ÔÙ][™ÜĞY\‘˜Z[Y˜[œÚ][ÛŠ˜[œØXİ[ÛŠCBˆÈH]ØZ]™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\”™\İÜ™JBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[Š
+KBˆÛ\˜]\Ò[™\™XY\”[[YNˆYCBˆ
+CBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™\İÜ™YÚ\™HÙ\šXÙ\È[ÙH[™ØÛÜYÛİ\˜ÙHİ]HY\ˆH˜Z[Y™\İÜ™H‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBƒBˆš]˜]H[˜ÈÛÛ\]TÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛŠBˆÈ˜[œØXİ[ÛˆÚ\™TÙ\šXÙ\Ô™\İÜ™U˜[œØXİ[ÛƒBˆ
+HÃBˆYˆ]Û˜\ÚİH˜[œØXİ[Û‹\™Ù]İÜ™TÛ˜\ÚİÃBˆÙ\šXÙTİÜ™TØÛÜK™\ØØ\™İÜ™Qš[TÛ˜\Úİ
+Û˜\Úİ
+CBˆCBˆCBƒBˆXZ[XİÜƒBˆ[˜È™\\™T™XY\‘^[œÚ[Û]][XØ][Û‘›ÜXØÛİ[›İ[™\JBˆİ]ÛÚ[™Ô›Ùš[RQÎˆÙ]URQƒBˆ
+HOˆ›ÛÛÃBˆÚYˆÜÊSÔÊCBˆÈÃBˆ]™\İ[HH™XY\‘^[œÚ[Û”›Ùš[P]][XØ][Û“Y™XŞXÛCBˆœ™\\™Q›Ü”›Ùš[TİÜ™Q[][ÛŠBˆ›Ùš[RQÎˆ\œ˜^Jİ]ÛÚ[™Ô›Ùš[RQÊCBˆ
+CBˆYˆ]\œ›ÜˆH™\İ[™š\œİ\œ›ÜˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™XY\ˆ]][XØ][ÛˆÛX[\™[XZ[œÈ\˜X›H[™[™È]HXØÛİ[›İ[™\Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™Y\ÙYÈÛX\ˆ™XY\ˆY]Y]H™XØ]\ÙH]][XØ][ÛˆÛX[\Ûİ[›İ™HÚXÚÜÚ[Yˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[ÙCBˆÈHİ]ÛÚ[™Ô›Ùš[RQÃBˆÙ[™YƒBˆ™]\›ˆYCBˆCBƒBˆXZ[XİÜƒBˆ[˜È™\XÙPXİ]™TÛİ\˜Ù\ÕÚ]XØÛİ[™]]˜[İ]JBˆİ]ÛÚ[™Ô›Ùš[RQÎˆÙ]URQ‹Bˆ™XY\]][XØ][ÛÛX[\™\\™Yˆ›ÛÛH˜[ÙCBˆ
+HOˆ›ÛÛÃBˆYˆ\™XY\]][XØ][ÛÛX[\™\\™YBˆ\™\\™T™XY\‘^[œÚ[Û]][XØ][Û‘›ÜXØÛİ[›İ[™\JBˆİ]ÛÚ[™Ô›Ùš[RQÎˆİ]ÛÚ[™Ô›Ùš[RQÃBˆ
+HÃBˆ™]\›ˆ˜[ÙCBˆCBˆ]Ù\šXÙTİÜ™HHÙ\šXÙTİÜ™KœÚ\™YBˆ”Ù\šXÙTÙ][™Õ˜][œ™[[İ™P[XØÛİ[Ñ›ÜXØÛİ[›İ[™\J
+CBˆİ™[Z[ĞÛÛ™šYİ\™YT“˜][œ™[[İ™P[XØÛİ[Ñ›ÜXØÛİ[›İ[™\J
+CBƒBˆ]ÛX\™YÙ\šXÙ\ÈHÙ\šXÙTİÜ™Kœ™[[İ™P[Ù\šXÙ\Ñ›ÜXØÛİ[›İ[™\J
+CBˆ]ÛX\™YYÛœÈHİ™[Z[ĞYÛ”İÜ™KœÚ\™Yœ™[[İ™P[
+
+CBˆ]ÛX\™YÚŞTİ™X[HHÙ\šXÙTİÜ™K˜ÛX\”ÚŞTİ™X[Tİ]Q]Q›ÜXØÛİ[›İ[™\J
+CBƒBˆ]Y˜][ÈH›Ùš[TÙ][™ÜÔİÜ™KœÙ\šXÙ\ÃBˆÚYˆ[ÜÊ“ÔÊCBˆ]™]Z[™YÙ\šXÙ\ÒÙ^\ÎˆÙ]İš[™ÏˆHÃBˆ™XY\‘^[œÚ[Û”\œÚ\İ[˜ÙKœ[™[™Ğ]][XØ][ÛÛX[\Ù^CBˆCBˆÙ[ÙCBˆ]™]Z[™YÙ\šXÙ\ÒÙ^\ÎˆÙ]İš[™ÏˆH×CBˆÙ[™YƒBˆ›ÜˆÙ^H[ˆY˜][Ë™Xİ[Û˜\T™\™\Ù[][ÛŠ
+KšÙ^\ÃBˆÚ\™HXÛ\ÙTÙ][™ÜÔ™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHœÙ\šXÙ\ÃBˆ	‰ˆ\™]Z[™YÙ\šXÙ\ÒÙ^\Ë˜ÛÛZ[œÊÙ^JHÃBˆY˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆÙ^JCBˆCBƒBˆÚYˆÜÊSÔÊCBˆ]ÛX\™Y[Ù[\ÈH[Ù[SX[˜YÙ\‹œÚ\™Yœ™\XÙUÚ]XØÛİ[™]]˜[Y]Y]J
+CBˆÈÃBˆH˜XÚİ\™XY\‘^[œÚ[Û”İ]JBˆY]Y]R”ÓÓˆš[Bˆ[œİ[YÛİ\˜ÙPÛİ[ˆBˆÚİÓX]\™TÛİ\˜Ù\Îˆ˜[ÙKBˆ]]Õ\]TÛİ\˜Ù\ÎˆYKBˆ\İ]]Õ\]Nˆš[Bˆ
+Kœ™\İÜ™JÎˆY˜][ÊCBˆY˜][Ëœ™[[İ™SØš™Xİ
+Bˆ›Ü’Ù^Nˆ˜XÚİ\™XY\‘^[œÚ[Û”İ]K›YØXŞPZYÚİTÛİ\˜Ù\ÔİÜ˜YÙRÙ^CBˆ
+CBˆHØ]ÚÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆÛİ[›İÛX\ˆ™XY\ˆ^[œÚ[ÛˆY]Y]H]HXØÛİ[›İ[™\H‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÙ[ÙCBˆ]ÛX\™Y[Ù[\ÈHYCBˆÙ[™YƒBƒBˆÙ\šXÙSX[˜YÙ\‹œÚ\™Y›ØYÙ\šXÙ\Ñœ›ÛPÛİY
+
+CBˆİ™[Z[ĞYÛ“X[˜YÙ\‹œÚ\™Y›ØYYÛœÊ
+CBˆÛİ\˜ÙRX[İÜ™KœÚ\™Yœ™[ØY\œÚ\İYİ]PY\”™\İÜ™J
+CBˆÚYˆÜÊSÔÊH	‰ˆ]\™Ù][š\›Û›Y[
+XXĞØ][\İ
+CBˆ]š[ÔYÚ[“X[˜YÙ\‹œÚ\™Y›ØY
+
+CBˆÙ[™YƒBƒBˆ™]\›ˆÛX\™YÙ\šXÙ\È	‰ˆÛX\™YYÛœÈ	‰ˆÛX\™YÚŞTİ™X[H	‰ˆÛX\™Y[Ù[\ÃBˆCBƒBˆXZ[XİÜƒBˆ[˜È™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\XØÛİ[›İ[™\J
+H\Ş[˜ÈOˆ›ÛÛÃBˆ]ØZ]™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\”™\İÜ™JBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[Š
+KBˆÛ\˜]\Ò[™\™XY\”[[YNˆYCBˆ
+CBˆCBƒBˆXZ[XİÜƒBˆš]˜]H[˜È™[ØYÛİ\˜ÙSX[˜YÙ\œĞY\”™\İÜ™JBˆ^XİYØÛÜNˆXİ]™T›Ùš[TØÛÜUÚÙ[‹BˆÛ\˜]\Ò[™\™XY\”[[YNˆ›ÛÛH˜[ÙCBˆ
+H\Ş[˜ÈOˆ›ÛÛÃBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBƒBˆÙ\šXÙSX[˜YÙ\‹œÚ\™Y›ØYÙ\šXÙ\Ñœ›ÛPÛİY
+
+CBˆİ™[Z[ĞYÛ“X[˜YÙ\‹œÚ\™Y›ØYYÛœÊ
+CBˆÛİ\˜ÙRX[İÜ™KœÚ\™Yœ™[ØY\œÚ\İYİ]PY\”™\İÜ™J
+CBƒBˆ]ØZ]ÚŞTİ™X[TYÚ[“X[˜YÙ\‹œÚ\™Yœ™[ØY\œÚ\İYİ]PY\”™\İÜ™J
+CBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠKBˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][Ûˆ[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBƒBˆÚYˆÜÊSÔÊH	‰ˆ]\™Ù][š\›Û›Y[
+XXĞØ][\İ
+CBˆYˆ]›Ü›PØ\Xš[]Y\Ë˜İ\œ™[œİ\ÜÓ]š[ÔYÚ[œÈÃBˆİX\™]ØZ]]š[ÔYÚ[“X[˜YÙ\‹œÚ\™Yœ™[ØY\œÚ\İYİ]PY\”™\İÜ™JBˆ^XİYØÛÜQÙ[™\˜][Ûˆ^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛƒBˆ
+H[ÙHÈ™]\›ˆ˜[ÙHCBˆCBˆÙ[™YƒBˆÚYˆ[ÜÊ“ÔÊCBˆÈÃBˆİX\™H™XY\‘^[œÚ[Û“X[˜YÙ\‹œÚ\™Yœ™[ØY\œÚ\İYİ]PY\”™\İÜ™J
+H[ÙHÃBˆ™]\›ˆ˜[ÙCBˆCBˆHØ]ÚÃBˆİX\™Û\˜]\Ò[™\™XY\”[[YKBˆ™XY\‘^[œÚ[Û”™\İÜ™T™[ØYÛXŞKœ™\İÜ™Tİ\š]™\Ê\œ›ÜŠH[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™XY\ˆ^[œÚ[ÛˆY]Y]HÛİ[›İ™[ØYY\ˆ™\İÜ™Nˆ
+\œ›Ü‹›ØØ[^™Y\ØÜš\[ÛŠH‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆ™]\›ˆ˜[ÙCBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™XY\ˆ^[œÚ[ÛœÈİ^YY[™\Y\ˆ™\İÜ™NÈ]™\Hİ\ˆ™\İÜ™YÛXZ[ˆİ[™È‹Bˆ\Nˆ”İÜ˜YÙHƒBˆ
+CBˆCBˆÙ[™YƒBƒBˆ™]\›ˆ›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQOH^XİYØÛÜKœ›Ùš[RQBˆ	‰ˆÙ\šXÙTİÜ™TØÛÜKš\Ğİ\œ™[
+^XİYØÛÜKœÙ\šXÙ\ÑÙ[™\˜][ÛŠCBˆ	‰ˆ›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\‘Ù[™\˜][ÛˆOH^XİYØÛÜKœ›Üİ\‘Ù[™\˜][ÛƒBˆCBƒBˆš]˜]H[˜È\P˜XÚİ\]JBˆÈ˜XÚİ\ˆ˜XÚİ\]KBˆ™Yœ™\ÚÛİYÛİ\˜Ù\Îˆ›ÛÛH˜[ÙKBˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]Nˆ›ÛÛH˜[ÙKBˆ™\Ù\š[™Ñ]šXÙSØØ[™XY\“[Ù[Ù[Xİ[Ûˆ›ÛÛH˜[ÙCBˆ
+HOˆ˜XÚİ\\XØ][Û”™\İ[ÈÃBˆ˜\ˆ˜XÚÙ\“X[˜YÙ\ˆ˜XÚÙ\“X[˜YÙ\ˆCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ˜XÚÙ\“X[˜YÙ\ˆH˜XÚÙ\“X[˜YÙ\‹œÚ\™YBˆCBˆ˜XÚÙ\“X[˜YÙ\‹œÙ]˜XÚİ\™\İÜ™TŞ[˜Ôİ\™\ÜÙY
+YJCBˆY™\ˆÃBˆ˜XÚÙ\“X[˜YÙ\‹œÙ]˜XÚİ\™\İÜ™TŞ[˜Ôİ\™\ÜÙY
+˜[ÙJCBˆCBƒBˆ]Ü]™[İÛ™\ˆH˜XÚİ\˜Xİ]™T›Ùš[RQBƒBˆ]Xİ]™T›Ùš[RQHİ\œ™[Xİ]™T›Ùš[RQ
+
+CBˆ˜\ˆ\Y\ÕÜ]™[\”›Ùš[Q]HHİ\œ™[›Ùš[T›Üİ\’\Ô™XYX›J
+CBˆ	‰ˆ\™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]CBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ]Ü]™[İÛ™\ˆÃBˆ\Y\ÕÜ]™[\”›Ùš[Q]HHÜ]™[İÛ™\ˆOHXİ]™T›Ùš[RQBˆCBˆYˆX\Y\ÕÜ]™[\”›Ùš[Q]HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆHÜ[]™[^[ØY™[Û™ÜÈÈ›Ùš[H
+Ü]™[İÛ™\Ë]ZYİš[™ÈÏÈÈŠKÚXÚ\È›İXİ]™H\™NÈ]Ú[™H™\İÜ™Yœ›ÛHH\‹\›Ùš[H›Üİ\ˆ[œİXY‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆCBƒBˆ]Ü]™[Û˜\ÚİHÜ]™[İÛ™\‹™›]X\ÈİÛ™\ˆ[ƒBˆ˜XÚİ\œ›Ùš[\ÏË™š\œİÈ	šYOHİÛ™\ˆCBˆCBˆ]\Y\ÕÜ]™[ÛÛXİ[ÛœÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆÙ[‹Ü]™[ÛXZ[’\Ğ]]Üš]]]™JBˆ^[ØYØ\ÑXÛÙYˆ˜XÚİ\š\ĞÛÛXİ[ÛœËBˆ›Ùš[PØ\\™Q›YÎˆÜ]™[Û˜\ÚİË˜ÛÛXİ[ÛœÕÙ\™PØ\\™YBˆ
+CBˆ]\Y\ÕÜ]™[›ÙÜ™\ÜÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆÙ[‹Ü]™[ÛXZ[’\Ğ]]Üš]]]™JBˆ^[ØYØ\ÑXÛÙYˆ˜XÚİ\š\Ô›ÙÜ™\ÜÑ]KBˆ›Ùš[PØ\\™Q›YÎˆÜ]™[Û˜\ÚİËœ›ÙÜ™\ÜÕØ\ĞØ\\™YBˆ
+CBˆ]\Y\ÕÜ]™[˜][™ÜÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆÙ[‹Ü]™[ÛXZ[’\Ğ]]Üš]]]™JBˆ^[ØYØ\ÑXÛÙYˆ˜XÚİ\š\Õ\Ù\”˜][™ÜËBˆ›Ùš[PØ\\™Q›YÎˆÜ]™[Û˜\ÚİËœ˜][™ÜÕÙ\™PØ\\™YBˆ
+CBˆ]\Y\ÕÜ]™[Ø][ÙÜÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆÙ[‹Ü]™[ÛXZ[’\Ğ]]Üš]]]™JBˆ^[ØYØ\ÑXÛÙYˆ˜XÚİ\š\ĞØ][ÙÜËBˆ›Ùš[PØ\\™Q›YÎˆÜ]™[Û˜\ÚİË˜Ø][ÙÜÕÙ\™PØ\\™YBˆ
+CBˆ]\Y\ÕÜ]™[˜XÚÙ\ˆH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆÙ[‹Ü]™[ÛXZ[’\Ğ]]Üš]]]™JBˆ^[ØYØ\ÑXÛÙYˆ˜XÚİ\š\Õ˜XÚÙ\”İ]KBˆ›Ùš[PØ\\™Q›YÎˆÜ]™[Û˜\ÚİË˜XÚÙ\”İ]UØ\ĞØ\\™YBˆ
+CBˆ]\Y\ÕÜ]™[X[™ØPÛÛXİ[ÛœÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆ
+Ü]™[Û˜\ÚİË›X[™ØPÛÛXİ[ÛœÕÙ\™PØ\\™YÏÈYJCBˆ]\Y\ÕÜ]™[X[™ØT›ÙÜ™\ÜÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆ
+Ü]™[Û˜\ÚİË›X[™ØT™XY[™Ô›ÙÜ™\ÜÕØ\ĞØ\\™YÏÈYJCBˆ]\Y\ÕÜ]™[X[™ØPØ][ÙÜÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆ
+Ü]™[Û˜\ÚİË›X[™ØPØ][ÙÜÕÙ\™PØ\\™YÏÈYJCBˆ]\Y\ÕÜ]™[İ\İÛPØ][ÙÜÈH\Y\ÕÜ]™[\”›Ùš[Q]CBˆ	‰ˆ
+Ü]™[Û˜\ÚİË˜İ\İÛPØ][ÙÜÕÙ\™PØ\\™YÏÈYJCBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆX\Y\ÕÜ]™[ÛÛXİ[ÛœÈX\Y\ÕÜ]™[›ÙÜ™\ÜÈX\Y\ÕÜ]™[˜][™ÜÃBˆX\Y\ÕÜ]™[Ø][ÙÜÈX\Y\ÕÜ]™[˜XÚÙ\ˆÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆHÜ[]™[^[ØY\ÈZ\ÜÚ[™ÈÛXZ[œÈ]ÈİÛˆ›Ùš[HÛİ[›İØ\\™H
+ÛÛXİ[ÛœÏW
+\Y\ÕÜ]™[ÛÛXİ[ÛœÊH›ÙÜ™\ÜÏW
+\Y\ÕÜ]™[›ÙÜ™\ÜÊH˜][™ÜÏW
+\Y\ÕÜ]™[˜][™ÜÊHØ][ÙÜÏW
+\Y\ÕÜ]™[Ø][ÙÜÊH˜XÚÙ\W
+\Y\ÕÜ]™[˜XÚÙ\ŠJNÈ\È]šXÙHÙY\È]ÈİÛˆÛÜHÙˆÜÙH‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBƒBˆ]\Y\ÕÜ]™[Ûİ\˜Ù\ÈH\Y\ÕÜ]™[Ûİ\˜ÙQ]J˜XÚİ\Xİ]™T›Ùš[RQˆXİ]™T›Ùš[RQ
+CBˆYˆX\Y\ÕÜ]™[Ûİ\˜Ù\ÈÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆHÜ[]™[Ûİ\˜Ù\È™[Û™ÈÈ›Ùš[H
+Ü]™[İÛ™\Ë]ZYİš[™ÈÏÈÈŠH[™Ù\šXÙ\È\™H›İÚ\™YÈ\È›Ùš[HÙY\È]ÈİÛˆÛİ\˜Ù\È‹Bˆ\Nˆ”Ù\šXÙ\ÈƒBˆ
+CBˆCBƒBˆ]\Ù\‘Y˜][ÈHØÛÜYÙ][™ÜÑY˜][ÊBˆ\Y\Ô›Ùš[TØÛÜYÜš]\Îˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ\Y\ÔÙ\šXÙ\ÔØÛÜYÜš]\Îˆ\Y\ÕÜ]™[Ûİ\˜Ù\ËBˆXÛÙYÜ]™[Ù][™ÒÙ^\Îˆ˜XÚİ\™XÛÙYÜ]™[Ù][™ÒÙ^\ËBˆ[Ü]™[Ù][™ÜÕÙ\™PØ\\™Yˆ˜XÚİ\˜[Ü]™[Ù][™ÜÕÙ\™PØ\\™YBˆ
+CBƒBˆ]™\Ù\™\ÓØØ[ÚŞTÛİ\˜ÙTÙ][™ÜÈH˜XÚİ\œÚŞTİ™X[HOHš[Bˆ˜XÚİ\œÚŞTİ™X[OËš\ÔØY™PÛİYÛ˜\ÚİOHYCBƒBˆ]™\Ù\™\ÓØØ[]š[ÔÛİ\˜ÙTÙ][™ÜÈH˜XÚİ\›]š[ÔYÚ[œÈOHš[Bˆ]İ\œ™[]]Ó[ÙTÛİ\˜ÙRYÈH\Ù\‘Y˜][Ëœİš[™Ğ\œ˜^JBˆ›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÈƒBˆ
+HÏÈ×CBˆ]İ\œ™[]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈH\Ù\‘Y˜][Ëœİš[™Ğ\œ˜^JBˆ›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈƒBˆ
+HÏÈ×CBˆ]İ\œ™[^˜T[\ÔÛİ\˜ÙRYÈHİ™X[S[™İXYÙQš[\‹™^˜T[\ÔÛİ\˜ÙRYÊ
+CBˆ˜\ˆ™\Ù\™YØØ[Ûİ\˜ÙRQÈHÙ]İš[™ÏŠ
+CBˆYˆ™\Ù\™\ÓØØ[ÚŞTÛİ\˜ÙTÙ][™ÜÈÃBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠİ\œ™[]]Ó[ÙTÛİ\˜ÙRYË™š[\ŠBˆİ™X[S[™İXYÙQš[\‹š\Õ˜[YÚŞTİ™X[TÛİ\˜ÙRQBˆ
+JCBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠİ\œ™[]]Ó[ÙTÛİ\˜ÙSÜ™\’YË™š[\ŠBˆİ™X[S[™İXYÙQš[\‹š\Õ˜[YÚŞTİ™X[TÛİ\˜ÙRQBˆ
+JCBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠ
+İ\œ™[^˜T[\ÔÛİ\˜ÙRYÈÏÈ×JK™š[\ŠBˆİ™X[S[™İXYÙQš[\‹š\Õ˜[YÚŞTİ™X[TÛİ\˜ÙRQBˆ
+JCBˆCBˆYˆ™\Ù\™\ÓØØ[]š[ÔÛİ\˜ÙTÙ][™ÜÈÃBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠİ\œ™[]]Ó[ÙTÛİ\˜ÙRYË™š[\ŠBˆİ™X[S[™İXYÙQš[\‹š\Õ˜[Y]š[ÔÛİ\˜ÙRQBˆ
+JCBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠİ\œ™[]]Ó[ÙTÛİ\˜ÙSÜ™\’YË™š[\ŠBˆİ™X[S[™İXYÙQš[\‹š\Õ˜[Y]š[ÔÛİ\˜ÙRQBˆ
+JCBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠ
+İ\œ™[^˜T[\ÔÛİ\˜ÙRYÈÏÈ×JK™š[\ŠBˆİ™X[S[™İXYÙQš[\‹š\Õ˜[Y]š[ÔÛİ\˜ÙRQBˆ
+JCBˆCBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ËBˆ\Y\ÕÜ]™[Ûİ\˜Ù\ËBˆ][˜ÛÛZ[™Ó]š[Ôİ]HH˜XÚİ\›]š[ÔYÚ[œÈÃBˆ]İ\œ™[]š[Ôİ]HH]š[ÔYÚ[”İÜ™JBˆY˜][Îˆ›Ùš[TÙ][™ÜÔİÜ™KœÙ\šXÙ\ÃBˆ
+K›ØY
+
+CBˆ™\Ù\™YØØ[Ûİ\˜ÙRQË™›Ü›U[š[ÛŠBˆ˜XÚİ\]K›]š[Ô™\İÜ™T[‘›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆ[˜ÛÛZ[™Îˆ[˜ÛÛZ[™Ó]š[Ôİ]KBˆİ\œ™[ˆİ\œ™[]š[Ôİ]CBˆ
+K™]šXÙSØØ[Ûİ\˜ÙRQÃBˆ
+CBˆCBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÃBˆ›ÜˆÙ\šXÙH[ˆÙ\šXÙTİÜ™KœÚ\™Y™Ù]Ù\šXÙ\Ê
+HÃBˆ]Y]Y]HH
+OÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJÙ\šXÙK›Y]Y]JJCBˆ™›]X\Èİš[™Ê]Nˆ	[˜ÛÙ[™Îˆ]
+HHÏÈˆƒBˆ]˜XÚİ\Ù\šXÙHH˜XÚİ\Ù\šXÙJBˆYˆÙ\šXÙKšYBˆ\›ˆÙ\šXÙK\›BˆœÛÛ“Y]Y]NˆY]Y]KBˆœÔØÜš\ˆÙ\šXÙKšœÔØÜš\Bˆ\ĞXİ]™NˆÙ\šXÙKš\ĞXİ]™KBˆÛÜ[™^ˆÙ\šXÙKœÛÜ[™^Bˆ
+CBˆYˆ˜XÚİ\]KœÙ\šXÙQ›Ü‘^\š[Y[[ÛİYŞ[˜Ê˜XÚİ\Ù\šXÙJHOHš[ÃBˆ™\Ù\™YØØ[Ûİ\˜ÙRQËš[œÙ\
+œÙ\šXÙN—
+Ù\šXÙKšY]ZYİš[™ÊHŠCBˆCBˆCBˆ›ÜˆYÛˆ[ˆİ™[Z[ĞYÛ”İÜ™KœÚ\™Y™Ù]YÛœÊ
+HÃBˆ]X[šY™\İ”ÓÓˆH
+OÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJYÛ‹›X[šY™\İ
+JCBˆ™›]X\Èİš[™Ê]Nˆ	[˜ÛÙ[™Îˆ]
+HHÏÈˆƒBˆ]˜XÚİ\YÛˆH˜XÚİ\İ™[Z[ĞYÛŠBˆYˆYÛ‹šYBˆÛÛ™šYİ\™YT“ˆYÛ‹˜ÛÛ™šYİ\™YT“BˆX[šY™\İ”ÓÓˆX[šY™\İ”ÓÓ‹Bˆ\ĞXİ]™NˆYÛ‹š\ĞXİ]™KBˆÛÜ[™^ˆYÛ‹œÛÜ[™^Bˆ
+CBˆYˆ˜XÚİ\]Kœİ™[Z[ĞYÛ‘›Ü‘^\š[Y[[ÛİYŞ[˜Ê˜XÚİ\YÛŠHOHš[ÃBˆ™\Ù\™YØØ[Ûİ\˜ÙRQËš[œÙ\
+œİ™[Z[Î—
+YÛ‹šY]ZYİš[™ÊHŠCBˆCBˆCBˆCBˆ]™\Ù\™Y^˜T[\ÓØØ[Ûİ\˜ÙRYÈH
+İ\œ™[^˜T[\ÔÛİ\˜ÙRYÃBˆÏÈİ\œ™[]]Ó[ÙTÛİ\˜ÙSÜ™\’YÊK™š[\Š™\Ù\™YØØ[Ûİ\˜ÙRQË˜ÛÛZ[œÊCBƒBˆYˆ\™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]HÃBˆ˜XÚİ\]Kœ™\İÜ™SYYXTİ]TÙ][™ÜÊBˆ˜XÚİ\›YYXTİ]TÙ][™ÜËBˆ\Y\Ô›Ùš[TØÛÜYÜš]\Îˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ\Y\ÔÙ\šXÙ\ÔØÛÜYÜš]\Îˆ\Y\ÕÜ]™[Ûİ\˜Ù\ÃBˆ
+CBˆCBƒBˆYˆ]XØÙ[ÛÛÜ‘]HH˜XÚİ\˜XØÙ[ÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+XØÙ[ÛÛÜ‘]K›Ü’Ù^Nˆ˜XØÙ[ÛÛÜˆŠCBˆCBˆYˆ]Ù][™ÜÑÜ˜YY[ÛÛÜˆH˜XÚİ\œÙ][™ÜÑÜ˜YY[ÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+Ù][™ÜÑÜ˜YY[ÛÛÜ‹›Ü’Ù^Nˆ™XÛ\ÙU[YQÜ˜YY[ÛÛÜˆŠCBˆCBˆYˆ]™XY\XØÙ[ÛÛÜˆH˜XÚİ\œ™XY\XØÙ[ÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+™XY\XØÙ[ÛÛÜ‹›Ü’Ù^Nˆœ™XY\XØÙ[ÛÛÜˆŠCBˆCBˆYˆ]™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆH˜XÚİ\œ™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+™XY\”Ù][™ÜÑÜ˜YY[ÛÛÜ‹›Ü’Ù^Nˆœ™XY\•[YQÜ˜YY[ÛÛÜˆŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\Y“[™İXYÙK›Ü’Ù^NˆY“[™İXYÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y\X\˜[˜ÙJ˜XÚİ\œÙ[XİY\X\˜[˜ÙJK›Ü’Ù^NˆœÙ[XİY\X\˜[˜ÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y\X\˜[˜ÙJ˜XÚİ\œ™XY\”Ù[XİY\X\˜[˜ÙJK›Ü’Ù^Nˆœ™XY\”Ù[XİY\X\˜[˜ÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›Y›Ü’Ù^Nˆœ™XY\‘ÛØ˜[\X\˜[˜ÙQ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™[˜X›TİX]\ĞQY˜][›Ü’Ù^Nˆ™[˜X›TİX]\ĞQY˜][ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Y˜][İX]S[™İXYÙK›Ü’Ù^Nˆ™Y˜][İX]S[™İXYÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\”İX]P\X\˜[˜ÙQ[˜X›Y›Ü’Ù^Nˆœ^Y\”İX]P\X\˜[˜ÙQ[˜X›YŠCBƒBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙK›Ü’Ù^Nˆœ™Y™\œ™Y]]Ğ]Y[Ó[™İXYÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙK›Ü’Ù^Nˆœ™Y™\œ™Y[š[YP]Y[Ó[™İXYÙHŠCBˆ]™\İÜ™Y[™Ú[™T˜]ÈHÙ][™ÜË››Ü›X[^™Y[\^Y\Š˜XÚİ\š[\^Y\ŠCBˆ]XÛÙY[™Ú[™HH^X˜XÚÑ[™Ú[™J˜]Õ˜[YNˆ™\İÜ™Y[™Ú[™T˜]ÊCBˆÏÈ^X˜XÚÑ[™Ú[™K™Y˜][Ù[Xİ[ÛŠ]šXÙQ˜[Z[Nˆ˜İ\œ™[
+CBˆ]™\İÜ™Y[™Ú[™HH^X˜XÚÑ[™Ú[™Kœİ\ÜYÙ[Xİ[ÛŠBˆXÛÙY[™Ú[™KBˆ]šXÙQ˜[Z[Nˆ˜İ\œ™[Bˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+™\İÜ™Y[™Ú[™Kœ˜]Õ˜[YK›Ü’Ù^Nˆ^X˜XÚÑ[™Ú[™K™Y˜][ÒÙ^JCBƒBˆ\Ù\‘Y˜][ËœÙ]
+™\İÜ™Y[™Ú[™Kœ˜]Õ˜[YK›Ü’Ù^Nˆš[\^Y\ˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÔØÚY[UX‹›Ü’Ù^NˆœÚİÔØÚY[UXˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÓØØ[ØÚY[U[YK›Ü’Ù^NˆœÚİÓØØ[ØÚY[U[YHŠCBˆ\Ù\‘Y˜][ËœÙ]
+ØÚY[S[ÙKœØ[š]^™Y˜]Õ˜[YJ˜XÚİ\™Y˜][ØÚY[S[ÙJK›Ü’Ù^Nˆ™Y˜][ØÚY[S[ÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+ØÚY[UÚ[™İËœØ[š]^™Y^\Ê˜XÚİ\œØÚY[UÚ[™İÑ^\ÊK›Ü’Ù^NˆØÚY[UÚ[™İËœİÜ˜YÙRÙ^JCBˆYˆ]˜[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û”İXœØÜš\[ÛœÊBˆ˜XÚİ\›ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÃBˆ
+HÃBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û”İXœØÜš\[ÛœÈŠCBˆCBˆYˆ]˜[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÊBˆ˜XÚİ\›ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÃBˆ
+HÃBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û‘\\ÛÙT™[Z[™\œÈŠCBˆCBˆYˆ]˜[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û‘\\ÛÙSXY[YJBˆ˜XÚİ\›ØØ[›İYšXØ][Û‘\\ÛÙSXY[YCBˆ
+HÃBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û‘\\ÛÙSXY[YHŠCBˆCBˆYˆ]˜[YHH˜XÚİ\]KœØ[š]^™YØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YJBˆ˜XÚİ\›ØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YCBˆ
+HÃBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û”ÙX\ÛÛ“XY[YHŠCBˆCBˆYˆ]˜[YHH˜XÚİ\›ØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÈÃBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^Nˆ›ØØ[›İYšXØ][Û’[˜ÛYP[š[YTÜXÚX[ÈŠCBˆCBƒBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™YY˜][^X˜XÚÔÜYY
+˜XÚİ\™Y˜][^X˜XÚÔÜYY
+KBˆ›Ü’Ù^Nˆ™Y˜][^X˜XÚÔÜYYƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™YÛÜYY^Y\Š˜XÚİ\šÛÜYY^Y\ŠKBˆ›Ü’Ù^NˆšÛÜYY^Y\ˆƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\›˜[^Y\‹›Ü’Ù^Nˆ™^\›˜[^Y\ˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™Y™\‘İÛ›ØYYYYXK›Ü’Ù^Nˆœ™Y™\‘İÛ›ØYYYYXHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜[Ø^\Ó[™ØØ\K›Ü’Ù^Nˆ˜[Ø^\Ó[™ØØ\HŠCBƒBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JBˆİÜ˜YÙRÙ^Nˆ^Y\”^X˜XÚÓØÚÔÙ][™ÜË™[˜X›YÙ^CBˆ
+HÃBˆ^Y\”^X˜XÚÓØÚÔÙ][™ÜËœÙ][˜X›Y
+˜XÚİ\œ^Y\”^X˜XÚÓØÚÑ[˜X›Y
+CBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜[šTÚÚ\[˜X›Y›Ü’Ù^Nˆ˜[šTÚÚ\[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\š[›Ñ‘[˜X›Y›Ü’Ù^Nˆš[›Ñ‘[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\š[›Ñ\[˜X›Y›Ü’Ù^Nˆš[›Ñ\[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜[šTÚÚ\]]ÔÚÚ\›Ü’Ù^Nˆ˜[šTÚÚ\]]ÔÚÚ\ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚÚ\\Ñ[˜X›Y›Ü’Ù^NˆœÚÚ\\Ñ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚÚ\\Ğ[Ø^\Õš\ÚX›K›Ü’Ù^NˆœÚÚ\\Ğ[Ø^\Õš\ÚX›HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÓ™^\\ÛÙP]Û‹›Ü’Ù^NˆœÚİÓ™^\\ÛÙP]ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÑ\\ÛÙPœ›İÜÙ\]Û‹›Ü’Ù^NˆœÚİÑ\\ÛÙPœ›İÜÙ\]ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÔ^Y\”Ù\šXÙ\Ğ]Û‹›Ü’Ù^Nˆ^Y\”Ù\šXÙ\Ğ]Û”Ù][™ÜËšÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÓ™^\\ÛÙTÜİ\]Û‹›Ü’Ù^NˆœÚİÓ™^\\ÛÙTÜİ\]ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y™^\\ÛÙU™\ÚÛ
+˜XÚİ\›™^\\ÛÙU™\ÚÛ
+KBˆ›Ü’Ù^Nˆ›™^\\ÛÙU™\ÚÛƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›™^\\ÛÙTÚÚ\š[\‘[˜X›Y›Ü’Ù^Nˆ™^\\ÛÙQš[\”Ù][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›Y›Ü’Ù^Nˆœ^Y\œšYÚ™\ÜÑÙ\İ\™Q[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\•›Û[YQÙ\İ\™Q[˜X›Y›Ü’Ù^Nˆœ^Y\•›Û[YQÙ\İ\™Q[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›Y›Ü’Ù^Nˆœ^Y\•ÛÑš[™Ù\•\^T]\ÙQ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\Ù[\•\^T]\ÙQ[˜X›Y›Ü’Ù^Nˆœ^Y\Ù[\•\^T]\ÙQ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\‘İX›U\ÙYZÑ[˜X›Y›Ü’Ù^Nˆœ^Y\‘İX›U\ÙYZÑ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y^Y\‘İX›U\ÙYZÔÙXÛÛ™ÊBˆ˜XÚİ\œ^Y\‘İX›U\ÙYZÔÙXÛÛ™ÃBˆ
+KBˆ›Ü’Ù^Nˆœ^Y\‘İX›U\ÙYZÔÙXÛÛ™ÈƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\“Ü[”İX]\Ñ[˜X›Y›Ü’Ù^Nˆœ^Y\“Ü[”İX]\Ñ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›Y›Ü’Ù^Nˆœ^Y\“Ü[”İX]\Ğ]]Ñ˜[˜XÚÑ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›Y›Ü’Ù^Nˆœ^Y\”\™›Ü›X[˜ÙSİ™\›^Q[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›\‘›Ü™YÜ›İ[™”ÈOHŒÈŒˆÌ›Ü’Ù^Nˆ›\‘›Ü™YÜ›İ[™”ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YT”™[™\˜XÚÙ[™
+˜XÚİ\›\”™[™\˜XÚÙ[™
+K›Ü’Ù^Nˆ›\”™[™\˜XÚÙ[™ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YT“Y][]X[]T›Ùš[J˜XÚİ\›\“Y][]X[]T›Ùš[JK›Ü’Ù^Nˆ›\“Y][]X[]T›Ùš[HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YT•\ØØ[[™Ó[ÙJ˜XÚİ\›\•\ØØ[[™Ó[ÙJK›Ü’Ù^Nˆ›\•\ØØ[[™Ó[ÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YT“™]\˜[\ØØ[\Š˜XÚİ\›\“™]\˜[\ØØ[\ŠK›Ü’Ù^Nˆ›\“™]\˜[\ØØ[\ˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YT“™]\˜[\ØØ[\Š˜XÚİ\›\“™]\˜[\ØØ[\•ŠK›Ü’Ù^Nˆ›\“™]\˜[\ØØ[\•ˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YT”^Y\”ÚÚ[Š˜XÚİ\›\”^Y\”ÚÚ[ŠK›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜËœÚÚ[’Ù^JCBˆYˆ]š[X\PÛÛÜˆH˜XÚİ\›\”^Y\”ÚÚ[İ\İÛTš[X\PÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+š[X\PÛÛÜ‹›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜İ\İÛTš[X\PÛÛÜ’Ù^JCBˆH[ÙHÃBˆ\Ù\‘Y˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜İ\İÛTš[X\PÛÛÜ’Ù^JCBˆCBˆYˆ]ÙXÛÛ™\PÛÛÜˆH˜XÚİ\›\”^Y\”ÚÚ[İ\İÛTÙXÛÛ™\PÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+ÙXÛÛ™\PÛÛÜ‹›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜İ\İÛTÙXÛÛ™\PÛÛÜ’Ù^JCBˆH[ÙHÃBˆ\Ù\‘Y˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜İ\İÛTÙXÛÛ™\PÛÛÜ’Ù^JCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›\”^Y\”ÚÚ[[š[X][ÛœÑ[˜X›Y›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË˜[š[X][ÛœÑ[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›\”^Y\”ÚÚ[•[ÛÛ›ÛÓÛ›K›Ü’Ù^NˆT”^Y\”ÚÚ[”Ù][™ÜË[ÛÛ›ÛÓÛ›RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›\”Xİ\™R[”Xİ\™Q[˜X›Y›Ü’Ù^Nˆ›\”Xİ\™R[”Xİ\™Q[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›\\^]Xİ\™R[”Xİ\™Q[˜X›Y›Ü’Ù^Nˆ›\\^]Xİ\™R[”Xİ\™Q[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+T’“[ÙJ˜]Õ˜[YNˆ˜XÚİ\›\’“[ÙJOËœ˜]Õ˜[YHÏÈT’“[ÙK™Y˜][[ÙKœ˜]Õ˜[YK›Ü’Ù^Nˆ›\’“[ÙHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›\”İ\œ›İ[™Ûİ[™[˜X›Y›Ü’Ù^Nˆ›\”İ\œ›İ[™Ûİ[™[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\Ø]ÚÙÙ]\‘[˜X›Y›Ü’Ù^NˆØ]ÚÙÙ]\”Ù][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›Y›Ü’Ù^NˆœÛX\[\^Y\ÚÛÜÚ[™Ñ[˜X›YŠCBˆYˆ]^\š[Y[[™X]\™\Ñ[˜X›YH˜XÚİ\™^\š[Y[[™X]\™\Ñ[˜X›YÃBˆ\Ù\‘Y˜][ËœÙ]
+^\š[Y[[™X]\™\Ñ[˜X›Y›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y^\š[Y[[™X]\™\Ó\İÚ[™ÙY]
+Bˆ˜XÚİ\™^\š[Y[[™X]\™\Ó\İÚ[™ÙY]Bˆ
+HÏÈBˆ›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\İÚ[™ÙY]Ù^CBˆ
+CBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T”™[ØY[˜X›Y›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØY[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T”Û[Ûİ˜[œÚ][Û‘[˜X›Y›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”Û[Ûİ˜[œÚ][Û‘[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T”™[ØYÙ[[\‘[˜X›Y›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÙ[[\‘[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+^\š[Y[[™X]\™Tİ]K˜Û[\YT”™[ØYÚYšS[Z]PŠ˜XÚİ\™^\š[Y[[T”™[ØYÚYšS[Z]PŠK›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÚYšS[Z]P’Ù^JCBˆ\Ù\‘Y˜][ËœÙ]
+^\š[Y[[™X]\™Tİ]K˜Û[\YT”™[ØYÙ[[\“[Z]PŠ˜XÚİ\™^\š[Y[[T”™[ØYÙ[[\“[Z]PŠK›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØYÙ[[\“[Z]P’Ù^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T”ÚİÔ™[XZ[š[™Õ[YK›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”ÚİÔ™[XZ[š[™Õ[YRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T”™XÚ\ÙT›ÙÜ™\ÜË›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™XÚ\ÙT›ÙÜ™\ÜÒÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T’YÛ›Ü™TÜXÚX[İX]Tİ[\Ë›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\’YÛ›Ü™TÜXÚX[İX]Tİ[\ÒÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[T”™[ØY]]ĞÛX\‹›Ü’Ù^Nˆ^\š[Y[[™X]\™Tİ]K›\”™[ØY]]ĞÛX\’Ù^JCBƒBˆYˆ]™ĞÛÛÜˆH˜XÚİ\œİX]Q›Ü™YÜ›İ[™ÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+™ĞÛÛÜ‹›Ü’Ù^NˆœİX]\×Ù›Ü™YÜ›İ[™ÛÛÜˆŠCBˆCBˆYˆ]İ›ÚÙPÛÛÜˆH˜XÚİ\œİX]Tİ›ÚÙPÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+İ›ÚÙPÛÛÜ‹›Ü’Ù^NˆœİX]\×Üİ›ÚÙPÛÛÜˆŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™YİX]Tİ›ÚÙUÚY
+˜XÚİ\œİX]Tİ›ÚÙUÚY
+KBˆ›Ü’Ù^NˆœİX]\×Üİ›ÚÙUÚYƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™YİX]Q›ÛÚ^™J˜XÚİ\œİX]Q›ÛÚ^™JKBˆ›Ü’Ù^NˆœİX]\×Ù›ÛÚ^™HƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™YİX]U™\XØ[Ù™œÙ]
+˜XÚİ\œİX]U™\XØ[Ù™œÙ]
+KBˆ›Ü’Ù^Nˆœ^Y\”İX]Sİ™\›^P›İÛPÛÛœİ[ƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œİX]\Õš\ÚX›K›Ü’Ù^NˆœİX]\×Ú\Õš\ÚX›HŠCBƒBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÚİÒØ[™[‹›Ü’Ù^NˆœÚİÒØ[™[ˆŠCBˆYˆ]YTÜ\ÚØÜ™Y[ˆH˜XÚİ\šYTÜ\ÚØÜ™Y[ˆÃBˆ\Ù\‘Y˜][ËœÙ]
+YTÜ\ÚØÜ™Y[‹›Ü’Ù^NˆšYTÜ\ÚØÜ™Y[ˆŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›[ÙTİÚ]Ú[š[X][Û‘[˜X›Y›Ü’Ù^Nˆ[ÙTİÚ]Ú[š[X][Û”Ù][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\šØ[™[]]Õ\]S[Ù[\Ë›Ü’Ù^NˆšØ[™[]]Õ\]S[Ù[\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÙX\ÛÛ“Y[K›Ü’Ù^NˆœÙX\ÛÛ“Y[HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\šÜš^›Û[\\ÛÙS\İ›Ü’Ù^NˆšÜš^›Û[\\ÛÙS\İŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›YYXQ]Z[]P\ÛÜšÑ[˜X›Y›Ü’Ù^NˆYYXQ]Z[]P\ÛÜšÔÙ][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›YYXQ]Z[[\›˜]TÜİ\‘[˜X›Y›Ü’Ù^NˆYYXQ]Z[[\›˜]TÜİ\”Ù][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›YYXQ]Z[Ú[Z[\•]\Ñ[˜X›Y›Ü’Ù^NˆYYXQ]Z[Ú[Z[\•]\ÔÙ][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\\ÙPÛ\ÜÚXÔØÚY[URK›Ü’Ù^Nˆ\ÙPÛ\ÜÚXÔØÚY[URHŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y›Û‘[\Tİš[™Ê˜XÚİ\š\›Ğ˜[›™\Ø][ÙÒYY˜][˜[YNˆ™[™[™ÈŠK›Ü’Ù^Nˆš\›Ğ˜[›™\Ø][ÙÒYŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y\›Ğ˜[›™\™Z]š[ÜŠ˜XÚİ\š\›Ğ˜[›™\™Z]š[ÜŠK›Ü’Ù^Nˆš\›Ğ˜[›™\™Z]š[ÜˆŠCBˆYˆ]İ™\œšY\Ñ]HH˜XÚİ\šÛYPØ][ÙÓ^[İ]İ™\œšY\Ë™]J\Ú[™Îˆ]
+KX˜XÚİ\šÛYPØ][ÙÓ^[İ]İ™\œšY\Ëš\Ñ[\HÃBˆ\Ù\‘Y˜][ËœÙ]
+İ™\œšY\Ñ]K›Ü’Ù^NˆÛYPØ][ÙÓ^[İ]İÜ™KœİÜ˜YÙRÙ^JCBˆH[ÙHÃBˆ\Ù\‘Y˜][Ëœ™[[İ™SØš™Xİ
+›Ü’Ù^NˆÛYPØ][ÙÓ^[İ]İÜ™KœİÜ˜YÙRÙ^JCBˆCBƒBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]HÃBˆÛYPØ][ÙÓ^[İ]İÜ™KœÚ\™Yœ™[ØYœ›ÛTİÜ˜YÙJ
+CBˆCBˆYˆ]ÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YH˜XÚİ\šÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›YÃBˆ\Ù\‘Y˜][ËœÙ]
+ÛYP[š[X]Y˜XÚÙÜ›İ[™[˜X›Y›Ü’Ù^NˆÛYP[š[X]Y˜XÚÙÜ›İ[™Ù][™ÜË™[˜X›YÙ^JCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]J˜XÚİ\šÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]JK›Ü’Ù^NˆÛYP[š[X]Y˜XÚÙÜ›İ[™]X[]KœİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]J˜XÚİ\šÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]JK›Ü’Ù^NˆÛYP[š[X]Y˜XÚÙÜ›İ[™œ˜[YT˜]KœİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜\\™›Ü›X[˜ÙSİ™\›^Q[˜X›Y›Ü’Ù^Nˆ\\™›Ü›X[˜ÙSİ™\›^TÙ][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[YYXQ\ÚYÛ”™\Ù]
+˜XÚİ\™^\š[Y[[YYXQ\ÚYÛ”™\Ù]
+K›Ü’Ù^Nˆ^\š[Y[[YYXQ\ÚYÛ”™\Ù]œİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ğ›YY]™[
+˜XÚİ\™^\š[Y[[\›Ğ›YY]™[
+K›Ü’Ù^Nˆ^\š[Y[[\›Ğ›YY]™[œİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[ÛYPØ\™Ú\J˜XÚİ\™^\š[Y[[ÛYPØ\™Ú\JK›Ü’Ù^Nˆ^\š[Y[[ÛYPØ\™Ú\KœİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[][QÜ˜YY[[]J˜XÚİ\™^\š[Y[[][QÜ˜YY[[]JK›Ü’Ù^Nˆ^\š[Y[[][QÜ˜YY[[]KœİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›ÒZYÚØØ[J˜XÚİ\™^\š[Y[[\›ÒZYÚØØ[JK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ëš\›ÒZYÚØØ[RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ğ›YYİ™[™İ
+˜XÚİ\™^\š[Y[[\›Ğ›YYİ™[™İ
+K›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ëš\›Ğ›YYİ™[™İÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[J˜XÚİ\™^\š[Y[[\›Ñ˜YQ\İ[˜ÙTØØ[JK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ëš\›Ñ˜YQ\İ[˜ÙTØØ[RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[J˜XÚİ\™^\š[Y[[ÙXİ[Û”ÜXÚ[™ÔØØ[JK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™ËœÙXİ[Û”ÜXÚ[™ÔØØ[RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ø\™˜Y]\ÔØØ[J˜XÚİ\™^\š[Y[[Ø\™˜Y]\ÔØØ[JK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë˜Ø\™˜Y]\ÔØØ[RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[YYXPØ\™ØØ[J˜XÚİ\™^\š[Y[[YYXPØ\™ØØ[JK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë›YYXPØ\™ØØ[RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[Û\ÜÔİ™[™İ
+˜XÚİ\™^\š[Y[[Û\ÜÔİ™[™İ
+K›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Û\ÜÔİ™[™İÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÊ˜XÚİ\™^\š[Y[[Ü˜YY[˜\ÙQ\šÛ™\ÜÊK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[˜\ÙQ\šÛ™\ÜÒÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[XØÙ[[[œÚ]J˜XÚİ\™^\š[Y[[Ü˜YY[XØÙ[[[œÚ]JK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[XØÙ[[[œÚ]RÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y^\š[Y[[Ü˜YY[ØÜ›Û[İ[ÛŠ˜XÚİ\™^\š[Y[[Ü˜YY[ØÜ›Û[İ[ÛŠK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ØÜ›Û[İ[Û’Ù^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™^\š[Y[[Ü˜YY[\ÙPİ\İÛPÛÛÜœË›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[\ÙPİ\İÛPÛÛÜœÒÙ^JCBˆYˆ]^\š[Y[[Ü˜YY[ÛÛÜHH˜XÚİ\™^\š[Y[[Ü˜YY[ÛÛÜHÃBˆ\Ù\‘Y˜][ËœÙ]
+^\š[Y[[Ü˜YY[ÛÛÜK›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ÛÛÜRÙ^JCBˆCBˆYˆ]^\š[Y[[Ü˜YY[ÛÛÜˆH˜XÚİ\™^\š[Y[[Ü˜YY[ÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+^\š[Y[[Ü˜YY[ÛÛÜ‹›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ÛÛÜ’Ù^JCBˆCBˆYˆ]^\š[Y[[Ü˜YY[ÛÛÜÈH˜XÚİ\™^\š[Y[[Ü˜YY[ÛÛÜÈÃBˆ\Ù\‘Y˜][ËœÙ]
+^\š[Y[[Ü˜YY[ÛÛÜË›Ü’Ù^Nˆ^\š[Y[[š\İX[[š[™Ë™Ü˜YY[ÛÛÜÒÙ^JCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y][ÜÜ\™Tİ[J˜XÚİ\˜][ÜÜ\™Tİ[JK›Ü’Ù^Nˆ˜][ÜÜ\™Tİ[HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJ˜XÚİ\˜][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJK›Ü’Ù^Nˆ˜][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHŠCBˆYˆ]][ÜÜ\™TÛÛYÛÛÜˆH˜XÚİ\˜][ÜÜ\™TÛÛYÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+][ÜÜ\™TÛÛYÛÛÜ‹›Ü’Ù^Nˆ˜][ÜÜ\™TÛÛYÛÛÜˆŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y][ÜÜ\™Tİ[J˜XÚİ\œ™XY\][ÜÜ\™Tİ[JK›Ü’Ù^Nˆœ™XY\][ÜÜ\™Tİ[HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJ˜XÚİ\œ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙJK›Ü’Ù^Nˆœ™XY\][ÜÜ\™TÛÛYÛÛÜ”Ûİ\˜ÙHŠCBˆYˆ]™XY\][ÜÜ\™TÛÛYÛÛÜˆH˜XÚİ\œ™XY\][ÜÜ\™TÛÛYÛÛÜˆÃBˆ\Ù\‘Y˜][ËœÙ]
+™XY\][ÜÜ\™TÛÛYÛÛÜ‹›Ü’Ù^Nˆœ™XY\][ÜÜ\™TÛÛYÛÛÜˆŠCBˆCBˆ]™\İÜ™YYYXQ]Z[Y[‘[[Y[ÈH˜XÚİ\]KœØ[š]^™YYYXQ]Z[Y[‘[[Y[Ê˜XÚİ\›YYXQ]Z[Y[‘[[Y[ÊCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YYYXQ]Z[[[Y[Ü™\Š˜XÚİ\›YYXQ]Z[[[Y[Ü™\ŠK›Ü’Ù^NˆYYXQ]Z[[[Y[›Ü™\”İÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+™\İÜ™YYYXQ]Z[Y[‘[[Y[Ë›Ü’Ù^NˆYYXQ]Z[[[Y[šY[”İÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+SYYXQ]Z[[[Y[šY[‘[[Y[Êœ›ÛNˆ™\İÜ™YYYXQ]Z[Y[‘[[Y[ËYØXŞTÚİĞØ\İÙXİ[ÛˆYJK˜ÛÛZ[œÊ˜Ø\İ
+K›Ü’Ù^NˆYYXQ]Z[[[Y[›YØXŞTÚİĞØ\İİÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\‘]Z[[[Y[Ü™\Š˜XÚİ\œ™XY\‘]Z[[[Y[Ü™\ŠK›Ü’Ù^Nˆ™XY\‘]Z[[[Y[›Ü™\”İÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\‘]Z[Y[‘[[Y[Ê˜XÚİ\œ™XY\‘]Z[Y[‘[[Y[ÊK›Ü’Ù^Nˆ™XY\‘]Z[[[Y[šY[”İÜ˜YÙRÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›YYXPÛÛ[[œÔÜ˜Z]›Ü’Ù^Nˆ›YYXPÛÛ[[œÔÜ˜Z]ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\›YYXPÛÛ[[œÓ[™ØØ\K›Ü’Ù^Nˆ›YYXPÛÛ[[œÓ[™ØØ\HŠCBƒBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY[™Ó[ÙK›Ü’Ù^Nˆœ™XY[™Ó[ÙHŠCBˆ]™\İÜ™YØ[™[”™XY\“[ÙHH˜XÚİ\]KœØ[š]^™YØ[™[”™XY\“[ÙJ˜XÚİ\šØ[™[”™XY\“[ÙJCBˆ\Ù\‘Y˜][ËœÙ]
+™\İÜ™YØ[™[”™XY\“[ÙK›Ü’Ù^NˆšØ[™[”™XY\“[ÙHŠCBˆ˜XÚİ\]KœØ[š]^™YØ[™[”™XY\“[ÙSİ™\œšY\Ê˜XÚİ\šØ[™[”™XY\“[ÙSİ™\œšY\ÊK™›Ü‘XXÚÈÙ^K˜[YH[ƒBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^NˆšØ[™[”™XY\“[ÙK—
+Ù^JHŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘İÛœØ[\R[XYÙ\Ë›Ü’Ù^Nˆ”™XY\‹™İÛœØ[\R[XYÙ\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\Ü›Ü›Ü™\œË›Ü’Ù^Nˆ”™XY\‹˜Ü›Ü›Ü™\œÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘\ØX›T]ZXÚĞXİ[ÛœË›Ü’Ù^Nˆ”™XY\‹™\ØX›T]ZXÚĞXİ[ÛœÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘\ØX›QİX›U\›Ü’Ù^Nˆ”™XY\‹™\ØX›QİX›U\ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\“]™U^›Ü’Ù^Nˆ”™XY\‹›]™U^ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\’YP˜\œÓÛ”İÚ\K›Ü’Ù^Nˆ”™XY\‹šYP˜\œÓÛ”İÚ\HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\˜XÚÙÜ›İ[™ÛÛÜŠ˜XÚİ\œ™XY\˜XÚÙÜ›İ[™ÛÛÜŠK›Ü’Ù^Nˆ”™XY\‹˜˜XÚÙÜ›İ[™ÛÛÜˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\“ÜšY[][ÛŠ˜XÚİ\œ™XY\“ÜšY[][ÛŠK›Ü’Ù^Nˆ”™XY\‹›ÜšY[][ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\•\›Û™\Ê˜XÚİ\œ™XY\•\›Û™\ÊK›Ü’Ù^Nˆ”™XY\‹\›Û™\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\’[™\\›Û™\Ë›Ü’Ù^Nˆ”™XY\‹š[™\\›Û™\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\[š[X]TYÙU˜[œÚ][ÛœË›Ü’Ù^Nˆ”™XY\‹˜[š[X]TYÙU˜[œÚ][ÛœÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\•\ØØ[R[XYÙ\Ë›Ü’Ù^Nˆ”™XY\‹\ØØ[R[XYÙ\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\•\ØØ[SX^ZYÚ
+˜XÚİ\œ™XY\•\ØØ[SX^ZYÚ
+K›Ü’Ù^Nˆ”™XY\‹\ØØ[SX^ZYÚŠCBˆYˆ]™XY\•\ØØ[S[Ù[˜[YHH˜XÚİ\™XY\•\ØØ[S[Ù[™\İÜ™TÛXŞK›[Ù[˜[YUĞ\JBˆ[˜ÛÛZ[™Îˆ˜XÚİ\œ™XY\•\ØØ[S[Ù[˜[YKBˆ™\Ù\™\Ñ]šXÙSØØ[Ù[Xİ[Ûˆ™\Ù\š[™Ñ]šXÙSØØ[™XY\“[Ù[Ù[Xİ[ÛƒBˆ
+HÃBˆ\Ù\‘Y˜][ËœÙ]
+™XY\•\ØØ[S[Ù[˜[YK›Ü’Ù^Nˆ”™XY\‹\ØØ[S[Ù[˜[YHŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\”YÙ\ÕÔ™[ØY
+˜XÚİ\œ™XY\”YÙ\ÕÔ™[ØY
+K›Ü’Ù^Nˆ”™XY\‹œYÙ\ÕÔ™[ØYŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\”YÙYYÙS^[İ]
+˜XÚİ\œ™XY\”YÙYYÙS^[İ]
+K›Ü’Ù^Nˆ”™XY\‹œYÙYYÙS^[İ]ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\”YÙYYÙSÙ™œÙ]›Ü’Ù^Nˆ”™XY\‹œYÙYYÙSÙ™œÙ]ŠCBˆ˜XÚİ\]KœØ[š]^™Y™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\Ê˜XÚİ\œ™XY\”YÙYYÙSÙ™œÙ]İ™\œšY\ÊK™›Ü‘XXÚÈÙ^K˜[YH[ƒBˆ\Ù\‘Y˜][ËœÙ]
+˜[YK›Ü’Ù^Nˆ”™XY\‹œYÙYYÙSÙ™œÙ]—
+Ù^JHŠCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\”Ü]ÚYR[XYÙ\Ë›Ü’Ù^Nˆ”™XY\‹œÜ]ÚYR[XYÙ\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\”™]™\œÙTÜ]Ü™\‹›Ü’Ù^Nˆ”™XY\‹œ™]™\œÙTÜ]Ü™\ˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\•™\XØ[[™š[š]TØÜ›Û›Ü’Ù^Nˆ”™XY\‹™\XØ[[™š[š]TØÜ›ÛŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\”[\˜›Ş›Ü’Ù^Nˆ”™XY\‹œ[\˜›ŞŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\”[\˜›Ş[[İ[
+˜XÚİ\œ™XY\”[\˜›Ş[[İ[
+K›Ü’Ù^Nˆ”™XY\‹œ[\˜›Ş[[İ[ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\”[\˜›ŞÜšY[][ÛŠ˜XÚİ\œ™XY\”[\˜›ŞÜšY[][ÛŠK›Ü’Ù^Nˆ”™XY\‹œ[\˜›ŞÜšY[][ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\“ÜšY[][Û“ØÚÑ[˜X›Y›Ü’Ù^Nˆœ™XY\“ÜšY[][Û“ØÚÑ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\“ÜšY[][Û“ØÚÓX\ÚÊ˜XÚİ\œ™XY\“ÜšY[][Û“ØÚÓX\ÚÊK›Ü’Ù^Nˆœ™XY\“ÜšY[][Û“ØÚÓX\ÚÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\”™XY™\ÚÛ\˜Ù[
+˜XÚİ\œ™XY\”™XY™\ÚÛ\˜Ù[
+K›Ü’Ù^Nˆœ™XY\”™XY™\ÚÛ\˜Ù[ŠCBƒBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y™XY\‘›ÛÚ^™J˜XÚİ\œ™XY\‘›ÛÚ^™JKBˆ›Ü’Ù^Nˆœ™XY\‘›ÛÚ^™HƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘›Û˜[Z[K›Ü’Ù^Nˆœ™XY\‘›Û˜[Z[HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘›ÛÙZYÚ›Ü’Ù^Nˆœ™XY\‘›ÛÙZYÚŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\ÛÛÜ”™\Ù]
+˜XÚİ\œ™XY\ÛÛÜ”™\Ù]
+K›Ü’Ù^Nˆœ™XY\ÛÛÜ”™\Ù]ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\•^[YÛ›Y[›Ü’Ù^Nˆœ™XY\•^[YÛ›Y[ŠCBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y™XY\“[™TÜXÚ[™Ê˜XÚİ\œ™XY\“[™TÜXÚ[™ÊKBˆ›Ü’Ù^Nˆœ™XY\“[™TÜXÚ[™ÈƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y™XY\“X\™Ú[Š˜XÚİ\œ™XY\“X\™Ú[ŠKBˆ›Ü’Ù^Nˆœ™XY\“X\™Ú[ˆƒBˆ
+CBƒBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜]]ĞÛX\ØXÚQ[˜X›Y›Ü’Ù^Nˆ˜]]ĞÛX\ØXÚQ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™Y]]ĞÛX\ØXÚU™\ÚÛPŠBˆ˜XÚİ\˜]]ĞÛX\ØXÚU™\ÚÛPƒBˆ
+KBˆ›Ü’Ù^Nˆ˜]]ĞÛX\ØXÚU™\ÚÛPˆƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+Bˆ˜XÚİ\]KœØ[š]^™YYÚ]X[]U™\ÚÛ
+˜XÚİ\šYÚ]X[]U™\ÚÛ
+KBˆ›Ü’Ù^NˆšYÚ]X[]U™\ÚÛƒBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜˜XÚÙÜ›İ[™Ô\[[™Q[˜X›Y›Ü’Ù^Nˆ˜˜XÚÙÜ›İ[™Ô\[[™Q[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›Y›Ü’Ù^Nˆœ™XY\‘İÛ›ØYĞ˜XÚÙÜ›İ[™[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ™XY\‘İÛ›ØYÕÚYšSÛ›K›Ü’Ù^Nˆœ™XY\‘İÛ›ØYÕÚYšSÛ›HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™Y™XY\‘İÛ›ØYÔ\˜[[[Z]
+˜XÚİ\œ™XY\‘İÛ›ØYÔ\˜[[[Z]
+K›Ü’Ù^Nˆœ™XY\‘İÛ›ØYÔ\˜[[[Z]ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\˜]]Õ\]TÙ\šXÙ\Ñ[˜X›Y›Ü’Ù^Nˆ˜]]Õ\]TÙ\šXÙ\Ñ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›Y›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙQ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›Y›Ü’Ù^NˆœÙ\šXÙ\Ğ]]ÔÙ[Xİ\\ÛÙ\Ñ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÙ\šXÙ\Ğ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙQ[˜X›Y›Ü’Ù^Nˆ]]Ó[ÙQ\œ›Ü’[[YÙ[˜ÙTÙ][™ÜË™[˜X›YÙ^JCBˆ]™\İÜ™Y]]Ó[ÙTÛİ\˜ÙRYÈH^\š[Y[[ÛİYØØ[Ûİ\˜ÙTÙ[Xİ[Û”ÛXŞK›Y[X™\œÚ\
+Bˆİ\œ™[ˆİ\œ™[]]Ó[ÙTÛİ\˜ÙRYËBˆ[˜ÛÛZ[™Îˆ˜XÚİ\œÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYËBˆ™\Ù\š[™Îˆ™\Ù\™YØØ[Ûİ\˜ÙRQÃBˆ
+CBˆ]Ü™\™Y]]Ó[ÙTÛİ\˜ÙRYÈH˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+˜XÚİ\œÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÊCBˆ]™\İÜ™Y]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈH^\š[Y[[ÛİYØØ[Ûİ\˜ÙTÙ[Xİ[Û”ÛXŞK›Ü™\ŠBˆİ\œ™[ˆİ\œ™[]]Ó[ÙTÛİ\˜ÙSÜ™\’YËBˆ[˜ÛÛZ[™ÎˆÜ™\™Y]]Ó[ÙTÛİ\˜ÙRYÈ
+È™\İÜ™Y]]Ó[ÙTÛİ\˜ÙRYË™š[\ˆÃBˆ[Ü™\™Y]]Ó[ÙTÛİ\˜ÙRYË˜ÛÛZ[œÊ	
+CBˆKBˆ™\Ù\š[™Îˆ™\Ù\™YØØ[Ûİ\˜ÙRQÃBˆ
+CBˆ\Ù\‘Y˜][ËœÙ]
+™\İÜ™Y]]Ó[ÙTÛİ\˜ÙRYË›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙRYÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+™\İÜ™Y]]Ó[ÙTÛİ\˜ÙSÜ™\’YË›Ü’Ù^NˆœÙ\šXÙ\Ğ]]Ó[ÙTÛİ\˜ÙSÜ™\’YÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+]]Ó[ÙT]X[]T™Y™\™[˜ÙKœØ[š]^™Y˜]Õ˜[YJ˜XÚİ\œÙ\šXÙ\Ğ]]Ó[ÙT]X[]T™Y™\™[˜ÙJK›Ü’Ù^Nˆ]]Ó[ÙT]X[]T™Y™\™[˜ÙKœİÜ˜YÙRÙ^JCBƒBˆYˆ\Y\ÕÜ]™[Ûİ\˜Ù\ÈÃBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JBˆİÜ˜YÙRÙ^NˆÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜË›Z[š[][TÚ[Z[\š]RÙ^CBˆ
+HÃBˆÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜËœÙ]Z[š[][TÚ[Z[\š]J˜XÚİ\œÙ\šXÙ\Ô™\İ[Z[š[][TÚ[Z[\š]JCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JBˆİÜ˜YÙRÙ^NˆÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜË™›ÜZ\ÛX]ÚY™\İ[ÒÙ^CBˆ
+HÃBˆÙ\šXÙ\Ô™\İ[˜[šÚ[™ÔÙ][™ÜËœÙ]›ÜÓZ\ÛX]ÚY™\İ[Ê˜XÚİ\œÙ\šXÙ\Ñ›ÜZ\ÛX]ÚY™\İ[ÊCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ÈŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ][˜ÛYY[™İXYÙ\Ê˜XÚİ\œÙ\šXÙ\Ò[˜ÛYYİ™X[S[™İXYÙ\ÊCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\ÈŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]Y[“[™İXYÙ\Ê˜XÚİ\œÙ\šXÙ\ÒY[”İ™X[S[™İXYÙ\ÊCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]HŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]Y\Ôİ™X[\ÕÚ]İ][™İXYÙQ]J˜XÚİ\œÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ][™İXYÙQ]JCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ÈŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]\Üİ[Y\ÓÜšYÚ[˜[]Y[Ê˜XÚİ\œÙ\šXÙ\Ğ\Üİ[YSÜšYÚ[˜[]Y[ÊCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\ÚŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]™X]ÑX˜™Y[š[YP\Ñ[™Û\Ú
+˜XÚİ\œÙ\šXÙ\Õ™X]X˜™Y[š[YP\Ñ[™Û\Ú
+CBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\ÒY[”İ™X[T]X[]Y\ÈŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]Y[”]X[]RZYÚÊ˜XÚİ\œÙ\šXÙ\ÒY[”İ™X[T]X[]Y\ÊCBˆCBˆYˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]HŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]Y\Ôİ™X[\ÕÚ]İ]]XİY]X[]J˜XÚİ\œÙ\šXÙ\ÒYTİ™X[\ÕÚ]İ]]XİY]X[]JCBˆCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œÙ\šXÙ\Ôİ™[Z[Ôİ[TÚY][˜X›Y›Ü’Ù^NˆÙ\šXÙ\ÔÚY]™\Ù[][Û”Ù][™ÜËœİ™[Z[Ôİ[Q[˜X›YÙ^JCBˆ]™\İÜ™Y^˜T[\ÔÛİ\˜ÙRYÎˆÔİš[™×OÃBˆYˆ˜XÚİ\œÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÈOHš[Bˆİ\œ™[^˜T[\ÔÛİ\˜ÙRYÈOHš[ÃBƒBˆ™\İÜ™Y^˜T[\ÔÛİ\˜ÙRYÈHš[BˆH[ÙHÃBˆ]™\İÜ™Y˜\ÙHH˜XÚİ\œÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÃBˆ›X\
+˜XÚİ\]KœØ[š]^™Yİš[™Ó\İ
+CBˆÏÈ™\İÜ™Y]]Ó[ÙTÛİ\˜ÙSÜ™\’YÃBˆ™\İÜ™Y^˜T[\ÔÛİ\˜ÙRYÈH^\š[Y[[ÛİYØØ[Ûİ\˜ÙTÙ[Xİ[Û”ÛXŞK›Y[X™\œÚ\
+Bˆİ\œ™[ˆ™\Ù\™Y^˜T[\ÓØØ[Ûİ\˜ÙRYËBˆ[˜ÛÛZ[™Îˆ™\İÜ™Y˜\ÙKBˆ™\Ù\š[™Îˆ™\Ù\™YØØ[Ûİ\˜ÙRQÃBˆ
+CBˆCBˆYˆ\Y\ÕÜ]™[Ûİ\˜Ù\ËBˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ\šXÙ\Ñ^˜T[\ÔÛİ\˜ÙRYÈŠHÃBˆİ™X[S[™İXYÙQš[\‹œÙ]^˜T[\ÔÛİ\˜ÙRYÊ™\İÜ™Y^˜T[\ÔÛİ\˜ÙRYÊCBˆCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›Y›Ü’Ù^Nˆ™Ú]X”™[X\ÙP]]ĞÚXÚÑ[˜X›YŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Ú]X”™[X\ÙU\]P]˜Z[X›K›Ü’Ù^Nˆ™Ú]X”™[X\ÙU\]P]˜Z[X›HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Ú]X”™[X\ÙS]\İ™\œÚ[Û‹›Ü’Ù^Nˆ™Ú]X”™[X\ÙS]\İ™\œÚ[ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Ú]X”™[X\ÙUT“›Ü’Ù^Nˆ™Ú]X”™[X\ÙUT“ŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Ú]X”™[X\ÙTÚİĞ[\[™[™Ë›Ü’Ù^Nˆ™Ú]X”™[X\ÙTÚİĞ[\[™[™ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[Û‹›Ü’Ù^Nˆ™Ú]X”™[X\ÙS\İ›Û\Y™\œÚ[ÛˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\™š[\’Üœ›ÜÛÛ[›Ü’Ù^Nˆ™š[\’Üœ›ÜˆŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\]KœØ[š]^™YÚ[Z[\š]P[ÛÜš]J˜XÚİ\œÙ[XİYÚ[Z[\š]P[ÛÜš]JK›Ü’Ù^NˆœÙ[XİYÚ[Z[\š]P[ÛÜš]HŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\šØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQ›Ü’Ù^NˆšØ[™[’ÛYTÙ[XİYÛİ\˜ÙRQŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\šØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\Ë›Ü’Ù^NˆšØ[™[”™XÙ[Ûİ\˜ÙTÙX\˜Ú\ÈŠCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ\™›Ü›X[˜ÙS[ÙQ[˜X›Y›Ü’Ù^Nˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™[˜X›YÙ^JCBˆ\Ù\‘Y˜][ËœÙ]
+˜XÚİ\œ\™›Ü›X[˜ÙS[ÙTÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[Ë›Ü’Ù^Nˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜËœÚÚ\[šS\İ˜]™\œØ[›Ü[š[YQ]Z[ÒÙ^JCBƒBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JBˆİÜ˜YÙRÙ^Nˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™˜\İ[š[YPØ][ÙÓİ™\œšY\ÒÙ^CBˆ
+HÃBˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™˜\İ[š[YPØ][ÙÓİ™\œšY\ÈH˜XÚİ\œ\™›Ü›X[˜ÙS[ÙQ˜\İ[š[YPØ][ÙÓİ™\œšY\ÃBˆCBƒBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ˜XÚİ\œÙX\˜Ú\İÜKØ\ĞØ\\™YX˜XÚİ\œÙX\˜Ú\İÜKœ]Y\šY\Ëš\Ñ[\KBˆ]ÙX\˜Ú\İÜQ]HHOÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJ˜XÚİ\œÙX\˜Ú\İÜKœ]Y\šY\ÊHÃBˆ\Ù\‘Y˜][ËœÙ]
+ÙX\˜Ú\İÜQ]K›Ü’Ù^NˆœÙX\˜Ú\İÜHŠCBˆCBˆ\™›Ü›SÛ“XZ[•™XYÃBƒBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^Nˆ™š[\’Üœ›ÜˆŠHÃBˆQÛÛ[š[\‹œÚ\™Y™š[\’Üœ›ÜˆH˜XÚİ\™š[\’Üœ›ÜÛÛ[BˆCBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KBˆ˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JİÜ˜YÙRÙ^NˆœÙ[XİYÚ[Z[\š]P[ÛÜš]HŠHÃBˆ[ÛÜš]SX[˜YÙ\‹œÚ\™YœÙ[XİY[ÛÜš]HHÚ[Z[\š]P[ÛÜš]J˜]Õ˜[YNˆ˜XÚİ\]KœØ[š]^™YÚ[Z[\š]P[ÛÜš]J˜XÚİ\œÙ[XİYÚ[Z[\š]P[ÛÜš]JJHÏÈšXœšYBˆCBƒBˆ]Ù][™ÜÈHÙ][™ÜËœÚ\™YBˆ][YHHXÛ\ÙU[YKœÚ\™YBˆÙ][™ÜË›Øš™XİÚ[Ú[™ÙKœÙ[™
+
+CBˆ[YK›Øš™XİÚ[Ú[™ÙKœÙ[™
+
+CBˆCBƒBˆYˆ\Y\ÕÜ]™[ÛÛXİ[ÛœÈÃBˆ]™\İÜ™YÛÛXİ[ÛœÈH˜XÚİ\˜ÛÛXİ[ÛœË›X\È	ÓXœ˜\PÛÛXİ[ÛŠ
+HCBˆ\™›Ü›SÛ“XZ[•™XYÃBƒBˆXœ˜\SX[˜YÙ\‹œÚ\™Yœ™\XÙPÛÛXİ[ÛœÑ›Ü“YYXTİ]J™\İÜ™YÛÛXİ[ÛœÊCBˆCBˆCBƒBˆYˆ\Y\ÕÜ]™[›ÙÜ™\ÜÈÃBˆ]›ÙÜ™\ÜÓX[˜YÙ\ˆH›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™YBˆ›ÙÜ™\ÜÓX[˜YÙ\‹œ™\XÙT›ÙÜ™\ÜÑ]Q›Ü”™\İÜ™JBˆ˜XÚİ\]KœØ[š]^™Y›ÙÜ™\ÜÑ]JBˆ˜XÚİ\œ›ÙÜ™\ÜÑ]KBˆ™\Ù\š[™Ñ]šXÙSØØ[™Y™\™[˜Ù\ÎˆYCBˆ
+KBˆ^XİY›Ùš[RQˆXİ]™T›Ùš[RQBˆ
+CBˆCBƒBˆYˆ\Y\ÕÜ]™[˜XÚÙ\‹BˆÜ]™[Û˜\ÚİË˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YOHYHÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]™\İÜ™Y˜XÚÙ\”İ]HHÜ]™[Û˜\ÚİË˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YOHYCBˆÈÜ]™[Û˜\ÚİË˜XÚÙ\”İ]HÏÈ˜XÚİ\˜XÚÙ\”İ]CBˆˆ˜XÚİ\˜XÚÙ\”İ]CBˆÈH˜XÚÙ\“X[˜YÙ\‹˜\T™\İÜ™Y˜XÚÙ\”İ]JBˆ™\İÜ™Y˜XÚÙ\”İ]KBˆ›Ü”›Ùš[NˆXİ]™T›Ùš[RQBˆÜ™Y[X[Ğ[™›Üİ\\™P]]Üš]]]™NƒBˆÜ]™[Û˜\ÚİË˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YOHYCBˆ
+CBˆCBˆCBƒBˆ]™\İÜ™Y\™›Ü›X[˜ÙS[ÙQ[˜X›YH˜XÚİ\Ü]™[Ù][™Ò\Ğ]]Üš]]]™JBˆİÜ˜YÙRÙ^Nˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜË™[˜X›YÙ^CBˆ
+HÈ˜XÚİ\œ\™›Ü›X[˜ÙS[ÙQ[˜X›Yˆ\™›Ü›X[˜ÙS[ÙTÙ][™ÜËš\Ñ[˜X›YBˆYˆX\Y\ÕÜ]™[\”›Ùš[Q]HÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆØ][ÙÓX[˜YÙ\‹œÚ\™YœÙ]\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+\™›Ü›X[˜ÙS[ÙTÙ][™ÜËš\Ñ[˜X›Y
+CBˆCBˆH[ÙHYˆ\Y\ÕÜ]™[Ø][ÙÜË˜XÚİ\˜Ø][ÙÜËš\Ñ[\HÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆØ][ÙÓX[˜YÙ\‹œÚ\™Yœ™\XÙPØ][ÙÜÑ›Ü“YYXTİ]J×JCBˆØ][ÙÓX[˜YÙ\‹œÚ\™YœÙ]\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+™\İÜ™Y\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+CBˆCBˆH[ÙHYˆ\Y\ÕÜ]™[Ø][ÙÜÈÃBˆ˜\ˆY\™ÙYH˜XÚİ\˜Ø][ÙÜÃBˆ]^\İ[™ÒYÈHÙ]
+Y\™ÙY›X\È	šYJCBˆ˜\ˆİ\œ™[Y˜][ÎˆĞØ][Ù×HH×CBˆ\™›Ü›SÛ“XZ[•™XYÃBˆİ\œ™[Y˜][ÈHØ][ÙÓX[˜YÙ\‹œÚ\™Y˜Ø][ÙÜË™š[\ˆÈY^\İ[™ÒYË˜ÛÛZ[œÊ	šY
+HCBˆCBˆY\™ÙY˜\[™
+ÛÛ[ÓÙˆİ\œ™[Y˜][ÊCBˆY\™ÙYHY\™ÙY™[[Y\˜]Y
+
+K›X\È[™^Ø][ÙÈ[ƒBˆ˜\ˆ\]YHØ][ÙÃBˆ\]Y›Ü™\ˆH[™^Bˆ™]\›ˆ\]YBˆCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]Ø][ÙÓX[˜YÙ\ˆHØ][ÙÓX[˜YÙ\‹œÚ\™YBˆØ][ÙÓX[˜YÙ\‹œÙ]\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+™\İÜ™Y\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+CBˆØ][ÙÓX[˜YÙ\‹˜Ø][ÙÜÈHY\™ÙYBˆØ][ÙÓX[˜YÙ\‹œØ]™PØ][ÙÜÊ
+CBˆCBˆH[ÙHÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]Ø][ÙÓX[˜YÙ\ˆHØ][ÙÓX[˜YÙ\‹œÚ\™YBˆØ][ÙÓX[˜YÙ\‹œÙ]\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+™\İÜ™Y\™›Ü›X[˜ÙS[ÙQ[˜X›Y
+CBˆØ][ÙÓX[˜YÙ\‹œØ]™PØ][ÙÜÊ
+CBˆCBˆCBƒBˆ\TÚ\™TÙ\šXÙ\Ó[ÙRY“™YYY
+˜XÚİ\
+CBƒBˆ]Ù\šXÙTİÜ™HHÙ\šXÙTİÜ™KœÚ\™YBˆ]\Y\ÕÜ]™[Ù\šXÙ\ÈH\Y\ÕÜ]™[Ûİ\˜Ù\È	‰ˆ˜XÚİ\š\ÔÙ\šXÙ\ÃBˆ]^\İ[™ÔÙ\šXÙ\ÈH\Y\ÕÜ]™[Ù\šXÙ\ÈÈÙ\šXÙTİÜ™K™Ù]Ù\šXÙ\Ê
+Hˆ×CBˆ][˜ÛÛZ[™ÔÙ\šXÙ\ÈH
+\Y\ÕÜ]™[Ù\šXÙ\ÈÈ˜XÚİ\œÙ\šXÙ\Èˆ×JKœÛÜY
+NˆÃBˆYˆ	œÛÜ[™^OH	KœÛÜ[™^ÃBˆ™]\›ˆ	šY]ZYİš[™È	KšY]ZYİš[™ÃBˆCBˆ™]\›ˆ	œÛÜ[™^	KœÛÜ[™^BˆJCBˆ]Ù\šXÙ\ÕÔ™\İÜ™NˆĞ˜XÚİ\Ù\šXÙWCBˆ˜\ˆ]šXÙSØØ[Ù\šXÙRQÈHÙ]URQŠ
+CBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÃBˆ]İ\œ™[Ù\šXÙ\ÈH^\İ[™ÔÙ\šXÙ\Ë›X\ÈÙ\šXÙH[ƒBˆ]Y]Y]HH
+OÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJÙ\šXÙK›Y]Y]JJCBˆ™›]X\Èİš[™Ê]Nˆ	[˜ÛÙ[™Îˆ]
+HHÏÈˆƒBˆ™]\›ˆ˜XÚİ\Ù\šXÙJBˆYˆÙ\šXÙKšYBˆ\›ˆÙ\šXÙK\›BˆœÛÛ“Y]Y]NˆY]Y]KBˆœÔØÜš\ˆÙ\šXÙKšœÔØÜš\Bˆ\ĞXİ]™NˆÙ\šXÙKš\ĞXİ]™KBˆÛÜ[™^ˆÙ\šXÙKœÛÜ[™^Bˆ
+CBˆCBˆ]šXÙSØØ[Ù\šXÙRQÈHÙ]
+İ\œ™[Ù\šXÙ\Ë˜ÛÛ\XİX\ÈÙ\šXÙH[ƒBˆ˜XÚİ\]KœÙ\šXÙQ›Ü‘^\š[Y[[ÛİYŞ[˜ÊÙ\šXÙJHOHš[ÈÙ\šXÙKšYˆš[BˆJCBˆÙ\šXÙ\ÕÔ™\İÜ™HH^\š[Y[[ÛİYÛİ\˜ÙT™\İÜ™TÛXŞKœÙ\šXÙ\ÊBˆİ\œ™[ˆİ\œ™[Ù\šXÙ\ËBˆ[˜ÛÛZ[™Îˆ[˜ÛÛZ[™ÔÙ\šXÙ\ÃBˆ
+CBˆH[ÙHÃBˆÙ\šXÙ\ÕÔ™\İÜ™HH[˜ÛÛZ[™ÔÙ\šXÙ\ÃBˆCBˆ]Ù\šXÙ\ÕÔ™[[İ™HH™Yœ™\ÚÛİYÛİ\˜Ù\ÃBˆÈ^\İ[™ÔÙ\šXÙ\Ë™š[\ˆÈY]šXÙSØØ[Ù\šXÙRQË˜ÛÛZ[œÊ	šY
+HCBˆˆ^\İ[™ÔÙ\šXÙ\ÃBˆÙ\šXÙ\ÕÔ™[[İ™K™›Ü‘XXÚÈÙ\šXÙTİÜ™Kœ™[[İ™J	
+HCBˆ›Üˆİ˜È[ˆÙ\šXÙ\ÕÔ™\İÜ™HÚ\™HY]šXÙSØØ[Ù\šXÙRQË˜ÛÛZ[œÊİ˜ËšY
+HÃBƒBˆİX\™]ØÜš\HÙ\šXÙTİÜ™TØÛÜKœÙXİ\™YØÜš\›Ü”™\İÜ™JBˆİ˜ËšœÔØÜš\BˆÙ\šXÙRQˆİ˜ËšYBˆ›Ùš[RQˆXİ]™T›Ùš[RQBˆ
+H[ÙHÈÛÛ[YHCBˆÙ\šXÙTİÜ™KœİÜ™TÙ\šXÙJBˆYˆİ˜ËšYBˆ\›ˆİ˜Ë\›BˆœÛÛ“Y]Y]Nˆİ˜ËšœÛÛ“Y]Y]KBˆœÔØÜš\ˆØÜš\Bˆ\ĞXİ]™Nˆİ˜Ëš\ĞXİ]™KBˆÛÜ[™^ˆİ˜ËœÛÜ[™^Bˆ
+CBˆCBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÃBˆ][]Y\ÈHÙ\šXÙTİÜ™K™Ù][]Y\Ê
+CBˆ›Üˆ
+[™^Ù\šXÙJH[ˆÙ\šXÙ\ÕÔ™\İÜ™K™[[Y\˜]Y
+
+HÃBˆ[]Y\Ë™š\œİ
+Ú\™NˆÈ	šYOHÙ\šXÙKšYJOËœÛÜ[™^H[
+[™^
+CBˆCBˆÙ\šXÙTİÜ™KœØ]™J
+CBˆCBƒBˆYˆ\Y\ÕÜ]™[Ûİ\˜Ù\Ë]İ™[Z[ĞYÛœÈH˜XÚİ\œİ™[Z[ĞYÛœÈÃBˆ]İ™[Z[ÔİÜ™HHİ™[Z[ĞYÛ”İÜ™KœÚ\™YBˆ][˜ÛÛZ[™ĞYÛœÈHİ™[Z[ĞYÛœËœÛÜYÃBˆYˆ	œÛÜ[™^OH	KœÛÜ[™^ÃBˆ™]\›ˆ	šY]ZYİš[™È	KšY]ZYİš[™ÃBˆCBˆ™]\›ˆ	œÛÜ[™^	KœÛÜ[™^BˆCBˆ]YÛœÕÔ™\İÜ™NˆĞ˜XÚİ\İ™[Z[ĞYÛ—CBˆ˜\ˆ]šXÙSØØ[YÛ’QÈHÙ]URQŠ
+CBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÃBˆ]İ\œ™[YÛœÈHİ™[Z[ÔİÜ™K™Ù]YÛœÊ
+K›X\ÈYÛˆ[ƒBˆ]X[šY™\İ”ÓÓˆH
+OÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJYÛ‹›X[šY™\İ
+JCBˆ™›]X\Èİš[™Ê]Nˆ	[˜ÛÙ[™Îˆ]
+HHÏÈˆƒBˆ™]\›ˆ˜XÚİ\İ™[Z[ĞYÛŠBˆYˆYÛ‹šYBˆÛÛ™šYİ\™YT“ˆYÛ‹˜ÛÛ™šYİ\™YT“BˆX[šY™\İ”ÓÓˆX[šY™\İ”ÓÓ‹Bˆ\ĞXİ]™NˆYÛ‹š\ĞXİ]™KBˆÛÜ[™^ˆYÛ‹œÛÜ[™^Bˆ
+CBˆCBˆ]šXÙSØØ[YÛ’QÈHÙ]
+İ\œ™[YÛœË˜ÛÛ\XİX\ÈYÛˆ[ƒBˆ˜XÚİ\]Kœİ™[Z[ĞYÛ‘›Ü‘^\š[Y[[ÛİYŞ[˜ÊYÛŠHOHš[ÈYÛ‹šYˆš[BˆJCBˆYÛœÕÔ™\İÜ™HH^\š[Y[[ÛİYÛİ\˜ÙT™\İÜ™TÛXŞKœİ™[Z[ĞYÛœÊBˆİ\œ™[ˆİ\œ™[YÛœËBˆ[˜ÛÛZ[™Îˆ[˜ÛÛZ[™ĞYÛœÃBˆ
+CBˆH[ÙHÃBˆYÛœÕÔ™\İÜ™HH[˜ÛÛZ[™ĞYÛœÃBˆCBƒBˆ]™\ÛÛ™YT“ĞPYÛ’QˆÕURQˆİš[™×HHYÛœÕÔ™\İÜ™Kœ™YXÙJ[ÎˆÎ—JHÈ™\İ[YÛˆ[ƒBˆ]™\ÛÛ™YHİ™[Z[ĞÛÛ™šYİ\™YT“˜][œ™\ÛÛ™JBˆYÛ’QˆYÛ‹šYBˆ\œÚ\İYT“ˆYÛ‹˜ÛÛ™šYİ\™YT“Bˆ
+CBˆİX\™™\ÛÛ™YOHYÛ‹˜ÛÛ™šYİ\™YT“[ÙHÈ™]\›ˆCBˆ™\İ[ØYÛ‹šYHH™\ÛÛ™YBˆCBƒBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÃBˆ›ÜˆYÛˆ[ˆİ™[Z[ÔİÜ™K™Ù]YÛœÊ
+HÚ\™HY]šXÙSØØ[YÛ’QË˜ÛÛZ[œÊYÛ‹šY
+HÃBˆİ™[Z[ÔİÜ™Kœ™[[İ™JYÛŠCBˆCBˆH[ÙHÃBˆİ™[Z[ÔİÜ™Kœ™[[İ™P[
+
+CBˆCBƒBˆ›ÜˆYÛˆ[ˆYÛœÕÔ™\İÜ™HÚ\™HY]šXÙSØØ[YÛ’QË˜ÛÛZ[œÊYÛ‹šY
+HÃBƒBˆ]İÜ™YT“H™\ÛÛ™YT“ĞPYÛ’QØYÛ‹šYHÏÈYÛ‹˜ÛÛ™šYİ\™YT“Bˆ]ÛÛ™šYİ\™YT“HİÜ™YT“š[[Z[™ĞÚ\˜Xİ\œÊ[ˆÚ]\ÜXÙ\Ğ[™™]Û[™\ÊCBˆYˆİ™[Z[ĞÛÛ™šYİ\™YT“˜][š\Õ[œ™\ÛÛ™Y™Y™\™[˜ÙJÛÛ™šYİ\™YT“
+HÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ”ÚÚ\[™Èİ™[Z[ÈYÛˆ
+YÛ‹šY
+Hœ›ÛH˜XÚİ\ˆ]ÈÛÛ™šYİ\™YT“Ø\ÈİÜ™Y[ˆ\È]šXÙIÜÈÙ^XÚZ[ˆ[™\È›İ[ˆH˜XÚİ\ˆ™KXY]È™\İÜ™H]ˆ‹Bˆ\Nˆ”İ™[Z[ÈƒBˆ
+CBˆÛÛ[YCBˆCBˆİX\™XÛÛ™šYİ\™YT“š\Ñ[\KBˆ]X[šY™\İ]HHYÛ‹›X[šY™\İ”ÓÓ‹™]J\Ú[™Îˆ]
+KBˆ]X[šY™\İHOÈ”ÓÓ‘XÛÙ\Š
+K™XÛÙJİ™[Z[ÓX[šY™\İœÙ[‹œ›ÛNˆX[šY™\İ]JKBˆX[šY™\İœİ\ÜÒ[œİ[X›T™\Ûİ\˜Ù\È[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊ”ÚÚ\[™È[˜[Yİ™[Z[ÈYÛˆœ›ÛH˜XÚİ\ˆ
+YÛ‹šY
+H‹\Nˆ”İ™[Z[ÈŠCBˆÛÛ[YCBˆCBƒBˆİ™[Z[ÔİÜ™KœİÜ™PYÛŠBˆYˆYÛ‹šYBˆÛÛ™šYİ\™YT“ˆÛÛ™šYİ\™YT“BƒBˆX[šY™\İ”ÓÓˆYÛ‹›X[šY™\İ”ÓÓ‹Bˆ\ĞXİ]™NˆYÛ‹š\ĞXİ]™KBˆÛÜ[™^ˆYÛ‹œÛÜ[™^Bˆ
+CBˆCBˆYˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÃBˆ][]Y\ÈHİ™[Z[ÔİÜ™K™Ù][]Y\Ê
+CBˆ›Üˆ
+[™^YÛŠH[ˆYÛœÕÔ™\İÜ™K™[[Y\˜]Y
+
+HÃBˆ[]Y\Ë™š\œİ
+Ú\™NˆÈ	šYOHYÛ‹šYJOËœÛÜ[™^H[
+[™^
+CBˆCBˆİ™[Z[ÔİÜ™KœØ]™J
+CBˆCBƒBˆCBƒBˆYˆ\Y\ÕÜ]™[X[™ØPÛÛXİ[ÛœË˜XÚİ\š\ÓX[™ØPÛÛXİ[ÛœÈÃBˆ]™\İÜ™YX[™ØPÛÛXİ[ÛœÈH˜XÚİ\›X[™ØPÛÛXİ[ÛœË›X\È˜È[ƒBˆX[™ØSXœ˜\PÛÛXİ[ÛŠYˆ˜ËšY˜[YNˆ˜Ë›˜[YK][\Îˆ˜Ëš][\Ë\ØÜš\[Ûˆ˜Ë™\ØÜš\[ÛŠCBˆCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆX[™ØSXœ˜\SX[˜YÙ\‹œÚ\™Y˜ÛÛXİ[ÛœÈH™\İÜ™YX[™ØPÛÛXİ[ÛœÃBˆCBˆCBƒBˆYˆ\Y\ÕÜ]™[X[™ØT›ÙÜ™\ÜË˜XÚİ\š\ÓX[™ØT™XY[™Ô›ÙÜ™\ÜÈÃBˆ]X[™ØT›ÙÜ™\ÜÓX\HXİ[Û˜\JBˆ˜XÚİ\›X[™ØT™XY[™Ô›ÙÜ™\ÜË˜ÛÛ\XİX\ÈÙ^K˜[YHOˆ
+[X[™ØT›ÙÜ™\ÜÊOÈ[ƒBˆİX\™]YH[
+Ù^JH[ÙHÈ™]\›ˆš[CBˆ™]\›ˆ
+Y˜[YJCBˆKBˆ[š\]Z[™ÒÙ^\ÕÚ]ˆÈË[˜ÛÛZ[™È[ˆ[˜ÛÛZ[™ÈCBˆ
+CBˆ\™›Ü›SÛ“XZ[•™XYÃBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Yœ™\XÙT›ÙÜ™\ÜÓX\›Ü”™\İÜ™JX[™ØT›ÙÜ™\ÜÓX\
+CBˆCBˆCBƒBˆYˆ\Y\ÕÜ]™[X[™ØPØ][ÙÜË˜XÚİ\š\ÓX[™ØPØ][ÙÜÈÃBˆ]X[™ØPØ][ÙÓX[˜YÙ\ˆHX[™ØPØ][ÙÓX[˜YÙ\‹œÚ\™YBˆX[™ØPØ][ÙÓX[˜YÙ\‹˜Ø][ÙÜÈH˜XÚİ\›X[™ØPØ][ÙÜÃBˆX[™ØPØ][ÙÓX[˜YÙ\‹œØ]™PØ][ÙÜÊ
+CBˆCBƒBˆYˆ\Y\ÕÜ]™[İ\İÛPØ][ÙÜË˜XÚİ\š\Ğİ\İÛPØ][ÙÜÈÃBˆ]™\İÜ™Yİ\İÛPØ][ÙÜÈH˜XÚİ\˜İ\İÛPØ][ÙÜÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆØ[™[İ\İÛPØ][ÙÓX[˜YÙ\‹œÚ\™Y˜\T™\İÜ™YØ][ÙÜÊBˆ™\İÜ™Yİ\İÛPØ][ÙÜËBˆ›Ü”›Ùš[NˆXİ]™T›Ùš[RQBˆ
+CBˆCBˆCBƒBˆYˆ˜XÚİ\š\ÒØ[™[“[Ù[\ÈÃBˆ]™\İÜ™Y[Ù[\ÈH˜XÚİ\šØ[™[“[Ù[\Ë›X\È[Ù[ƒBˆ[Ù[Q]PÛÛZ[™\ŠBˆYˆ[ÙšYBˆ[Ù[Q]Nˆ[Ù›[Ù[Q]KBˆØØ[]ˆ[Ù›ØØ[]Bˆ[Ù[]\›ˆ[Ù›[Ù[]\›Bˆ\ĞXİ]™Nˆ[Ùš\ĞXİ]™CBˆ
+CBˆCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]Ø[™[“[Ù[SX[˜YÙ\ˆH[Ù[SX[˜YÙ\‹œÚ\™YBˆØ[™[“[Ù[SX[˜YÙ\‹œ™\XÙS[Ù[\Ñ›Ü”™\İÜ™J™\İÜ™Y[Ù[\ÊCBˆØ[™[“[Ù[SX[˜YÙ\‹œØ]™S[Ù[\Ê
+CBˆCBˆCBƒBˆÚYˆ[ÜÊ“ÔÊCBˆYˆ\Y\ÕÜ]™[Ûİ\˜Ù\ËBˆÜ]™[Û˜\ÚİËœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]HOHš[Bˆ]™XY\”İ]HH˜XÚİ\œ™XY\‘^[œÚ[ÛœÔİ]CBˆÏÈ˜XÚİ\˜ZYÚİTİ]K›X\
+˜XÚİ\™XY\‘^[œÚ[Û”İ]K›ZYÜ˜][™ÓYØXŞPZYÚİJHÃBˆÈHÙ[‹œ™\İÜ™T™XY\‘^[œÚ[Û”İ]T™\Ù\š[™ÓØØ[Û‘˜Z[\™JBˆ™XY\”İ]KBˆY]Y]TİÜ™Nˆ›Ùš[TÙ][™ÜÔİÜ™KœÙ\šXÙ\ËBˆ™Y™\™[˜ÙTİÜ™Nˆ›Ùš[TÙ][™ÜÔİÜ™K˜Xİ]™KBˆÛÛ^ˆ˜Xİ]™H›Ùš[HƒBˆ
+CBˆCBˆÙ[™YƒBƒBˆYˆ\Y\ÕÜ]™[\”›Ùš[Q]KX˜XÚİ\œ™XÛÛ[Y[™][ÛØXÚKš\Ñ[\HÃBˆ™XÛÛ[Y[™][Û‘[™Ú[™KœÚ\™Yœ™\İÜ™T™XÛÛ[Y[™][ÛØXÚJ˜XÚİ\œ™XÛÛ[Y[™][ÛØXÚJCBˆCBƒBˆYˆ\Y\ÕÜ]™[˜][™ÜË˜XÚİ\š\Õ\Ù\”˜][™ÜÈÃBˆ\Ù\”˜][™ÓX[˜YÙ\‹œÚ\™Yœ™\İÜ™T˜][™ÜĞ[™›İ\ÊBˆ˜][™ÜÎˆ˜XÚİ\]KœØ[š]^™Y\Ù\”˜][™ÜÊ˜XÚİ\\Ù\”˜][™ÜÊKBˆ›İ\Îˆ˜XÚİ\]KœØ[š]^™Y\Ù\”˜][™Ó›İ\Ê˜XÚİ\\Ù\”˜][™Ó›İ\ÊCBˆ
+CBˆCBƒBˆYˆ\Y\ÕÜ]™[Ûİ\˜Ù\Ë]Ù\šXÙ\ÔÙ][™ÜÈH˜XÚİ\œÙ\šXÙ\ÔÙ][™ÜÈÃBˆ]İÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÙ\šXÙ\ÃBˆÙ[‹œ™\İÜ™TÙ\šXÙ\ÔÙ][™ÜÊBˆÙ\šXÙ\ÔÙ][™ÜËBˆØ\\™YÛÛ\][Nˆ˜XÚİ\œÙ\šXÙ\ÔÙ][™ÜÕÙ\™PØ\\™YBˆÎˆİÜ™KBˆ™\Ù\š[™Îˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÈÈ™\Ù\™YØØ[Ûİ\˜ÙRQÈˆ×CBˆ
+CBˆCBƒBˆ™\İÜ™TÚ\™YÛİ\˜ÙT^[ØYÊ˜XÚİ\
+CBƒBˆ]š]˜]PÛÛ™šYİ\˜][Û”™\İÜ™HH™\İÜ™T›Ùš[TÛ˜\ÚİÊBˆ˜XÚİ\Bˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]Nˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]KBˆ™\Ù\š[™Ñ]šXÙSØØ[]š[ĞÛİYİ]Nˆ™Yœ™\ÚÛİYÛİ\˜Ù\ÃBˆ
+CBˆİX\™š]˜]PÛÛ™šYİ\˜][Û”™\İÜ™KØ\Ô™\İÜ™Y[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆš]˜]HÛİYÛÛ™šYİ\˜][ÛˆY›İ\œÚ\İ\˜X›NÈ™\İÜ™H™\]Z\™\È›Û˜XÚÈ‹Bˆ\NˆÛİYŞ[˜ÈƒBˆ
+CBˆ™]\›ˆš[BˆCBƒBˆİX\™›Ùš[SX[˜YÙ\‹œÚ\™Yœ›Üİ\”İÜ™R\Ô™XYX›H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™\İÜ™HY›İÛÛZ[ˆH˜[Y›Ùš[H›Üİ\ÈH[œ™XYX›HØØ[›Üİ\ˆ™[XZ[œÈ]X\˜[[™Y‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆ™]\›ˆš[BˆCBƒBˆÚYˆÜÊSÔÊCBˆ\ÚÈÈXZ[XİÜˆ[ƒBˆ]ØZ]ØØ[›İYšXØ][Û“X[˜YÙ\‹œÚ\™Yœ™[ØY\œÚ\İYÙ[Xİ[ÛœĞY\”™\İÜ™J
+CBˆCBˆÙ[™YƒBƒBˆÙÙÙ\‹œÚ\™Y›ÙÊ˜XÚİ\™\İÜ™YİXØÙ\ÜÙ[H‹\Nˆ’[™›ÈŠCBˆ™]\›ˆ˜XÚİ\\XØ][Û”™\İ[
+Bˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎƒBˆš]˜]PÛÛ™šYİ\˜][Û”™\İÜ™K˜]]Üš]]]™U˜XÚÙ\”›Ùš[RQÃBˆ
+CBˆCBƒBˆİ]XÈ]X^[][T›Ùš[S˜[YUU]\ÈH›Ùš[SX[˜YÙ\‹›X^[][S˜[YUU]\ÃBˆİ]XÈ]X^[][T›Ùš[P]˜]\”Ş[X›ÛU]\ÈH›Ùš[SX[˜YÙ\‹›X^[][P]˜]\”Ş[X›ÛU]\ÃBƒBˆİ]XÈ[˜ÈØ[š]^™Y›Ùš[TÛ˜\Úİ›Ü”™\İÜ™JBˆÈÛİ\˜ÙNˆ˜XÚİ\›Ùš[TÛ˜\ÚİBˆ›İÎˆ]HH]J
+CBˆ
+HOˆ˜XÚİ\›Ùš[TÛ˜\ÚİÈÃBˆ˜\ˆÛ˜\ÚİHÛİ\˜ÙCBˆİX\™]˜[YHH›Ùš[SX[˜YÙ\‹œØ[š]^™Y˜[YJÛİ\˜ÙK›˜[YJH[ÙHÈ™]\›ˆš[CBˆÛ˜\Úİ›˜[YHH˜[YCBˆÛ˜\Úİ˜]˜]\”Ş[X›ÛH›Ùš[SX[˜YÙ\‹œØ[š]^™Y]˜]\”Ş[X›Û
+Ûİ\˜ÙK˜]˜]\”Ş[X›Û
+CBˆÛ˜\Úİ˜]˜]\ÛÛÜ’^H›Ùš[SX[˜YÙ\‹œØ[š]^™Y]˜]\ÛÛÜ’^
+Ûİ\˜ÙK˜]˜]\ÛÛÜ’^
+CBˆYˆÛ˜\Úİ˜]˜]\”İÑ]OËš\Ñ[\HOHYCBˆ
+Û˜\Úİ˜]˜]\”İÑ]OË˜Ûİ[ÏÈ
+Hˆ›Ùš[P]˜]\‹›X^[][TİĞ]\ÈÃBˆÛ˜\Úİ˜]˜]\”İÑ]HHš[BˆCBƒBˆ]Ø[š]^™YS’\ÚH›Ùš[TS’\Ú\‹œØ[š]^™Y\Ú
+Ûİ\˜ÙKœ[’\Ú
+CBˆÛ˜\Úİœ[’\ÚHØ[š]^™YS’\ÚBˆÛ˜\Úİ˜Ü™X]Y]HØ[š]^™Y™\]Z\™Y›Ùš[PÛØÚÊÛİ\˜ÙK˜Ü™X]Y]›İÎˆ›İÊCBˆÛ˜\Úİœ[Ú[™ÙY]HØ[š]^™YS’\ÚOHš[	‰ˆÛİ\˜ÙKœ[’\ÚOHš[BˆÈš[BˆˆØ[š]^™YÜ[Û˜[›Ùš[PÛØÚÊÛİ\˜ÙKœ[Ú[™ÙY]›İÎˆ›İÊCBˆÛ˜\ÚİšÚYÑ›YĞÚ[™ÙY]HØ[š]^™YÜ[Û˜[›Ùš[PÛØÚÊBˆÛİ\˜ÙKšÚYÑ›YĞÚ[™ÙY]Bˆ›İÎˆ›İÃBˆ
+CBˆÛ˜\Úİœ™XY\‘^[œÚ[ÛœÔİ]HH
+BˆÛİ\˜ÙKœ™XY\‘^[œÚ[ÛœÔİ]CBˆÏÈÛİ\˜ÙK˜ZYÚİTİ]K›X\
+˜XÚİ\™XY\‘^[œÚ[Û”İ]K›ZYÜ˜][™ÓYØXŞPZYÚİJCBˆ
+OËœØ[š]^™Y
+
+CBˆÛ˜\Úİœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]HH˜XÚİ\›Ùš[TÛ˜\ÚİBˆ˜›İ[™Y™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]JBˆÛİ\˜ÙKœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]CBˆ
+CBˆÛ˜\Úİ˜ZYÚİTİ]HHš[BˆÛ˜\ÚİœÙ\šXÙ\ÔÙ][™ÜÈH˜XÚİ\]KœÙ\šXÙ\ÔÙ][™ÜÑ›Ü‘^\š[Y[[ÛİYŞ[˜ÊBˆÛİ\˜ÙKœÙ\šXÙ\ÔÙ][™ÜÃBˆ
+HÏÈÎ—CBˆ™]\›ˆÛ˜\ÚİBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ[š]^™Y™\]Z\™Y›Ùš[PÛØÚÊÈ˜[YNˆ]K›İÎˆ]JHOˆ]HÃBˆ]ÙXÛÛ™ÈH˜[YK[YR[\˜[Ú[˜ÙLNMÌBˆ]X^[][HH›İË[YR[\˜[Ú[˜ÙLNMÌBˆ
+ÈYYXTİ]Q[™[ÜU˜[Y]Ü‹›X^[][Q]\™PÛØÚÔÚÙ]ÃBˆİX\™ÙXÛÛ™Ëš\Ñš[š]H[ÙHÈ™]\›ˆ›İÈCBˆYˆÙXÛÛ™ÈÈ™]\›ˆ]J[YR[\˜[Ú[˜ÙLNMÌˆ
+HCBˆYˆÙXÛÛ™ÈˆX^[][HÈ™]\›ˆ›İÈCBˆ™]\›ˆ˜[YCBˆCBƒBˆš]˜]Hİ]XÈ[˜ÈØ[š]^™YÜ[Û˜[›Ùš[PÛØÚÊÈ˜[YNˆ]OË›İÎˆ]JHOˆ]OÈÃBˆİX\™]˜[YH[ÙHÈ™]\›ˆš[CBˆ]ÙXÛÛ™ÈH˜[YK[YR[\˜[Ú[˜ÙLNMÌBˆ]X^[][HH›İË[YR[\˜[Ú[˜ÙLNMÌBˆ
+ÈYYXTİ]Q[™[ÜU˜[Y]Ü‹›X^[][Q]\™PÛØÚÔÚÙ]ÃBˆİX\™ÙXÛÛ™Ëš\Ñš[š]KÙXÛÛ™ÈH[ÙHÈ™]\›ˆš[CBˆ™]\›ˆÙXÛÛ™ÈˆX^[][HÈ›İÈˆ˜[YCBˆCBƒBˆİ]XÈ[˜È›Ùš[TÛ˜\ÚİĞYZ]Y›Ü”™\İÜ™JBˆÈÛ˜\ÚİÎˆĞ˜XÚİ\›Ùš[TÛ˜\ÚİKBˆ^\İ[™Ô›Ùš[RQÎˆÙ]URQ‹BˆYZ][™Õ[œ›Üİ\™Yš]˜]PÛÛ™šYİ\˜][Ûˆ›ÛÛH˜[ÙCBˆ
+HOˆĞ˜XÚİ\›Ùš[TÛ˜\ÚİHÃBˆ˜\ˆÙY[’QÈHÙ]URQŠ
+CBˆ˜\ˆØ[™Y]\ÎˆĞ˜XÚİ\›Ùš[TÛ˜\ÚİHH×CBˆØ[™Y]\Ëœ™\Ù\™PØ\XÚ]JZ[ŠÛ˜\ÚİË˜Ûİ[›Ùš[SX[˜YÙ\‹›X^[][T›Ùš[\ÊJCBƒBˆ]›İÈH]J
+CBˆ›Üˆ˜]ÔÛ˜\Úİ[ˆÛ˜\ÚİÈÃBˆİX\™]Û˜\ÚİHØ[š]^™Y›Ùš[TÛ˜\Úİ›Ü”™\İÜ™J˜]ÔÛ˜\Úİ›İÎˆ›İÊKBˆÙY[’QËš[œÙ\
+Û˜\ÚİšY
+Kš[œÙ\Y[ÙHÈÛÛ[YHCBˆØ[™Y]\Ë˜\[™
+Û˜\Úİ
+CBˆCBƒBˆ]^\İ[™ĞØ[™Y]RQÈHÙ]
+BˆØ[™Y]\Ë›^CBˆ™š[\ˆÈ^\İ[™Ô›Ùš[RQË˜ÛÛZ[œÊ	šY
+HCBˆœ™Yš^
+›Ùš[SX[˜YÙ\‹›X^[][T›Ùš[\ÊCBˆ›X\
+šY
+CBˆ
+CBˆ]™]ØÛÛY\Ø\XÚ]HHX^
+BˆBˆ›Ùš[SX[˜YÙ\‹›X^[][T›Ùš[\ÈH
+BˆYZ][™Õ[œ›Üİ\™Yš]˜]PÛÛ™šYİ\˜][ÛƒBˆÈ^\İ[™ĞØ[™Y]RQË˜Ûİ[Bˆˆ^\İ[™Ô›Ùš[RQË˜Ûİ[Bˆ
+CBˆ
+CBˆ˜\ˆYZ]Y™]ØÛÛY\œÈHBˆ˜\ˆYZ]YˆĞ˜XÚİ\›Ùš[TÛ˜\ÚİHH×CBˆYZ]Yœ™\Ù\™PØ\XÚ]JZ[ŠØ[™Y]\Ë˜Ûİ[›Ùš[SX[˜YÙ\‹›X^[][T›Ùš[\ÊJCBˆ›ÜˆÛ˜\Úİ[ˆØ[™Y]\ÈÃBˆYˆ^\İ[™ĞØ[™Y]RQË˜ÛÛZ[œÊÛ˜\ÚİšY
+HÃBˆYZ]Y˜\[™
+Û˜\Úİ
+CBˆH[ÙHYˆYZ]Y™]ØÛÛY\œÈ™]ØÛÛY\Ø\XÚ]HÃBˆYZ]Y™]ØÛÛY\œÈ
+ÏHCBˆYZ]Y˜\[™
+Û˜\Úİ
+CBˆCBˆCBˆ™]\›ˆYZ]YBˆCBƒBˆš]˜]H[˜È™\İÜ™T›Ùš[TÛ˜\ÚİÊBˆÈ˜XÚİ\ˆ˜XÚİ\]KBˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]Nˆ›ÛÛH˜[ÙKBˆ™\Ù\š[™Ñ]šXÙSØØ[]š[ĞÛİYİ]Nˆ›ÛÛH˜[ÙCBˆ
+HOˆš]˜]PÛÛ™šYİ\˜][Û”™\İÜ™T™\İ[ÃBˆİX\™]Û˜\ÚİÈH˜XÚİ\œ›Ùš[\Ë\Û˜\ÚİËš\Ñ[\H[ÙHÃBˆYˆ]İÛ™\ˆH˜XÚİ\˜Xİ]™T›Ùš[RQBˆİÛ™\ˆOH›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ\È˜XÚİ\ÛÈHÚ[™ÛH›Ùš[H
+
+İÛ™\ŠJH[™Ø\È™\İÜ™Y[È
+›Ùš[SX[˜YÙ\‹œÚ\™Y˜Xİ]™T›Ùš[RQ
+H‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆCBˆ™]\›ˆš]˜]PÛÛ™šYİ\˜][Û”™\İÜ™T™\İ[
+BˆØ\Ô™\İÜ™YˆYKBˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆ×CBˆ
+CBˆCBˆ˜\ˆ^\İ[™Ô›Ùš[RQÈHÙ]URQŠ
+CBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ]X[˜YÙ\ˆH›Ùš[SX[˜YÙ\‹œÚ\™YBƒBˆ^\İ[™Ô›Ùš[RQÈHX[˜YÙ\‹œ›Üİ\”İÜ™R\Ô™XYX›CBˆÈÙ]
+X[˜YÙ\‹œ›Ùš[\Ë›X\
+šY
+JCBˆˆ×CBˆCBˆ]YZ]YÛ˜\ÚİÈHÙ[‹œ›Ùš[TÛ˜\ÚİĞYZ]Y›Ü”™\İÜ™JBˆÛ˜\ÚİËBˆ^\İ[™Ô›Ùš[RQÎˆ^\İ[™Ô›Ùš[RQËBˆYZ][™Õ[œ›Üİ\™Yš]˜]PÛÛ™šYİ\˜][Ûˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]CBˆ
+CBˆYˆYZ]YÛ˜\ÚİË˜Ûİ[OHÛ˜\ÚİË˜Ûİ[ÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆYZ]Y
+YZ]YÛ˜\ÚİË˜Ûİ[
+HÙˆ
+Û˜\ÚİË˜Ûİ[
+H[š\]YK˜[Y›Ùš[HÛ˜\Úİ
+ÊHÚ][ˆH›Üİ\ˆØ\‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆCBƒBˆ˜\ˆXØÙ\Y›Ùš[RQÈHÙ]URQŠ
+CBˆYˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]HÃBˆXØÙ\Y›Ùš[RQÈHÙ]
+YZ]YÛ˜\ÚİË›X\
+šY
+JCBˆH[ÙHÃBˆ\™›Ü›SÛ“XZ[•™XYÃBƒBˆXØÙ\Y›Ùš[RQÈH›Ùš[SX[˜YÙ\‹œÚ\™Y›Y\™ÙT›Ùš[\Ñœ›ÛP˜XÚİ\
+BˆYZ]YÛ˜\ÚİË›X\ÃBˆ›Ùš[JBˆYˆ	šYBˆ˜[YNˆ	›˜[YKBˆ]˜]\”Ş[X›Ûˆ	˜]˜]\”Ş[X›ÛBˆ]˜]\ÛÛÜ’^ˆ	˜]˜]\ÛÛÜ’^Bˆ]˜]\”İÑ]Nˆ	˜]˜]\”İÑ]KBˆ[’\Úˆ	œ[’\ÚBˆ\ÒÚYÔ›Ùš[Nˆ	š\ÒÚYÔ›Ùš[KBˆÜ™X]Y]ˆ	˜Ü™X]Y]Bˆ[Ú[™ÙY]ˆ	œ[Ú[™ÙY]BˆÚYÑ›YĞÚ[™ÙY]ˆ	šÚYÑ›YĞÚ[™ÙY]Bˆ
+CBˆCBˆ
+CBƒBˆCBˆCBƒBˆ˜\ˆš]˜]PÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YHYCBˆ˜\ˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÈHÙ]URQŠ
+CBˆ›ÜˆÛ˜\Úİ[ˆYZ]YÛ˜\ÚİÈÃBˆ]YHÛ˜\ÚİšYBˆ]\Õ[œ›Üİ\™YØ[›ÛšXØ[›Ùš[HH™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]CBˆ	‰ˆY^\İ[™Ô›Ùš[RQË˜ÛÛZ[œÊY
+CBˆİX\™XØÙ\Y›Ùš[RQË˜ÛÛZ[œÊY
+H[ÙHÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆÚÚ\Y›Ùš[H
+Y
+IÜÈ]NÈH›Üİ\ˆY\™ÙHY›İYZ]]‹Bˆ\Nˆ‘\œ›ÜˆƒBˆ
+CBˆÛÛ[YCBˆCBƒBˆYˆ\™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]KÛ˜\Úİœ›ÙÜ™\ÜÕØ\ĞØ\\™YÃBˆ›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Y˜\T™\İÜ™Y›ÙÜ™\ÜÑ]JBˆ˜XÚİ\]KœØ[š]^™Y›ÙÜ™\ÜÑ]JBˆÛ˜\Úİœ›ÙÜ™\ÜÑ]KBˆ™\Ù\š[™Ñ]šXÙSØØ[™Y™\™[˜Ù\ÎˆYCBˆ
+KBˆ›Ü”›Ùš[NˆYBˆ
+CBˆCBˆYˆ\™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]KÛ˜\Úİœ˜][™ÜÕÙ\™PØ\\™YÃBˆ\Ù\”˜][™ÓX[˜YÙ\‹œÚ\™Yœ™\İÜ™T˜][™ÜĞ[™›İ\ÊBˆ˜][™ÜÎˆ˜XÚİ\]KœØ[š]^™Y\Ù\”˜][™ÜÊÛ˜\Úİ\Ù\”˜][™ÜÊKBˆ›İ\Îˆ˜XÚİ\]KœØ[š]^™Y\Ù\”˜][™Ó›İ\ÊÛ˜\Úİ\Ù\”˜][™Ó›İ\ÊKBˆ›Ü”›Ùš[NˆYBˆ
+CBˆCBˆYˆ\™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]KÛ˜\Úİ˜ÛÛXİ[ÛœÕÙ\™PØ\\™YÃBˆ\™›Ü›SÛ“XZ[•™XYÃBˆXœ˜\SX[˜YÙ\‹œÚ\™Yœ™\XÙPÛÛXİ[ÛœÑ›Ü“YYXTİ]JBˆÛ˜\Úİ˜ÛÛXİ[ÛœË›X\È	ÓXœ˜\PÛÛXİ[ÛŠ
+HKBˆ›Ü”›Ùš[NˆYBˆ
+CBˆCBˆCBˆYˆ\Û˜\Úİœ›ÙÜ™\ÜÕØ\ĞØ\\™YBˆ\Û˜\Úİœ˜][™ÜÕÙ\™PØ\\™YBˆ\Û˜\Úİ˜ÛÛXİ[ÛœÕÙ\™PØ\\™YBˆ\Û˜\Úİ˜Ø][ÙÜÕÙ\™PØ\\™YBˆ\Û˜\Úİ›X[™ØPÛÛXİ[ÛœÕÙ\™PØ\\™YBˆ\Û˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜÕØ\ĞØ\\™YBˆ\Û˜\Úİ›X[™ØPØ][ÙÜÕÙ\™PØ\\™YBˆ\Û˜\Úİ˜İ\İÛPØ][ÙÜÕÙ\™PØ\\™YÃBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ›Ùš[H
+Y
+H™\İÜ™YÚ]İ][œ™XYX›HÛXZ[œÈ
+›ÙÜ™\ÜÏW
+Û˜\Úİœ›ÙÜ™\ÜÕØ\ĞØ\\™Y
+H˜][™ÜÏW
+Û˜\Úİœ˜][™ÜÕÙ\™PØ\\™Y
+HÛÛXİ[ÛœÏW
+Û˜\Úİ˜ÛÛXİ[ÛœÕÙ\™PØ\\™Y
+HØ][ÙÜÏW
+Û˜\Úİ˜Ø][ÙÜÕÙ\™PØ\\™Y
+H™XY\“Xœ˜\OW
+Û˜\Úİ›X[™ØPÛÛXİ[ÛœÕÙ\™PØ\\™Y
+H™XY\”›ÙÜ™\ÜÏW
+Û˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜÕØ\ĞØ\\™Y
+H™XY\Ø][ÙÜÏW
+Û˜\Úİ›X[™ØPØ][ÙÜÕÙ\™PØ\\™Y
+H™XY\İ\İÛPØ][ÙÜÏW
+Û˜\Úİ˜İ\İÛPØ][ÙÜÕÙ\™PØ\\™Y
+JNÈH\İ[˜][ÛˆÙY\È]ÈİÛˆÛÜH‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆCBˆYˆ\™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]KBˆÛ˜\Úİ˜Ø][ÙÜÕÙ\™PØ\\™YÃBˆØ][ÙÓX[˜YÙ\‹œÚ\™Yœ™\XÙPØ][ÙÜÑ›Ü“YYXTİ]JÛ˜\Úİ˜Ø][ÙÜË›Ü”›Ùš[NˆY
+CBˆCBˆYˆÛ˜\Úİ˜XÚÙ\”İ]UØ\ĞØ\\™YBˆ
+Z\Õ[œ›Üİ\™YØ[›ÛšXØ[›Ùš[CBˆÛ˜\Úİ˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™Y
+HÃBˆ˜\ˆ˜XÚÙ\”İ]UØ\Ô™\İÜ™YH˜[ÙCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆ˜XÚÙ\”İ]UØ\Ô™\İÜ™YH˜XÚÙ\“X[˜YÙ\‹œÚ\™Y˜\T™\İÜ™Y˜XÚÙ\”İ]JBˆÛ˜\Úİ˜XÚÙ\”İ]KBˆ›Ü”›Ùš[NˆYBˆÜ™Y[X[Ğ[™›Üİ\\™P]]Üš]]]™NƒBˆÛ˜\Úİ˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YBˆ\›Z]Õ[œ›Üİ\™Y›Ùš[Nˆ\Õ[œ›Üİ\™YØ[›ÛšXØ[›Ùš[CBˆ
+CBˆCBˆYˆÛ˜\Úİ˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YBˆ]˜XÚÙ\”İ]UØ\Ô™\İÜ™YÃBˆš]˜]PÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH˜[ÙCBˆH[ÙHYˆÛ˜\Úİ˜XÚÙ\Ü™Y[X[Ğ[™›Üİ\•Ù\™PØ\\™YBˆ˜XÚÙ\”İ]UØ\Ô™\İÜ™YÃBˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQËš[œÙ\
+Y
+CBˆCBˆCBƒBˆ]İÜ™HH›Ùš[TÙ][™ÜÔİÜ™KœÚ\™YœİÜ™J›ÜˆY
+CBƒBˆYˆ\Õ[œ›Üİ\™YØ[›ÛšXØ[›Ùš[HÃBˆYˆÛ˜\Úİœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]HOHš[ÃBˆš]˜]PÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH™\İÜ™T›Ùš[T™XY\ÛÛ™šYİ\˜][ÛŠBˆÛ˜\ÚİBˆ[ÎˆİÜ™KBˆ›Ùš[RQˆYBˆ\›Z]Õ[œ›Üİ\™Y›Ùš[NˆYCBˆ
+H	‰ˆš]˜]PÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YBˆCBˆÛÛ[YCBˆCBƒBˆYˆÛ˜\ÚİœÙX\˜Ú\İÜKØ\ĞØ\\™Y\Û˜\ÚİœÙX\˜Ú\İÜKœ]Y\šY\Ëš\Ñ[\KBˆ]ÙX\˜Ú\İÜQ]HHOÈ”ÓÓ‘[˜ÛÙ\Š
+K™[˜ÛÙJÛ˜\ÚİœÙX\˜Ú\İÜKœ]Y\šY\ÊHÃBˆİÜ™KœÙ]
+ÙX\˜Ú\İÜQ]K›Ü’Ù^NˆœÙX\˜Ú\İÜHŠCBˆCBˆ]™\Ù\™\Ó]š[Ôİ]Q›Ü•\Ñ\İ[˜][ÛˆH™\Ù\š[™Ñ]šXÙSØØ[]š[ĞÛİYİ]CBˆ	‰ˆ^\İ[™Ô›Ùš[RQË˜ÛÛZ[œÊY
+CBˆ	‰ˆ
+T›Ùš[TÙ][™ÜÔİÜ™KœÚ\™\ÔÙ\šXÙ\ÃBˆYOH›Ùš[SX[˜YÙ\‹™Y˜][›Ùš[RQ
+CBˆ]™XY\ÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH™\İÜ™T›Ùš[TÛİ\˜Ù\ÊBˆÛ˜\ÚİBˆ[ÎˆİÜ™KBˆ›Ùš[RQˆYBˆ™\Ù\š[™Ñ]šXÙSØØ[]š[ĞÛİYİ]Nˆ™\Ù\™\Ó]š[Ôİ]Q›Ü•\Ñ\İ[˜][ÛƒBˆ
+CBˆYˆÛ˜\Úİœ™XY\”š]˜]PÛİYÛÛ™šYİ\˜][Û‘]HOHš[Bˆ\™XY\ÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YÃBˆš]˜]PÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YH˜[ÙCBˆCBƒBˆ˜\ˆ\YYÙ][™ĞÛİ[HBˆ›Üˆ
+Ù^K]JH[ˆÛ˜\ÚİœÙ][™ÜÈÚ\™HÙ[‹˜Ø\œšY\Ô›Ùš[TØÛÜYÙ][™ÊÙ^JHÃBˆYˆ™\Ù\š[™ĞØ[›ÛšXØ[YYXTİ]KBˆYYXTİ]TÙ][™Ô™YÚ\İKœØÛÜJ›ÜˆÙ^JHOHš[ÃBˆÛÛ[YCBˆCBˆİX\™\YYÙ][™ĞÛİ[Ù[‹›X^[][T›Ùš[TÙ][™ÒÙ^\È[ÙHÈœ™XZÈCBˆİX\™]˜[YHHÙ[‹˜[Y]Y˜XÚİ\Ù][™Õ˜[YJBˆœ›ÛNˆ]KBˆ›Ü’Ù^NˆÙ^CBˆ
+H[ÙHÈÛÛ[YHCBˆİÜ™KœÙ]
+˜[YK›Ü’Ù^NˆÙ^JCBˆ\YYÙ][™ĞÛİ[
+ÏHCBˆCBˆÚYˆ[ÜÊ“ÔÊCBˆ\™›Ü›SÛ“XZ[•™XYÃBˆYˆÛ˜\Úİ›X[™ØPÛÛXİ[ÛœÕÙ\™PØ\\™YÃBˆX[™ØSXœ˜\SX[˜YÙ\‹œÚ\™Y˜\T™\İÜ™YÛÛXİ[ÛœÊBˆÛ˜\Úİ›X[™ØPÛÛXİ[ÛœË›X\ÃBˆX[™ØSXœ˜\PÛÛXİ[ÛŠBˆYˆ	šYBˆ˜[YNˆ	›˜[YKBˆ][\Îˆ	š][\ËBˆ\ØÜš\[Ûˆ	™\ØÜš\[ÛƒBˆ
+CBˆKBˆ›Ü”›Ùš[NˆYBˆ
+CBˆCBˆYˆÛ˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜÕØ\ĞØ\\™YÃBˆX[™ØT™XY[™Ô›ÙÜ™\ÜÓX[˜YÙ\‹œÚ\™Y˜\T™\İÜ™Y›ÙÜ™\ÜÊBˆÛ˜\Úİ›X[™ØT™XY[™Ô›ÙÜ™\ÜËœ™YXÙJ[ÎˆÒ[ˆX[™ØT›ÙÜ™\Ü×J
+JHÈ™\İ[[H[ƒBˆİX\™]Ù^HH[
+[KšÙ^JH[ÙHÈ™]\›ˆCBˆ™\İ[ÚÙ^WHH[K˜[YCBˆKBˆ›Ü”›Ùš[NˆYBˆ
+CBˆCBˆYˆÛ˜\Úİ›X[™ØPØ][ÙÜÕÙ\™PØ\\™YÃBˆX[™ØPØ][ÙÓX[˜YÙ\‹œÚ\™Y˜\T™\İÜ™YØ][ÙÜÊÛ˜\Úİ›X[™ØPØ][ÙÜË›Ü”›Ùš[NˆY
+CBˆCBˆYˆÛ˜\Úİ˜İ\İÛPØ][ÙÜÕÙ\™PØ\\™YÃBˆØ[™[İ\İÛPØ][ÙÓX[˜YÙ\‹œÚ\™Y˜\T™\İÜ™YØ][ÙÜÊBˆÛ˜\Úİ˜İ\İÛPØ][ÙÜËBˆ›Ü”›Ùš[NˆYBˆ
+CBˆCBˆCBˆÙ[™YƒBˆCBˆÙÙÙ\‹œÚ\™Y›ÙÊBˆ˜XÚİ\X[˜YÙ\ˆ™\İÜ™Y
+YZ]YÛ˜\ÚİË™š[\ˆÈXØÙ\Y›Ùš[RQË˜ÛÛZ[œÊ	šY
+HK˜Ûİ[
+HÙˆ
+Û˜\ÚİË˜Ûİ[
+H›Ùš[\Èœ›ÛHH˜XÚİ\‹Bˆ\Nˆ’[™›ÈƒBˆ
+CBˆ™]\›ˆš]˜]PÛÛ™šYİ\˜][Û”™\İÜ™T™\İ[
+BˆØ\Ô™\İÜ™Yˆš]˜]PÛÛ™šYİ\˜][Û•Ø\Ô™\İÜ™YBˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÎˆ]]Üš]]]™U˜XÚÙ\”›Ùš[RQÃBˆ
+CBˆCBŸCB

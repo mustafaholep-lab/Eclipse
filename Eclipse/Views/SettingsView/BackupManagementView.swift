@@ -376,15 +376,15 @@ struct BackupManagementView: View {
                 if success {
                     let importedCount = BackupManager.shared.lastManualRestoreImportedRecordCount
                     let countMessage = "\(importedCount) watch record\(importedCount == 1 ? "" : "s") imported."
-                    if scope.keepsChangesOnThisDevice && cloudSyncWasEnabled {
+                    if BackupManager.shared.lastManualRestoreRequiresRelaunch {
+                        backupMessage = "\(countMessage) Backup restored safely. Close and reopen Eclipse once to load the restored profile."
+                    } else if scope.keepsChangesOnThisDevice && cloudSyncWasEnabled {
                         backupMessage = "\(countMessage) Backup restored on this device. Cloud sync is off here, and your cloud copy and other devices were not changed."
                     } else if cloudSyncWasEnabled {
                         backupMessage = "\(countMessage) Eclipse refreshed the active profile and queued the restored data for your enabled cloud providers."
                     } else {
                         backupMessage = "\(countMessage) Backup restored and the app was refreshed."
                     }
-                    profileManager.objectWillChange.send()
-                    NotificationCenter.default.post(name: .progressDataDidChange, object: nil)
                 } else {
                     let detailedFailure = BackupManager.shared.lastManualRestoreFailureReason
                     if cloudSyncWasEnabled && !cloudSyncRemainsEnabled {
@@ -510,4 +510,3 @@ private extension View {
         }
     }
 }
-

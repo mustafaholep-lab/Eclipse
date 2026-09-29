@@ -336,11 +336,20 @@ final class ProfileManager: ObservableObject {
     private static let profilesKey = "eclipseProfilesV1"
 
     static let activeProfileStorageKey = "eclipseActiveProfileIDV1"
+    private static let pendingRestoredProfileStorageKey =
+        "eclipsePendingRestoredActiveProfileIDV1"
 
     private static let storedRosterAtLaunch: (profiles: [Profile], isReadable: Bool) = loadStoredRoster()
 
     static let launchActiveProfileID: UUID = {
         let roster = storedRosterAtLaunch.profiles
+        let pendingRestored = UserDefaults.standard
+            .string(forKey: pendingRestoredProfileStorageKey)
+            .flatMap(UUID.init(uuidString:))
+        if let pendingRestored,
+           roster.contains(where: { $0.id == pendingRestored }) {
+            return pendingRestored
+        }
         let storedActive = UserDefaults.standard
             .string(forKey: activeProfileStorageKey)
             .flatMap(UUID.init(uuidString:))
@@ -380,6 +389,7 @@ final class ProfileManager: ObservableObject {
 
         let resolvedActive = Self.launchActiveProfileID
         activeProfileID = resolvedActive
+        defaults.removeObject(forKey: Self.pendingRestoredProfileStorageKey)
         cachedKidsModeActive = loaded.first { $0.id == resolvedActive }?.isKidsProfile ?? false
         locallyDeletedProfileIDs = Self.loadLocallyDeletedProfileIDs()
 
@@ -827,6 +837,19 @@ final class ProfileManager: ObservableObject {
     func switchProfile(to id: UUID) {
         guard id != activeProfileID, profiles.contains(where: { $0.id == id }) else { return }
         applyActiveProfile(id)
+    }
+
+    /// Manual backup restore can finish while source and cloud managers are
+    /// still closing their restore transactions. Switching every live manager
+    /// at that boundary is unsafe, so select the restored profile atomically on
+    /// the next clean launch instead.
+    func stageRestoredProfileForNextLaunch(_ id: UUID) -> Bool {
+        guard profiles.contains(where: { $0.id == id }) else { return false }
+        UserDefaults.standard.set(
+            id.uuidString,
+            forKey: Self.pendingRestoredProfileStorageKey
+        )
+        return UserDefaults.standard.synchronize()
     }
 
     private func applyActiveProfile(_ id: UUID) {
