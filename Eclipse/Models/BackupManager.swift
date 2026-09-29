@@ -9049,11 +9049,33 @@ class BackupManager {
 
     private let manualBackupFailureLock = NSLock()
     private var manualBackupFailureReason: String?
+    private let manualRestoreResultLock = NSLock()
+    private var manualRestoreFailureReason: String?
+    private var manualRestoreImportedRecordCount = 0
 
     var lastManualBackupFailureReason: String? {
         manualBackupFailureLock.lock()
         defer { manualBackupFailureLock.unlock() }
         return manualBackupFailureReason
+    }
+
+    var lastManualRestoreFailureReason: String? {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        return manualRestoreFailureReason
+    }
+
+    var lastManualRestoreImportedRecordCount: Int {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        return manualRestoreImportedRecordCount
+    }
+
+    private func recordManualRestoreResult(failureReason: String?, importedRecordCount: Int = 0) {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        manualRestoreFailureReason = failureReason
+        manualRestoreImportedRecordCount = importedRecordCount
     }
 
     private func recordManualBackupFailureReason(_ reason: String?) {
@@ -9087,10 +9109,27 @@ class BackupManager {
 
     private enum BackupRestoreError: LocalizedError {
         case activeProfileChanged
+        case invalidDocument
+        case missingBackupPayload
+        case unsupportedVersion(String)
 
         var errorDescription: String? {
-            "The active profile or profile roster changed while the restore was starting. Try importing again."
+            switch self {
+            case .activeProfileChanged:
+                return "The active profile or profile roster changed while the restore was starting. Try importing again."
+            case .invalidDocument:
+                return "This file is not a valid Eclipse backup JSON document."
+            case .missingBackupPayload:
+                return "This backup is incomplete: it does not contain settings, profiles, collections, or watch history."
+            case .unsupportedVersion(let version):
+                return "This backup uses format version \(version), which this Eclipse version cannot read. Update Eclipse and try again."
+            }
         }
+    }
+
+    private struct ManualRestorePreflight {
+        let watchRecordCount: Int
+        let preferredActiveProfileID: UUID?
     }
 
     private struct ActiveProfileScopeToken: Equatable {
@@ -13282,6 +13321,17 @@ private struct ScopedSettingsDefaults {
         from url: URL,
         scope: ManualBackupRestoreScope
     ) async -> Bool {
+        recordManualRestoreResult(failureReason: nil)
+        let preflight: ManualRestorePreflight
+        do {
+            preflight = try manualRestorePreflight(from: url)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            recordManualRestoreResult(failureReason: message)
+            Logger.shared.log("Backup restore validation failed: \(message)", type: "Error")
+            return false
+        }
 #if os(iOS)
         guard let syncSession = await MainActor.run(body: {
             ExperimentalCloudSyncManager.shared.beginManualRestore(
@@ -13291,6 +13341,9 @@ private struct ScopedSettingsDefaults {
             Logger.shared.log(
                 "Backup restore waited because a cloud operation is still active",
                 type: "CloudSync"
+            )
+            recordManualRestoreResult(
+                failureReason: "A cloud sync or restore is still running. Wait for it to finish, then import the backup again."
             )
             return false
         }
@@ -13309,11 +13362,85 @@ private struct ScopedSettingsDefaults {
                 syncSession,
                 succeeded: succeeded
             )
+            if succeeded,
+               let preferredProfileID = preflight.preferredActiveProfileID,
+               ProfileManager.shared.profiles.contains(where: { $0.id == preferredProfileID }) {
+                // A clean install starts on the built-in profile. Previous
+                // versions restored a custom profile's data under its old UUID
+                // but left that empty built-in profile selected, making the
+                // restore look as if it had lost all watch history.
+                ProfileManager.shared.switchProfile(to: preferredProfileID)
+            }
+        }
+        if succeeded {
+            recordManualRestoreResult(
+                failureReason: nil,
+                importedRecordCount: preflight.watchRecordCount
+            )
+        } else if lastManualRestoreFailureReason == nil {
+            recordManualRestoreResult(
+                failureReason: "The backup could not be applied. No restored data was selected; wait for any cloud operation to finish and try again."
+            )
         }
         return succeeded
 #else
-        return await restoreBackup(from: url)
+        let succeeded = await restoreBackup(from: url)
+        if succeeded {
+            recordManualRestoreResult(
+                failureReason: nil,
+                importedRecordCount: preflight.watchRecordCount
+            )
+        }
+        return succeeded
 #endif
+    }
+
+    private func manualRestorePreflight(from url: URL) throws -> ManualRestorePreflight {
+        let data = try BoundedLocalStoreReader.read(
+            from: url,
+            maximumBytes: Self.maximumManualBackupFileBytes
+        )
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw BackupRestoreError.invalidDocument
+        }
+
+        let version = (object["version"] as? String) ?? "1.0"
+        guard Self.compareSchemaVersion(
+            version,
+            to: BackupData.currentCloudSchemaVersion
+        ) != .orderedDescending else {
+            throw BackupRestoreError.unsupportedVersion(version)
+        }
+
+        let knownPayloadKeys: Set<String> = [
+            "profiles", "progressData", "collections", "settings", "services",
+            "stremioAddons", "catalogs", "trackerState"
+        ]
+        guard !knownPayloadKeys.isDisjoint(with: Set(object.keys)) else {
+            throw BackupRestoreError.missingBackupPayload
+        }
+
+        func progressCount(in value: Any?) -> Int {
+            guard let progress = value as? [String: Any] else { return 0 }
+            let movieCount = (progress["movieProgress"] as? [Any])?.count ?? 0
+            let episodeCount = (progress["episodeProgress"] as? [Any])?.count ?? 0
+            return movieCount + episodeCount
+        }
+
+        let profiles = object["profiles"] as? [[String: Any]]
+        let profileRecordCount = profiles?.reduce(into: 0) { count, profile in
+            count += progressCount(in: profile["progressData"])
+        } ?? 0
+        let watchRecordCount = profileRecordCount > 0
+            ? profileRecordCount
+            : progressCount(in: object["progressData"])
+        let preferredActiveProfileID = (object["activeProfileID"] as? String)
+            .flatMap(UUID.init(uuidString:))
+
+        return ManualRestorePreflight(
+            watchRecordCount: watchRecordCount,
+            preferredActiveProfileID: preferredActiveProfileID
+        )
     }
 
     func restoreBackup(

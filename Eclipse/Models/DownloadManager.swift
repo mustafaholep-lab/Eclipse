@@ -6218,6 +6218,12 @@ final class DownloadManager: NSObject, ObservableObject {
         return nil
     }
 
+    /// Read-only planning value used before a season is added to the queue.
+    /// The scheduler still performs its own low-space checks while downloading.
+    func availableStorageBytesForPlanning() -> Int64? {
+        availableDownloadCapacity()
+    }
+
     private func setQueuedMessage(id: String, message: String) {
         performOnMain {
             guard let index = self.downloads.firstIndex(where: { $0.id == id }),

@@ -100,6 +100,49 @@ struct DownloadsView: View {
         visibleToProfile(downloadManager.downloads.filter { $0.status == .failed })
     }
 
+    private struct SeasonBatchSummary: Identifiable {
+        let tmdbID: Int
+        let seasonNumber: Int
+        let title: String
+        let items: [DownloadItem]
+
+        var id: String { "\(tmdbID)-\(seasonNumber)" }
+        var completedCount: Int { items.filter { $0.status == .completed }.count }
+        var failedCount: Int { items.filter { $0.status == .failed }.count }
+        var progress: Double {
+            guard !items.isEmpty else { return 0 }
+            return items.reduce(0) { partial, item in
+                partial + (item.status == .completed ? 1 : min(max(item.progress, 0), 1))
+            } / Double(items.count)
+        }
+    }
+
+    private var seasonBatchSummaries: [SeasonBatchSummary] {
+        let visible = visibleToProfile(downloadManager.downloads).filter {
+            !$0.isMovie && $0.seasonNumber != nil
+        }
+        let grouped = Dictionary(grouping: visible) { item in
+            "\(item.tmdbId)-\(item.seasonNumber ?? 0)"
+        }
+        return grouped.values.compactMap { items in
+            guard items.count > 1,
+                  let first = items.first,
+                  let season = first.seasonNumber,
+                  items.contains(where: { $0.status != .completed }) else { return nil }
+            return SeasonBatchSummary(
+                tmdbID: first.tmdbId,
+                seasonNumber: season,
+                title: first.playerTitleBase,
+                items: items.sorted { ($0.episodeNumber ?? 0) < ($1.episodeNumber ?? 0) }
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.title == rhs.title
+                ? lhs.seasonNumber < rhs.seasonNumber
+                : lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
     var body: some View {
         Group {
             if #available(iOS 16.0, *) {
@@ -215,6 +258,16 @@ struct DownloadsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
+            if !seasonBatchSummaries.isEmpty {
+                Section {
+                    ForEach(seasonBatchSummaries) { batch in
+                        seasonBatchRow(batch)
+                            .listRowBackground(Color.clear)
+                    }
+                } header: {
+                    sectionHeader("Season Downloads", count: seasonBatchSummaries.count)
+                }
+            }
             if !activeDownloads.isEmpty {
                 Section {
                     ForEach(activeDownloads) { item in
@@ -297,6 +350,64 @@ struct DownloadsView: View {
             .padding(.horizontal)
             .padding(.top, 16)
             .padding(.bottom, 4)
+    }
+
+    private func seasonBatchRow(_ batch: SeasonBatchSummary) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(batch.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.white)
+                    Text("Season \(batch.seasonNumber) · \(batch.completedCount)/\(batch.items.count) episodes")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.65))
+                }
+                Spacer()
+                Menu {
+                    Button {
+                        batch.items.forEach { item in
+                            if item.status == .downloading || item.status == .queued {
+                                downloadManager.pauseDownload(id: item.id)
+                            }
+                        }
+                    } label: {
+                        Label("Pause Season", systemImage: "pause.fill")
+                    }
+                    Button {
+                        batch.items.forEach { item in
+                            if item.status == .paused || item.status == .failed {
+                                downloadManager.resumeDownload(id: item.id)
+                            }
+                        }
+                    } label: {
+                        Label("Resume Season", systemImage: "play.fill")
+                    }
+                    if batch.failedCount > 0 {
+                        Button {
+                            batch.items.filter { $0.status == .failed }.forEach {
+                                downloadManager.resumeDownload(id: $0.id)
+                            }
+                        } label: {
+                            Label("Retry \(batch.failedCount) Failed", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    Button(role: .destructive) {
+                        batch.items.filter {
+                            $0.status == .queued || $0.status == .downloading || $0.status == .paused
+                        }.forEach { downloadManager.cancelDownload(id: $0.id) }
+                    } label: {
+                        Label("Cancel Season", systemImage: "xmark.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundColor(.white.opacity(0.8))
+                }
+            }
+            ProgressView(value: batch.progress)
+                .tint(.blue)
+        }
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder

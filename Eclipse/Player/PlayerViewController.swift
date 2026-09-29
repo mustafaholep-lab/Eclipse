@@ -11,6 +11,7 @@ import AVFoundation
 import Combine
 #if os(iOS)
 import GroupActivities
+import UniformTypeIdentifiers
 #endif
 #if canImport(Darwin)
 import Darwin
@@ -2936,6 +2937,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var onlineSubtitleLoadedTrackNames: Set<String> = []
     private var onlineSubtitleLoadedRendererTrackIds: Set<Int> = []
     private var subtitleDelaySeconds: Double = 0
+#if os(iOS)
+    private let maximumImportedSubtitleBytes = 12 * 1_024 * 1_024
+#endif
 
     private var isVLCCustomSubtitleOverlayEnabled: Bool {
         return false
@@ -4648,7 +4652,16 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         if let subs = initialSubtitles, !subs.isEmpty {
             loadSubtitles(subs, names: initialSubtitleNames)
+        } else {
+            // The controller can be reused for the next episode. Do not carry
+            // an external track (including a user's saved file) into a
+            // different media identity when that episode has no launch tracks.
+            subtitleURLs.removeAll()
+            subtitleNames.removeAll()
+            subtitleEntries.removeAll()
+            currentSubtitleIndex = 0
         }
+        restoreSavedExternalSubtitleIfAvailable()
         prefetchOpenSubtitlesIfEnabled(reason: "load")
         prefetchStremioSubtitlesIfAvailable(reason: "load")
     }
@@ -11749,6 +11762,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
         sections.append(PlayerOverlayMenuSection(title: "Select Track", actions: trackActions))
 
+#if os(iOS)
+        sections.append(PlayerOverlayMenuSection(title: "Local Subtitle", actions: [
+            makeOverlayAction(title: "Add Subtitle File", imageName: "doc.badge.plus") { [weak self] in
+                self?.hideOverlayMenu()
+                self?.presentExternalSubtitlePicker()
+            }
+        ]))
+#endif
+
         if hasStremioSubtitleAddons {
             sections.append(PlayerOverlayMenuSection(title: "Stremio Subtitles", actions: stremioSubtitleOverlayActions()))
         }
@@ -12253,7 +12275,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         let trackMenu = UIMenu(title: "Select Track", image: UIImage(systemName: "list.bullet"), children: trackActions)
-        var menuChildren: [UIMenuElement] = [trackMenu]
+        var menuChildren: [UIMenuElement] = []
+#if os(iOS)
+        menuChildren.append(UIAction(title: "Add Subtitle File", image: UIImage(systemName: "doc.badge.plus")) { [weak self] _ in
+            self?.presentExternalSubtitlePicker()
+        })
+#endif
+        menuChildren.append(trackMenu)
         if let stremioMenu = stremioSubtitleMenu() {
             menuChildren.append(stremioMenu)
         }
@@ -13484,6 +13512,164 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         updateSubtitleTracksMenu()
         updateSubtitleButtonAppearance()
     }
+
+    private var externalSubtitleMediaKey: String? {
+        guard let mediaInfo else { return nil }
+        switch mediaInfo {
+        case .movie(let id, _, _, _):
+            return "movie_\(id)"
+        case .episode(let showID, let season, let episode, _, _, _):
+            return "episode_\(showID)_s\(season)_e\(episode)"
+        }
+    }
+
+    private func externalSubtitleDirectory(createIfNeeded: Bool) -> URL? {
+        guard let mediaKey = externalSubtitleMediaKey,
+              let root = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+              ).first else { return nil }
+        let directory = root
+            .appendingPathComponent("ExternalSubtitles", isDirectory: true)
+            .appendingPathComponent(ProfileManager.shared.activeProfileID.uuidString, isDirectory: true)
+            .appendingPathComponent(mediaKey, isDirectory: true)
+        if createIfNeeded {
+            do {
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                Logger.shared.log("Could not create the local subtitle directory: \(error.localizedDescription)", type: "Error")
+                return nil
+            }
+        }
+        return directory
+    }
+
+    private func savedExternalSubtitleURL() -> URL? {
+        guard let directory = externalSubtitleDirectory(createIfNeeded: false),
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else { return nil }
+        let supported = Set(["srt", "vtt", "ass", "ssa"])
+        return files.first { supported.contains($0.pathExtension.lowercased()) }
+    }
+
+    private func restoreSavedExternalSubtitleIfAvailable() {
+        guard let savedURL = savedExternalSubtitleURL() else { return }
+        loadOnlineSubtitle(
+            urlString: savedURL.absoluteString,
+            displayName: "Local Subtitle · \(savedURL.lastPathComponent)",
+            sourceLogLabel: "LocalSubtitles",
+            userSelected: false
+        )
+    }
+
+#if os(iOS)
+    private func presentExternalSubtitlePicker() {
+        guard externalSubtitleMediaKey != nil else {
+            showExternalSubtitleError("This video has no media identity, so a subtitle cannot be saved for it.")
+            return
+        }
+        let types = ["srt", "vtt", "ass", "ssa"].compactMap {
+            UTType(filenameExtension: $0)
+        }
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: types.isEmpty ? [.plainText] : types,
+            asCopy: true
+        )
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    private func importExternalSubtitle(from sourceURL: URL) {
+        let ext = sourceURL.pathExtension.lowercased()
+        guard ["srt", "vtt", "ass", "ssa"].contains(ext) else {
+            showExternalSubtitleError("Unsupported subtitle format. Choose an SRT, VTT, ASS, or SSA file.")
+            return
+        }
+
+        let accessGranted = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessGranted { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let values = try sourceURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values.isRegularFile == true else {
+                throw CocoaError(.fileReadUnsupportedScheme)
+            }
+            guard (values.fileSize ?? 0) <= maximumImportedSubtitleBytes else {
+                showExternalSubtitleError("The subtitle file is larger than the 12 MB safety limit.")
+                return
+            }
+            let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+            guard !data.isEmpty else {
+                showExternalSubtitleError("The selected subtitle file is empty.")
+                return
+            }
+            guard data.count <= maximumImportedSubtitleBytes else {
+                showExternalSubtitleError("The subtitle file is larger than the 12 MB safety limit.")
+                return
+            }
+
+            let windowsTurkish = String.Encoding.windowsCP1254
+            guard var text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: windowsTurkish)
+                ?? String(data: data, encoding: .isoLatin1) else {
+                showExternalSubtitleError("The subtitle text encoding could not be read. Save it as UTF-8 or Windows-1254 and try again.")
+                return
+            }
+            if text.hasPrefix("\u{feff}") { text.removeFirst() }
+            text = text.replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasTimedCues: Bool
+            if ext == "ass" || ext == "ssa" {
+                hasTimedCues = trimmed.localizedCaseInsensitiveContains("[Script Info]")
+                    && trimmed.localizedCaseInsensitiveContains("Dialogue:")
+            } else {
+                hasTimedCues = trimmed.contains("-->")
+            }
+            guard !trimmed.isEmpty, hasTimedCues else {
+                showExternalSubtitleError("The selected file does not contain valid timed subtitle cues.")
+                return
+            }
+            guard let directory = externalSubtitleDirectory(createIfNeeded: true) else {
+                showExternalSubtitleError("Eclipse could not create storage for this subtitle.")
+                return
+            }
+            for existing in (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            )) ?? [] {
+                try? FileManager.default.removeItem(at: existing)
+            }
+            let destination = directory.appendingPathComponent("custom.\(ext)")
+            try Data(text.utf8).write(to: destination, options: .atomic)
+
+            loadOnlineSubtitle(
+                urlString: destination.absoluteString,
+                displayName: "Local Subtitle · \(sourceURL.deletingPathExtension().lastPathComponent)",
+                sourceLogLabel: "LocalSubtitles",
+                userSelected: true
+            )
+            Logger.shared.log("Saved a UTF-8 local subtitle for \(externalSubtitleMediaKey ?? "unknown")", type: "Player")
+        } catch {
+            showExternalSubtitleError("The subtitle file could not be imported: \(error.localizedDescription)")
+        }
+    }
+
+    private func showExternalSubtitleError(_ message: String) {
+        let alert = UIAlertController(title: "Subtitle Import", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+#endif
 
     private func loadSubtitles(_ urls: [String], names: [String]? = nil) {
         subtitleURLs = urls
@@ -17378,6 +17564,22 @@ extension PlayerViewController: WatchTogetherPlaybackDelegate {
 
 
 #if os(iOS)
+#if os(iOS)
+extension PlayerViewController: UIDocumentPickerDelegate {
+    func documentPicker(
+        _ controller: UIDocumentPickerViewController,
+        didPickDocumentsAt urls: [URL]
+    ) {
+        guard let url = urls.first else { return }
+        importExternalSubtitle(from: url)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        Logger.shared.log("Local subtitle import cancelled", type: "Player")
+    }
+}
+#endif
+
 extension PlayerViewController: UIAdaptivePresentationControllerDelegate {
     func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
         guard isPlayerPresentation(presentationController) else { return true }

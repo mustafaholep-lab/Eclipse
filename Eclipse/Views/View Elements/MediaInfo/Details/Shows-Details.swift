@@ -206,6 +206,9 @@ struct TVShowSeasonsSection<InsertedContent: View>: View {
     @State private var isDownloadingAll = false
     @State private var downloadWasEnqueued = false
     @State private var downloadWasSkipped = false
+    @State private var showingSeasonDownloadOptions = false
+    @State private var showingSeasonStorageWarning = false
+    @State private var seasonStorageWarningMessage = ""
 #endif
     @State private var showingNoServicesAlert = false
     @State private var romajiTitle: String?
@@ -508,7 +511,7 @@ struct TVShowSeasonsSection<InsertedContent: View>: View {
 
 #if !os(tvOS)
                             if activeSeasonDetail != nil && hasActiveSources {
-                                Button(action: startDownloadAllSeason) {
+                                Button(action: { showingSeasonDownloadOptions = true }) {
                                     Image(systemName: "arrow.down.circle")
                                         .font(.title3)
                                         .foregroundColor(.white)
@@ -692,6 +695,28 @@ struct TVShowSeasonsSection<InsertedContent: View>: View {
         } message: {
             Text("You don't have any active sources. Open Services settings to add or enable one.")
         }
+#if !os(tvOS)
+        .confirmationDialog(
+            "Download",
+            isPresented: $showingSeasonDownloadOptions,
+            titleVisibility: .visible
+        ) {
+            Button("Download This Episode") {
+                startDownloadCurrentEpisode()
+            }
+            Button("Download Entire Season") {
+                prepareDownloadAllSeason()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(seasonDownloadPlanningMessage)
+        }
+        .alert("Not Enough Storage", isPresented: $showingSeasonStorageWarning) {
+            Button("OK") { }
+        } message: {
+            Text(seasonStorageWarningMessage)
+        }
+#endif
     }
 
     @ViewBuilder
@@ -712,7 +737,7 @@ struct TVShowSeasonsSection<InsertedContent: View>: View {
 
 #if !os(tvOS)
             if activeSeasonDetail != nil && hasActiveSources {
-                Button(action: startDownloadAllSeason) {
+                Button(action: { showingSeasonDownloadOptions = true }) {
                     Image(systemName: "arrow.down.circle")
                         .font(.title3)
                         .foregroundColor(.white)
@@ -1658,6 +1683,74 @@ struct TVShowSeasonsSection<InsertedContent: View>: View {
     }
 
 #if !os(tvOS)
+    private var seasonDownloadCandidates: [TMDBEpisode] {
+        guard let detail = activeSeasonDetail else { return [] }
+        return visibleEpisodes(for: detail).filter { !shouldSkipDownloadAllEpisode($0) }
+    }
+
+    private var estimatedSeasonDownloadBytes: Int64 {
+        guard let tvShow else { return 0 }
+        let knownSizes = downloadManager.downloads.compactMap { item -> Int64? in
+            guard !item.isMovie,
+                  item.tmdbId == tvShow.id,
+                  item.totalBytes > 0 else { return nil }
+            return item.totalBytes
+        }
+        let perEpisode = knownSizes.isEmpty
+            ? Int64(750 * 1_024 * 1_024)
+            : knownSizes.reduce(0, +) / Int64(knownSizes.count)
+        return perEpisode * Int64(seasonDownloadCandidates.count)
+    }
+
+    private var seasonDownloadPlanningMessage: String {
+        let count = seasonDownloadCandidates.count
+        guard count > 0 else { return "Every aired episode in this season is already downloaded or queued." }
+        let estimate = ByteCountFormatter.string(
+            fromByteCount: estimatedSeasonDownloadBytes,
+            countStyle: .file
+        )
+        if let free = downloadManager.availableStorageBytesForPlanning() {
+            let freeText = ByteCountFormatter.string(fromByteCount: free, countStyle: .file)
+            return "\(count) episode\(count == 1 ? "" : "s") remaining · about \(estimate) · \(freeText) free. Downloads use two concurrent slots and continue past individual failures."
+        }
+        return "\(count) episode\(count == 1 ? "" : "s") remaining · about \(estimate). Downloads use two concurrent slots and continue past individual failures."
+    }
+
+    private func startDownloadCurrentEpisode() {
+        guard let detail = activeSeasonDetail else { return }
+        let episode = selectedEpisodeForSearch.flatMap { selected in
+            visibleEpisodes(for: detail).first(where: {
+                $0.seasonNumber == selected.seasonNumber
+                    && $0.episodeNumber == selected.episodeNumber
+            })
+        } ?? visibleEpisodes(for: detail).first
+        guard let episode else { return }
+        if shouldSkipDownloadAllEpisode(episode) { return }
+        downloadEpisode = episode
+        selectedEpisodeForSearch = episode
+        let context = playbackContext(for: episode)
+        selectedEpisodePlaybackContext = context
+        downloadEpisodePlaybackContext = context
+        showingDownloadSheet = true
+    }
+
+    private func prepareDownloadAllSeason() {
+        let candidates = seasonDownloadCandidates
+        guard !candidates.isEmpty else { return }
+        if let free = downloadManager.availableStorageBytesForPlanning(),
+           estimatedSeasonDownloadBytes > max(0, free - Int64(512 * 1_024 * 1_024)) {
+            let required = ByteCountFormatter.string(
+                fromByteCount: estimatedSeasonDownloadBytes,
+                countStyle: .file
+            )
+            let available = ByteCountFormatter.string(fromByteCount: free, countStyle: .file)
+            seasonStorageWarningMessage = "This season is estimated at \(required), but only \(available) is available. Free some storage and try again."
+            showingSeasonStorageWarning = true
+            return
+        }
+        startDownloadAllSeason()
+    }
+
     private func startDownloadAllSeason() {
         let detail = activeSeasonDetail
         guard let detail else {
