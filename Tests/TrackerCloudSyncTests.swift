@@ -68,6 +68,36 @@ private final class TrackerCloudDeviceProbe {
 }
 
 final class TrackerCloudSyncTests: XCTestCase {
+    @MainActor
+    func testLocalRestoreCanSuspendTrackerSyncWithoutCloudKit() {
+        var availabilityChecks = 0
+        let transport = TrackerCloudKitTransport(cloudKitIsAvailable: {
+            availabilityChecks += 1
+            return false
+        })
+        let manager = TrackerCloudSyncManager(transport: transport, archiveURL: archiveURL())
+        manager.suspend()
+        XCTAssertEqual(availabilityChecks, 0)
+        XCTAssertFalse(manager.isSyncing)
+    }
+
+    @MainActor
+    func testCloudOperationsFailSafelyWithoutEntitlement() async throws {
+        let transport = TrackerCloudKitTransport(cloudKitIsAvailable: { false })
+        do {
+            _ = try await transport.fetchAll()
+            XCTFail("Fetch must reject unavailable CloudKit")
+        } catch TrackerCloudSyncError.unavailable { }
+        do {
+            _ = try await transport.save(record: authorizedRecord(), expected: nil)
+            XCTFail("Save must reject unavailable CloudKit")
+        } catch TrackerCloudSyncError.unavailable { }
+        do {
+            try await transport.deleteZone()
+            XCTFail("Delete must reject unavailable CloudKit")
+        } catch TrackerCloudSyncError.unavailable { }
+    }
+
     private let now = Date(timeIntervalSince1970: 1_780_000_000)
 
     private func account(
