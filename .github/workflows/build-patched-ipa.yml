@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - stremio-playback-fix-v6-animesub-subtitles
+      - build-import-file-provider-fix-macos15
     paths:
       - "Eclipse/**"
       - "Eclipse.xcodeproj/**"
@@ -20,7 +21,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 90
 
     steps:
