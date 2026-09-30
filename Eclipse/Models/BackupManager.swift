@@ -12905,10 +12905,9 @@ private struct ScopedSettingsDefaults {
             )
         }
 
-        Task { @MainActor in
-            ServiceManager.shared.loadServicesFromCloud()
-            StremioAddonManager.shared.loadAddons()
-        }
+        // The enclosing restore transaction performs one coordinated reload.
+        // Starting another reload here races the remaining profile restore and
+        // can invalidate stores while they are still being written.
     }
 
     private static func captureProfileSources(
@@ -13364,12 +13363,18 @@ private struct ScopedSettingsDefaults {
         if #available(iOS 17.0, *) {
             succeeded = await MediaStateSyncManager.shared
                 .performAuthoritativeSnapshotRestore {
-                    await self.restoreBackup(from: url)
+                    await self.restoreBackup(
+                        from: url,
+                        defersRuntimeReloadUntilRelaunch: true
+                    )
                 }
         } else {
-            succeeded = await restoreBackup(from: url)
+            succeeded = await restoreBackup(
+                from: url,
+                defersRuntimeReloadUntilRelaunch: true
+            )
         }
-        let requiresRelaunch = await MainActor.run {
+        await MainActor.run {
             ExperimentalCloudSyncManager.shared.finishManualRestore(
                 syncSession,
                 succeeded: succeeded
@@ -13377,9 +13382,9 @@ private struct ScopedSettingsDefaults {
             guard succeeded,
                   let preferredProfileID = preflight.preferredActiveProfileID,
                   preferredProfileID != ProfileManager.shared.activeProfileID else {
-                return false
+                return
             }
-            return ProfileManager.shared.stageRestoredProfileForNextLaunch(
+            _ = ProfileManager.shared.stageRestoredProfileForNextLaunch(
                 preferredProfileID
             )
         }
@@ -13387,7 +13392,7 @@ private struct ScopedSettingsDefaults {
             recordManualRestoreResult(
                 failureReason: nil,
                 importedRecordCount: preflight.watchRecordCount,
-                requiresRelaunch: requiresRelaunch
+                requiresRelaunch: true
             )
         } else if lastManualRestoreFailureReason == nil {
             recordManualRestoreResult(
@@ -13396,11 +13401,15 @@ private struct ScopedSettingsDefaults {
         }
         return succeeded
 #else
-        let succeeded = await restoreBackup(from: url)
+        let succeeded = await restoreBackup(
+            from: url,
+            defersRuntimeReloadUntilRelaunch: true
+        )
         if succeeded {
             recordManualRestoreResult(
                 failureReason: nil,
-                importedRecordCount: preflight.watchRecordCount
+                importedRecordCount: preflight.watchRecordCount,
+                requiresRelaunch: true
             )
         }
         return succeeded
@@ -13464,7 +13473,8 @@ private struct ScopedSettingsDefaults {
 
     func restoreBackup(
         from url: URL,
-        preservesSyncedMediaState: Bool = false
+        preservesSyncedMediaState: Bool = false,
+        defersRuntimeReloadUntilRelaunch: Bool = false
     ) async -> Bool {
         do {
             let jsonData = try BoundedLocalStoreReader.read(
@@ -13525,6 +13535,14 @@ private struct ScopedSettingsDefaults {
                     return false
                 }
                 let postApplyScope = postApply.scope
+                if defersRuntimeReloadUntilRelaunch {
+                    completeShareServicesRestoreTransaction(shareServicesTransaction)
+                    Logger.shared.log(
+                        "BackupManager: deferred source runtime reload until relaunch after manual restore",
+                        type: "Info"
+                    )
+                    return true
+                }
                 await SkyStreamPluginManager.shared.captureSourceDefaultsState(
                     expectedScopeGeneration: postApplyScope.servicesGeneration
                 )
@@ -13577,6 +13595,14 @@ private struct ScopedSettingsDefaults {
                 return false
             }
             let postApplyScope = postApply.scope
+            if defersRuntimeReloadUntilRelaunch {
+                completeShareServicesRestoreTransaction(shareServicesTransaction)
+                Logger.shared.log(
+                    "BackupManager: deferred source runtime reload until relaunch after manual restore",
+                    type: "Info"
+                )
+                return true
+            }
             await SkyStreamPluginManager.shared.captureSourceDefaultsState(
                 expectedScopeGeneration: postApplyScope.servicesGeneration
             )
