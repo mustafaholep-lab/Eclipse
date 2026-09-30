@@ -13455,6 +13455,13 @@ private struct ScopedSettingsDefaults {
         )
     }
 
+    /// Validates a staged manual backup before the destructive confirmation is
+    /// presented. The restore repeats this bounded preflight so the file cannot
+    /// be replaced between selection and application without being rechecked.
+    func validateManualBackup(at url: URL) throws {
+        _ = try manualRestorePreflight(from: url)
+    }
+
     func restoreBackup(
         from url: URL,
         preservesSyncedMediaState: Bool = false

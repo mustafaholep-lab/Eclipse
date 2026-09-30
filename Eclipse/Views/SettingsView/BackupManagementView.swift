@@ -259,6 +259,15 @@ struct BackupManagementView: View {
     private enum ImportMode {
         case direct
         case coordinatedCopy
+
+        var logLabel: String {
+            switch self {
+            case .direct:
+                return "standard"
+            case .coordinatedCopy:
+                return "alternative"
+            }
+        }
     }
 
     private func startImport(mode: ImportMode) {
@@ -278,14 +287,25 @@ struct BackupManagementView: View {
 
             do {
                 clearSelectedBackup()
-                switch mode {
-                case .direct:
-                    self.selectedBackupURL = selectedFile
-                    self.selectedBackupIsTemporary = false
-                case .coordinatedCopy:
-                    self.selectedBackupURL = try prepareSelectedBackupForRestore(from: selectedFile)
-                    self.selectedBackupIsTemporary = true
+                // A document-picker URL is only guaranteed to remain readable while
+                // the picker completion is being handled. Keeping that URL until the
+                // user confirms the restore makes imports fail for some Files and
+                // messaging providers after their security scope is revoked. Stage a
+                // bounded local copy immediately for both buttons, then restore from
+                // that stable file after confirmation.
+                let stagedBackupURL = try prepareSelectedBackupForRestore(from: selectedFile)
+                do {
+                    try BackupManager.shared.validateManualBackup(at: stagedBackupURL)
+                } catch {
+                    try? FileManager.default.removeItem(at: stagedBackupURL)
+                    throw error
                 }
+                self.selectedBackupURL = stagedBackupURL
+                self.selectedBackupIsTemporary = true
+                Logger.shared.log(
+                    "Staged backup selected with \(mode.logLabel) import",
+                    type: "Info"
+                )
 
                 showRestoreConfirmation = true
             } catch {
