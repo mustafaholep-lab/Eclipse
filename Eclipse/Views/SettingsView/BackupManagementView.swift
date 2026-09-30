@@ -369,7 +369,7 @@ struct BackupManagementView: View {
         let shouldRemoveBackupAfterRestore = selectedBackupIsTemporary
         let cloudSyncWasEnabled = cloudSyncCanPropagateRestore
 
-        Task.detached(priority: .userInitiated) {
+        Task { @MainActor in
             var accessGranted = false
             if shouldUseSecurityScope {
                 accessGranted = backupURL.startAccessingSecurityScopedResource()
@@ -388,35 +388,33 @@ struct BackupManagementView: View {
                 scope: scope
             )
 
-            await MainActor.run {
-                isProcessing = false
-                selectedBackupURL = nil
-                selectedBackupIsTemporary = false
-                let cloudSyncRemainsEnabled = cloudSyncCanPropagateRestore
-                if success {
-                    let importedCount = BackupManager.shared.lastManualRestoreImportedRecordCount
-                    let countMessage = "\(importedCount) watch record\(importedCount == 1 ? "" : "s") imported."
-                    if BackupManager.shared.lastManualRestoreRequiresRelaunch {
-                        backupMessage = "\(countMessage) Backup restored safely. Close and reopen Eclipse once to load the restored profile."
-                    } else if scope.keepsChangesOnThisDevice && cloudSyncWasEnabled {
-                        backupMessage = "\(countMessage) Backup restored on this device. Cloud sync is off here, and your cloud copy and other devices were not changed."
-                    } else if cloudSyncWasEnabled {
-                        backupMessage = "\(countMessage) Eclipse refreshed the active profile and queued the restored data for your enabled cloud providers."
-                    } else {
-                        backupMessage = "\(countMessage) Backup restored and the app was refreshed."
-                    }
+            isProcessing = false
+            selectedBackupURL = nil
+            selectedBackupIsTemporary = false
+            let cloudSyncRemainsEnabled = cloudSyncCanPropagateRestore
+            if success {
+                let importedCount = BackupManager.shared.lastManualRestoreImportedRecordCount
+                let countMessage = "\(importedCount) watch record\(importedCount == 1 ? "" : "s") imported."
+                if BackupManager.shared.lastManualRestoreRequiresRelaunch {
+                    backupMessage = "\(countMessage) Backup restored safely. Close and reopen Eclipse once to load the restored profile."
+                } else if scope.keepsChangesOnThisDevice && cloudSyncWasEnabled {
+                    backupMessage = "\(countMessage) Backup restored on this device. Cloud sync is off here, and your cloud copy and other devices were not changed."
+                } else if cloudSyncWasEnabled {
+                    backupMessage = "\(countMessage) Eclipse refreshed the active profile and queued the restored data for your enabled cloud providers."
                 } else {
-                    let detailedFailure = BackupManager.shared.lastManualRestoreFailureReason
-                    if cloudSyncWasEnabled && !cloudSyncRemainsEnabled {
-                        backupMessage = detailedFailure ?? "Failed to restore backup. Cloud sync was left off on this device to protect your other devices."
-                    } else if cloudSyncWasEnabled {
-                        backupMessage = detailedFailure ?? "Failed to restore backup before Eclipse could pause cloud sync. Cloud sync remains on and no restore was started."
-                    } else {
-                        backupMessage = detailedFailure ?? "Failed to restore backup. The file may be corrupted, incomplete, or incompatible."
-                    }
+                    backupMessage = "\(countMessage) Backup restored and the app was refreshed."
                 }
-                showMessageAlert = true
+            } else {
+                let detailedFailure = BackupManager.shared.lastManualRestoreFailureReason
+                if cloudSyncWasEnabled && !cloudSyncRemainsEnabled {
+                    backupMessage = detailedFailure ?? "Failed to restore backup. Cloud sync was left off on this device to protect your other devices."
+                } else if cloudSyncWasEnabled {
+                    backupMessage = detailedFailure ?? "Failed to restore backup before Eclipse could pause cloud sync. Cloud sync remains on and no restore was started."
+                } else {
+                    backupMessage = detailedFailure ?? "Failed to restore backup. The file may be corrupted, incomplete, or incompatible."
+                }
             }
+            showMessageAlert = true
         }
     }
 
