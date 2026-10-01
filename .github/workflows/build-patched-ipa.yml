@@ -42,6 +42,9 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Test Continue Watching policy
+        run: python3 scripts/test-continue-watching.py
+
       - name: Create unsigned local build config
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
