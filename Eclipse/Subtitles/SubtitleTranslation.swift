@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 
 struct SubtitleTranslationItem: Sendable, Equatable {
@@ -74,33 +75,40 @@ struct OpenAICompatibleTranslationProvider: TranslationProvider {
         let system = """
         subtitle-tr-v1. Translate only items into natural concise Turkish subtitles. Preserve meaning, tone, humor, names and formality. Do not add explanations or omit meaning. Keep every protected private-use placeholder exactly once and in order; they encode formatting and line breaks. Context is read-only: never return translations for context IDs. \(honorific) Return only JSON: {"translations":[{"id":"source ID","text":"Turkish text"}]} with exactly one entry per item ID.
         """
+        let inputCharacters = batch.items.reduce(0) { $0 + $1.text.count }
+        let outputLimit = min(8_192, max(512, (inputCharacters + 1) / 2 + batch.items.count * 24))
         return try await send(messages: [
             ["role": "system", "content": system],
             ["role": "user", "content": userContent]
-        ])
+        ], maxTokens: outputLimit, timeout: 180)
     }
 
     func testConnection() async throws {
         let content = try await send(messages: [
             ["role": "system", "content": "Return only JSON. Do not translate anything."],
             ["role": "user", "content": "Return exactly {\"ok\":true} as JSON."]
-        ])
+        ], maxTokens: 32, timeout: 20, temperature: 0)
         guard let data = content.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["ok"] as? Bool == true else { throw SubtitleTranslationError.invalidResponse }
+              object.count == 1, let value = object["ok"],
+              CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(),
+              value as? Bool == true else { throw SubtitleTranslationError.invalidResponse }
     }
 
-    private func send(messages: [[String: String]]) async throws -> String {
+    private func send(messages: [[String: String]], maxTokens: Int,
+                      timeout: TimeInterval, temperature: Double? = nil) async throws -> String {
         guard let endpoint, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SubtitleTranslationError.invalidConfiguration
         }
         guard !apiKey.isEmpty else { throw SubtitleTranslationError.missingKey }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = 35
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "messages": messages])
+        var body: [String: Any] = ["model": model, "messages": messages, "max_tokens": maxTokens]
+        if let temperature { body["temperature"] = temperature }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request) }

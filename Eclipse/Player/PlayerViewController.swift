@@ -29,6 +29,59 @@ import AVKit
 import MediaPlayer
 #endif
 
+#if DEBUG
+/// Observation only: identifies a seek without changing renderer or playback intent.
+struct MPVSeekDiagnosticState {
+    private(set) var generation = 0
+    private(set) var sequence = 0
+    private(set) var lastPosition = 0.0
+    private(set) var lastProgressAt: Date?
+    private(set) var lastStateSignal = "none"
+    private(set) var requestedAt: Date?
+
+    mutating func beginLoad(generation: Int, position: Double = 0) {
+        self.generation = generation
+        sequence = 0
+        lastPosition = position
+        lastProgressAt = nil
+        lastStateSignal = "new-load"
+        requestedAt = nil
+    }
+
+    mutating func request(generation: Int, position: Double, at date: Date) -> Int? {
+        guard generation == self.generation else { return nil }
+        sequence += 1
+        lastPosition = position
+        lastProgressAt = nil
+        requestedAt = date
+        lastStateSignal = "seek-requested"
+        return sequence
+    }
+
+    mutating func notePosition(_ position: Double, generation: Int, at date: Date) {
+        guard generation == self.generation, position.isFinite else { return }
+        if abs(position - lastPosition) > 0.05 { lastProgressAt = date }
+        lastPosition = position
+    }
+
+    mutating func noteState(_ signal: String, generation: Int) {
+        guard generation == self.generation else { return }
+        lastStateSignal = signal
+    }
+
+    func isCurrent(generation: Int, sequence: Int) -> Bool {
+        generation == self.generation && sequence == self.sequence && requestedAt != nil
+    }
+
+    func isStalled(generation: Int, sequence: Int, paused: Bool,
+                   at date: Date, threshold: TimeInterval) -> Bool {
+        guard isCurrent(generation: generation, sequence: sequence), !paused,
+              let requestedAt else { return false }
+        return date.timeIntervalSince(lastProgressAt ?? requestedAt) >= threshold
+    }
+}
+#endif
+
 /// Shared progress persistence for local playback. ProgressManager remains
 /// authoritative for completion/removal rules, while Trakt receives the same
 /// normalized position and episode identity.
@@ -1444,6 +1497,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var midPlaybackStallReferenceDate: Date?
     private var midPlaybackStallLastPosition: Double?
 #endif
+#if DEBUG
+    private var mpvSeekDiagnostics = MPVSeekDiagnosticState()
+#endif
     private var lastIgnoredMPVBridgeDurationLogValue: Double = -1
     private struct BackgroundRecoveryProgressGate {
         let id: Int
@@ -1862,6 +1918,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             logMPV("rendererSeek(to:) target=\(secondsText(seconds)) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)")
         }
         releaseBackgroundRecoveryProgressGate(reason: "explicit-seek")
+#if DEBUG
+        traceMPVSeek(kind: "absolute", value: seconds)
+#endif
         if let aiTranslationEngine {
             Task { await aiTranslationEngine.updatePlaybackPosition(seconds) }
         }
@@ -1886,6 +1945,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             logMPV("rendererSeek(by:) delta=\(secondsText(seconds)) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)")
         }
         releaseBackgroundRecoveryProgressGate(reason: "explicit-relative-seek")
+#if DEBUG
+        traceMPVSeek(kind: "relative", value: seconds)
+#endif
         renderer.seek(by: seconds)
         rendererSchedulePictureInPicturePlaybackStateUpdate()
     }
@@ -2969,6 +3031,35 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
     }
+
+#if DEBUG
+    private func traceMPVSeek(kind: String, value: Double) {
+        guard isMPVRenderer else { return }
+        let generation = playbackLoadGeneration
+        guard let sequence = mpvSeekDiagnostics.request(generation: generation,
+            position: cachedPosition, at: Date()) else { return }
+        logMPV("seek trace requested kind=\(kind) value=\(secondsText(value)) " +
+            "seq=\(sequence) load=\(generation) pos=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) " +
+            "loading=\(isRendererLoading) paused=\(rendererIsPausedState())")
+        for delay in [8.0, 20.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, !self.isClosing,
+                      self.mpvSeekDiagnostics.isStalled(generation: generation, sequence: sequence,
+                          paused: self.rendererIsPausedState(), at: Date(), threshold: delay) else { return }
+#if !os(tvOS)
+                let proxyCount = self.activeMPVHeaderProxyURLs.count
+#else
+                let proxyCount = 0
+#endif
+                self.logMPV("seek trace stalled seq=\(sequence) load=\(generation) after=\(Int(delay))s " +
+                    "pos=\(self.secondsText(self.cachedPosition))/\(self.secondsText(self.cachedDuration)) " +
+                    "loading=\(self.isRendererLoading) paused=\(self.rendererIsPausedState()) " +
+                    "lastSignal=\(self.mpvSeekDiagnostics.lastStateSignal) " +
+                    "proxySessions=\(proxyCount) rawCache=unavailable action=diagnostics-only")
+            }
+        }
+    }
+#endif
     private var aiTranslationTask: Task<Void, Never>?
     private var aiTranslationEngine: SubtitleTranslationEngine?
     private var aiTranslationFileURL: URL?
@@ -4538,6 +4629,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #endif
         pendingRendererRestartRetryGeneration = nil
         playbackLoadGeneration += 1
+#if DEBUG
+        mpvSeekDiagnostics.beginLoad(generation: playbackLoadGeneration, position: cachedPosition)
+#endif
         subtitlePlaybackSelection.beginMedia()
         aiTranslationTask?.cancel()
         aiTranslationTask = nil
@@ -7585,6 +7679,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 guard self.playbackReplacementGeneration == replacementGeneration else {
                     return
                 }
+                self.activePlaybackRequest = selectionRequest
                 if shouldSwitchVLCInPlace {
                     self.isReplacingVLCPlaybackInPlace = true
                 }
@@ -13819,7 +13914,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func presentManualSubtitleSearch() {
-        guard let request = activePlaybackRequest else { return }
+        guard let request = activePlaybackRequest else {
+            let alert = UIAlertController(title: "Search Subtitles",
+                message: "This playback has no searchable media context.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+            present(alert, animated: true)
+            return
+        }
         let generation = playbackLoadGeneration
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -13910,7 +14011,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             if query.fileSize == nil { query.fileSize = extras.videoSize }
             if query.fileName == nil { query.fileName = extras.filename }
             let batches = await SubtitleProviderConfiguration.searchActive(
-                query, videoURL: request.url
+                query, videoURL: self.initialURL ?? request.url
             ) { [weak self] partial in
                 guard let self, !self.isClosing,
                       self.playbackLoadGeneration == generation,
@@ -18446,11 +18547,21 @@ extension PlayerViewController: UIAdaptivePresentationControllerDelegate {
 extension PlayerViewController: MPVNativeRendererDelegate {
     func renderer(_ renderer: PlayerRenderer, didUpdatePosition position: Double, duration: Double) {
         if isClosing { return }
+#if DEBUG
+        if isMPVRenderer {
+            mpvSeekDiagnostics.notePosition(position, generation: playbackLoadGeneration, at: Date())
+        }
+#endif
         updatePosition(position, duration: duration)
     }
 
     func renderer(_ renderer: PlayerRenderer, didChangePause isPaused: Bool) {
         if isClosing { return }
+#if DEBUG
+        if isMPVRenderer {
+            mpvSeekDiagnostics.noteState("pause=\(isPaused)", generation: playbackLoadGeneration)
+        }
+#endif
         if playbackTraceLastPauseValue != isPaused {
             playbackTraceLastPauseValue = isPaused
             logPlaybackStage(
@@ -18476,6 +18587,11 @@ extension PlayerViewController: MPVNativeRendererDelegate {
 
     func renderer(_ renderer: PlayerRenderer, didChangeLoading isLoading: Bool) {
         if isClosing { return }
+#if DEBUG
+        if isMPVRenderer {
+            mpvSeekDiagnostics.noteState("loading=\(isLoading)", generation: playbackLoadGeneration)
+        }
+#endif
         if playbackTraceLastLoadingValue != isLoading {
             playbackTraceLastLoadingValue = isLoading
             logPlaybackStage(
@@ -18508,6 +18624,11 @@ extension PlayerViewController: MPVNativeRendererDelegate {
 
     func renderer(_ renderer: PlayerRenderer, didBecomeReadyToSeek: Bool) {
         if isClosing { return }
+#if DEBUG
+        if isMPVRenderer {
+            mpvSeekDiagnostics.noteState("ready-to-seek", generation: playbackLoadGeneration)
+        }
+#endif
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.logPlaybackStage(
@@ -18541,6 +18662,11 @@ extension PlayerViewController: MPVNativeRendererDelegate {
 
     func renderer(_ renderer: PlayerRenderer, didFailWithError message: String) {
         if isClosing { return }
+#if DEBUG
+        if isMPVRenderer {
+            mpvSeekDiagnostics.noteState("renderer-failed", generation: playbackLoadGeneration)
+        }
+#endif
         logPlaybackStage("renderer-failed", "message=\(message)")
         setIdleTimerDisabledForPlayback(false, reason: "mpv-failure")
         logMPV("delegate didFailWithError message=\(message)")

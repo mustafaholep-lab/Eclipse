@@ -6,6 +6,7 @@ private final class TranslationHTTPFixture: URLProtocol {
     static var statusCode = 200
     static var failure: Error?
     static var seenRequest: URLRequest?
+    static var content = #"{"ok":true}"#
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -15,7 +16,9 @@ private final class TranslationHTTPFixture: URLProtocol {
             client?.urlProtocol(self, didFailWithError: failure)
             return
         }
-        let body = Data(#"{"choices":[{"message":{"content":"{\"ok\":true}"}}]}"#.utf8)
+        let body = try! JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": Self.content]]]
+        ])
         let response = HTTPURLResponse(url: request.url!, statusCode: Self.statusCode,
                                        httpVersion: "HTTP/1.1", headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -96,10 +99,28 @@ final class SubtitleTranslationTests: XCTestCase {
         let provider = OpenAICompatibleTranslationProvider(baseURL: "https://api.example/v1",
             apiKey: "fixture-key", model: "fixture-model", session: session)
         TranslationHTTPFixture.statusCode = 200
+        TranslationHTTPFixture.failure = nil
+        TranslationHTTPFixture.content = #"{"ok":true}"#
         try await provider.testConnection()
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.url?.path, "/v1/chat/completions")
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.httpMethod, "POST")
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let testBody = try XCTUnwrap(TranslationHTTPFixture.seenRequest?.httpBody)
+        let testJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: testBody) as? [String: Any])
+        XCTAssertEqual(testJSON["max_tokens"] as? Int, 32)
+        XCTAssertEqual(testJSON["temperature"] as? Double, 0)
+        XCTAssertEqual(TranslationHTTPFixture.seenRequest?.timeoutInterval, 20)
+        TranslationHTTPFixture.content = #"{"ok":1}"#
+        do { try await provider.testConnection(); XCTFail("Strict JSON validation must reject numeric ok") }
+        catch let error as SubtitleTranslationError {
+            guard case .invalidResponse = error else { return XCTFail("Wrong validation error") }
+        }
+        TranslationHTTPFixture.content = #"{"ok":true,"extra":1}"#
+        do { try await provider.testConnection(); XCTFail("Strict JSON validation must reject extra fields") }
+        catch let error as SubtitleTranslationError {
+            guard case .invalidResponse = error else { return XCTFail("Wrong validation error") }
+        }
+        TranslationHTTPFixture.content = #"{"ok":true}"#
         for status in [429, 408, 500, 502, 503] {
             TranslationHTTPFixture.statusCode = status
             do { try await provider.testConnection(); XCTFail("Expected HTTP \(status) failure") }
@@ -285,6 +306,38 @@ final class SubtitleTranslationTests: XCTestCase {
         await disk.clear()
         let afterClear = await disk.load(keyB)
         XCTAssertNil(afterClear)
+    }
+
+    func testTranslationRequestUsesBoundedBatchSizedOutputBudget() async throws {
+        TranslationHTTPFixture.statusCode = 200
+        TranslationHTTPFixture.failure = nil
+        TranslationHTTPFixture.content = #"{"translations":[]}"#
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [TranslationHTTPFixture.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let provider = OpenAICompatibleTranslationProvider(baseURL: "https://api.example/v1",
+            apiKey: "fixture-key", model: "fixture-model", session: session)
+        let short = SubtitleTranslationBatch(id: 0,
+            items: [.init(id: "1", text: "Hello", start: 0)],
+            contextBefore: [], contextAfter: [], glossary: [], preservesHonorifics: true)
+        let long = SubtitleTranslationBatch(id: 1,
+            items: (0..<50).map { .init(id: String($0), text: String(repeating: "Hello ", count: 40), start: Double($0)) },
+            contextBefore: [], contextAfter: [], glossary: [], preservesHonorifics: true)
+        _ = try await provider.translate(short)
+        let shortJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            XCTUnwrap(TranslationHTTPFixture.seenRequest?.httpBody)) as? [String: Any])
+        let shortLimit = try XCTUnwrap(shortJSON["max_tokens"] as? Int)
+        XCTAssertGreaterThan(shortLimit, 32)
+        XCTAssertLessThanOrEqual(shortLimit, 8_192)
+        XCTAssertNil(shortJSON["temperature"])
+        XCTAssertEqual(TranslationHTTPFixture.seenRequest?.timeoutInterval, 180)
+        _ = try await provider.translate(long)
+        let longJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            XCTUnwrap(TranslationHTTPFixture.seenRequest?.httpBody)) as? [String: Any])
+        let longLimit = try XCTUnwrap(longJSON["max_tokens"] as? Int)
+        XCTAssertGreaterThan(longLimit, shortLimit)
+        XCTAssertLessThanOrEqual(longLimit, 8_192)
     }
 
     func testAITemporaryCleanupOnlyRemovesManagedFiles() throws {

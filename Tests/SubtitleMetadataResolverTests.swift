@@ -2,6 +2,24 @@ import XCTest
 @testable import Eclipse
 
 final class SubtitleMetadataResolverTests: XCTestCase {
+    @MainActor
+    func testMPVLaunchRetainsManualSearchContext() async throws {
+        let request = PlaybackRequest(
+            url: URL(string: "https://example.invalid/episode.mkv")!,
+            mediaInfo: .episode(showId: 95479, seasonNumber: 1, episodeNumber: 1,
+                                showTitle: "Jujutsu Kaisen", isAnime: true),
+            imdbID: "tt12343534", title: "Jujutsu Kaisen", isAnime: true
+        )
+        let player = try XCTUnwrap(PlaybackCoordinator.shared.makeViewController(for: request,
+            engine: .mpv) as? PlayerViewController)
+        let retained = try XCTUnwrap(player.activePlaybackRequest)
+        XCTAssertEqual(retained.url, request.url)
+        XCTAssertEqual(retained.imdbID, request.imdbID)
+        let query = await SubtitleMetadataResolver(identityLoader: { _ in nil }).resolve(request: retained)
+        XCTAssertEqual(query.season, 1)
+        XCTAssertEqual(query.episode, 1)
+        XCTAssertEqual(query.ids.tmdb, 95479)
+    }
     func testTitleVariantsPreserveMeaningfulNumbersAndDeduplicateAliases() {
         XCTAssertEqual(SubtitleTitlePolicy.baseTitle("Jujutsu Kaisen 2nd Season"), "Jujutsu Kaisen")
         XCTAssertEqual(SubtitleTitlePolicy.baseTitle("Jujutsu Kaisen Season 2 (TV)"), "Jujutsu Kaisen")

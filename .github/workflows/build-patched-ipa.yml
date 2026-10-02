@@ -107,6 +107,7 @@ jobs:
             -only-testing:Tests/SubtitleDocumentTests \
             -only-testing:Tests/SubtitleTranslationTests \
             -only-testing:Tests/AnimeStructurePolicyTests \
+            -only-testing:Tests/MPVScalerPolicyTests \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
             -skipPackagePluginValidation \
