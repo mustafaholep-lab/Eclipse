@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Kapalı": {"extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Off"}},"tr":{"stringUnit":{"state":"translated","value":"Kapalı"}}}},
+    "Sor": {"extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Ask"}},"tr":{"stringUnit":{"state":"translated","value":"Sor"}}}},
+    "Otomatik": {"extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Automatic"}},"tr":{"stringUnit":{"state":"translated","value":"Otomatik"}}}},
     "Subtitles": {"extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Subtitles"}},"tr":{"stringUnit":{"state":"translated","value":"Altyazılar"}}}},
     "Select Track": {"extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Select Track"}},"tr":{"stringUnit":{"state":"translated","value":"Parça Seç"}}}},
     "Local Subtitle": {"extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Local Subtitle"}},"tr":{"stringUnit":{"state":"translated","value":"Yerel Altyazı"}}}},

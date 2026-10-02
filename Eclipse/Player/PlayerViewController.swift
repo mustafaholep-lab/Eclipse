@@ -13989,7 +13989,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                                     attributes: .disabled) { _ in })
         }
         if let file = aiTranslationFileURL {
-            actions.append(UIAction(title: "TR · AI çeviri", image: UIImage(systemName: "captions.bubble"),
+            actions.append(UIAction(title: String(localized: "TR · AI çeviri"), image: UIImage(systemName: "captions.bubble"),
                                     state: isOnlineSubtitleSelected(file.absoluteString) ? .on : .off) { [weak self] _ in
                 self?.selectAITranslationFile()
             })
@@ -14009,7 +14009,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(makeOverlayAction(title: status, imageName: "sparkles", isEnabled: false) {})
         }
         if aiTranslationFileURL != nil {
-            actions.append(makeOverlayAction(title: "TR · AI çeviri", imageName: "captions.bubble",
+            actions.append(makeOverlayAction(title: String(localized: "TR · AI çeviri"), imageName: "captions.bubble",
                 isSelected: isOnlineSubtitleSelected(aiTranslationFileURL?.absoluteString)) { [weak self] in
                 self?.selectAITranslationFile()
                 self?.hideOverlayMenu()
@@ -14092,14 +14092,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             hasHumanTurkish: hasHumanTurkishForAI, hasGoodHumanEnglish: true,
             userConfirmed: userConfirmed) else { return }
         guard let key = SubtitleProviderCredentialStore.value(SubtitleTranslationSettings.keyAccount) else {
-            aiTranslationStatus = "API anahtarı eksik"
+            aiTranslationStatus = String(localized: "API anahtarı eksik")
             updateSubtitleTracksMenu()
             return
         }
         let baseURL = SubtitleTranslationSettings.baseURL
         let model = SubtitleTranslationSettings.model
         guard !model.isEmpty else {
-            aiTranslationStatus = "API modeli eksik"
+            aiTranslationStatus = String(localized: "API modeli eksik")
             updateSubtitleTracksMenu()
             return
         }

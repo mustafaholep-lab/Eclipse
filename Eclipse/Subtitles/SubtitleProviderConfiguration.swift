@@ -125,9 +125,9 @@ enum SubtitleTranslationMode: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .off: return "Kapalı"
-        case .ask: return "Sor"
-        case .automatic: return "Otomatik"
+        case .off: return String(localized: "Kapalı")
+        case .ask: return String(localized: "Sor")
+        case .automatic: return String(localized: "Otomatik")
         }
     }
 }

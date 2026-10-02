@@ -34,7 +34,7 @@ struct SubtitleTranslationSettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onChange(of: model) { value in SubtitleTranslationSettings.model = value }
-                SecureField(hasSavedKey ? "API anahtarı kayıtlı · değiştirmek için girin" : "API anahtarı", text: $apiKey)
+                SecureField(hasSavedKey ? String(localized: "API anahtarı kayıtlı · değiştirmek için girin") : String(localized: "API anahtarı"), text: $apiKey)
                     .textContentType(.password)
                     .autocorrectionDisabled()
                 Button("API anahtarını kaydet") { saveKey() }
@@ -47,7 +47,7 @@ struct SubtitleTranslationSettingsView: View {
                         status = String(localized: "API anahtarı kaldırıldı.")
                     }
                 }
-                Button(testing ? "Bağlantı sınanıyor…" : "Bağlantıyı Sına") {
+                Button(testing ? String(localized: "Bağlantı sınanıyor…") : String(localized: "Bağlantıyı Sına")) {
                     Task { await testConnection() }
                 }
                 .disabled(testing)
