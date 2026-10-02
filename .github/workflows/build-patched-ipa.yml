@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - stremio-playback-fix-v6-animesub-subtitles
+      - a2-smart-subtitles
     paths:
       - "Eclipse/**"
       - "Eclipse.xcodeproj/**"
@@ -99,6 +100,7 @@ jobs:
             -destination-timeout 120 \
             -parallel-testing-enabled NO \
             -only-testing:Tests/SubtitleMetadataResolverTests \
+            -only-testing:Tests/SubtitleProviderTests \
             -only-testing:Tests/AnimeStructurePolicyTests \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \

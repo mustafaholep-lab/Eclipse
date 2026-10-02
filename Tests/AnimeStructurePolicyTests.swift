@@ -2125,6 +2125,34 @@ final class StremioAnimeSubtitleLookupTests: XCTestCase {
         XCTAssertFalse(ids.contains("tmdb:95479:1:2"))
     }
 
+    func testAnimeResourceFallbackKeepsEpisodeCoordinatesInEverySupportedID() {
+        let ids = StremioClient.shared.buildContentIds(
+            tmdbId: 95479,
+            imdbId: "tt1234567",
+            type: "anime",
+            season: 1,
+            episode: 1,
+            anilistId: 113415,
+            anilistSeason: 1,
+            anilistEpisode: 1,
+            kitsuId: 42309,
+            kitsuEpisode: 1,
+            malId: 40748,
+            malEpisode: 1,
+            idPrefixes: ["anilist:", "kitsu:", "mal:", "tt", "tmdb:"],
+            addonName: "fixture"
+        )
+
+        XCTAssertTrue(ids.contains("tt1234567:1:1"))
+        XCTAssertTrue(ids.contains("tmdb:95479:1:1"))
+        XCTAssertTrue(ids.contains("anilist:113415:1:1"))
+        XCTAssertTrue(ids.contains("anilist:113415:1"))
+        XCTAssertTrue(ids.contains("kitsu:42309:1"))
+        XCTAssertTrue(ids.contains("mal:40748:1:1"))
+        XCTAssertFalse(ids.contains("anilist:113415"))
+        XCTAssertFalse(ids.contains("tt1234567"))
+    }
+
     func testCachedStreamOnlyManifestNeedsSubtitleCapabilityRefresh() throws {
         let stale = try JSONDecoder().decode(StremioManifest.self, from: Data("""
         {

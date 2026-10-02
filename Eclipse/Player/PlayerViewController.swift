@@ -12644,73 +12644,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func animeSubtitleSmartScore(_ result: StremioAddonManager.AddonSubtitleResult) -> Int {
-        guard isAnimeContent() else { return 0 }
-        let streamValues = animeStreamFingerprintStrings()
-        guard !streamValues.isEmpty else { return 0 }
-
-        let subtitleValues = animeSubtitleCandidateStrings(result)
-        let streamTokens = animeSubtitleMatchTokens(from: streamValues)
-        let subtitleTokens = animeSubtitleMatchTokens(from: subtitleValues)
-        let titleTokens = animeSubtitleMatchTokens(from: stremioSubtitleTitleCandidates())
-        let sharedReleaseTokens = streamTokens
-            .intersection(subtitleTokens)
-            .subtracting(titleTokens)
-
-        var score = 0
-        if result.addon.manifest.id.lowercased() == "org.soluserv.animesub" {
-            // AnimeSub+ is anime-specific and already performs release-aware
-            // aggregation. Keep this a small bonus: exact filename/group/hash
-            // evidence below must remain much stronger.
-            score += 10
-        }
-        for token in sharedReleaseTokens {
-            score += animeSubtitleTechnicalTokens.contains(token) ? 14 : 5
-        }
-        score = min(score, 100)
-
-        let groupOverlap = animeSubtitleReleaseGroupTokens(from: streamValues)
-            .intersection(animeSubtitleReleaseGroupTokens(from: subtitleValues))
-            .subtracting(titleTokens)
-        if !groupOverlap.isEmpty {
-            score += 70 + min(40, groupOverlap.count * 10)
-        }
-
-        if let fingerprint = playbackLaunchContext?.streamFingerprint {
-            let candidateText = subtitleValues.joined(separator: " ").lowercased()
-            if let hash = fingerprint.videoHash?.lowercased(),
-               hash.count >= 12,
-               candidateText.contains(hash) {
-                // Stremio behaviorHints.videoHash is the OpenSubtitles file
-                // hash, so this is the strongest possible external-sub match.
-                score += 260
-            }
-            if let torrentHash = fingerprint.infoHash?.lowercased(),
-               torrentHash.count >= 20,
-               candidateText.contains(torrentHash) {
-                // Torrent hash equality can identify a release, but it is not
-                // the OpenSubtitles file hash and therefore carries less weight.
-                score += 35
-            }
-            if let size = fingerprint.videoSize, size > 0 {
-                let candidateText = subtitleValues.joined(separator: " ").lowercased()
-                let prettySize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file).lowercased()
-                if candidateText.contains(String(size)) || candidateText.contains(prettySize) {
-                    score += 45
-                }
-            }
-        }
-
-        let remembered = rememberedAnimeSubtitleTokens()
-        if !remembered.isEmpty {
-            score += min(90, subtitleTokens.intersection(remembered).count * 22)
-        }
-        if let addonKey = animeSubtitleMemoryKey(suffix: "addon"),
-           let rememberedAddon = ProfileSettingsStore.active.string(forKey: addonKey),
-           rememberedAddon == result.addon.manifest.id {
-            score += 8
-        }
-
-        return score
+        result.candidate?.score ?? 0
     }
 
     private func rememberAnimeSubtitleRelease(_ result: StremioAddonManager.AddonSubtitleResult) {
@@ -12935,7 +12869,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         stremioSubtitleFetchTask = Task { [weak self] in
             guard let self else { return }
-            let results = await self.fetchStremioSubtitleResults(reason: reason)
+            let results = await self.fetchStremioSubtitleResults(reason: reason) { [weak self] partial in
+                guard let self,
+                      !self.isClosing,
+                      self.playbackLoadGeneration == loadGeneration,
+                      self.playbackProfileIsStillActive("a subtitle search") else { return }
+                self.stremioSubtitleResults = self.sortedStremioSubtitleResults(partial)
+                self.updateSubtitleTracksMenu()
+                self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
+            }
             guard !Task.isCancelled else { return }
 
             await MainActor.run { [weak self] in
@@ -13074,13 +13016,17 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         fetchStremioSubtitles(autoSelect: false, reason: "auto-prefetch-\(reason)")
     }
 
-    private func fetchStremioSubtitleResults(reason: String) async -> [StremioAddonManager.AddonSubtitleResult] {
+    private func fetchStremioSubtitleResults(
+        reason: String,
+        onProgress: @escaping @MainActor ([StremioAddonManager.AddonSubtitleResult]) -> Void
+    ) async -> [StremioAddonManager.AddonSubtitleResult] {
         let lookup = await MainActor.run {
             (
                 metadata: openSubtitlesLookupMetadata(),
                 playbackContext: episodePlaybackContext,
                 titleCandidates: stremioSubtitleTitleCandidates(),
-                fileExtras: subtitleRequestFileExtras()
+                fileExtras: subtitleRequestFileExtras(),
+                request: activePlaybackRequest
             )
         }
         let metadata = lookup.metadata
@@ -13096,6 +13042,45 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             resolvedImdbId = await resolveOpenSubtitlesIMDbId(tmdbId: metadata.tmdbId, type: metadata.type)
         }
 
+        var query: SubtitleQuery
+        if let request = lookup.request {
+            query = await SubtitleMetadataResolver.shared.resolve(request: request)
+        } else {
+            let isAnime = lookup.playbackContext?.hasAnimeMediaId == true
+            query = SubtitleQuery(
+                mediaKind: metadata.type == "movie" ? .movie : (isAnime ? .anime : .series),
+                isAnime: isAnime,
+                ids: SubtitleMediaIDs(imdb: resolvedImdbId, tmdb: metadata.tmdbId,
+                                      kitsu: lookup.playbackContext?.kitsuMediaId,
+                                      anilist: lookup.playbackContext?.positiveAniListMediaId,
+                                      mal: lookup.playbackContext?.exactMALMediaId),
+                season: metadata.season,
+                episode: metadata.episode,
+                animeSeason: lookup.playbackContext?.localSeasonNumber,
+                animeEpisode: lookup.playbackContext?.localEpisodeNumber,
+                absoluteEpisode: lookup.playbackContext?.animeAbsoluteEpisodeNumber,
+                year: nil,
+                titles: SubtitleTitlePolicy.variants(lookup.titleCandidates.map { ($0, .displayed) }),
+                fileName: lookup.fileExtras.filename,
+                releaseName: lookup.fileExtras.filename,
+                videoHash: lookup.fileExtras.videoHash,
+                fileSize: lookup.fileExtras.videoSize,
+                duration: nil
+            )
+        }
+        if query.ids.imdb == nil { query.ids.imdb = resolvedImdbId }
+        if query.ids.tmdb == nil { query.ids.tmdb = metadata.tmdbId }
+        query.season = metadata.season
+        query.episode = metadata.episode
+        if query.fileName == nil { query.fileName = lookup.fileExtras.filename }
+        if query.videoHash == nil { query.videoHash = lookup.fileExtras.videoHash }
+        if query.fileSize == nil { query.fileSize = lookup.fileExtras.videoSize }
+        query.titles = SubtitleTitlePolicy.variants(
+            query.titles.map { ($0.value, $0.origin) }
+                + lookup.titleCandidates.map { ($0, .displayed) }
+        )
+        query.preferredReleaseTokens = Array(rememberedAnimeSubtitleTokens())
+
         return await StremioAddonManager.shared.fetchSubtitlesFromAddons(
             tmdbId: metadata.tmdbId,
             imdbId: resolvedImdbId,
@@ -13108,7 +13093,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             titleCandidates: lookup.titleCandidates,
             subtitleVideoHash: lookup.fileExtras.videoHash,
             subtitleVideoSize: lookup.fileExtras.videoSize,
-            subtitleFilename: lookup.fileExtras.filename
+            subtitleFilename: lookup.fileExtras.filename,
+            query: query,
+            onBatch: onProgress
         )
     }
 
@@ -13212,12 +13199,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             let lhsMatch = openSubtitleMatchesPreferredLanguage(lhs.subtitle, preferredLang: preferredLang)
             let rhsMatch = openSubtitleMatchesPreferredLanguage(rhs.subtitle, preferredLang: preferredLang)
             if lhsMatch != rhsMatch { return lhsMatch && !rhsMatch }
-            if isAnimeContent() {
-                let lhsScore = animeSubtitleSmartScore(lhs)
-                let rhsScore = animeSubtitleSmartScore(rhs)
-                if lhsScore != rhsScore {
-                    return lhsScore > rhsScore
-                }
+            let lhsScore = lhs.candidate?.score ?? 0
+            let rhsScore = rhs.candidate?.score ?? 0
+            if lhsScore != rhsScore {
+                return lhsScore > rhsScore
             }
             if lhs.addon.sortIndex != rhs.addon.sortIndex {
                 return lhs.addon.sortIndex < rhs.addon.sortIndex

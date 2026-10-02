@@ -70,6 +70,7 @@ actor SubtitleMetadataCache {
 
 @MainActor
 final class SubtitleMetadataResolver {
+    static let shared = SubtitleMetadataResolver()
     typealias IdentityLoader = @Sendable (Int) async -> SubtitleAnimeIdentity?
 
     private let identityLoader: IdentityLoader

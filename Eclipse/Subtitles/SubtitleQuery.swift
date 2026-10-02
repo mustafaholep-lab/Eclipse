@@ -67,6 +67,7 @@ struct SubtitleQuery: Sendable {
     var fileSize: Int64?
     var duration: Double?
     var preferredLanguages: [String] = ["tr", "en"]
+    var preferredReleaseTokens: [String] = []
 
     var seriesCacheKey: String? {
         if let key = ids.seriesCacheKey { return key }
@@ -87,6 +88,7 @@ struct SubtitleCandidate: Sendable {
     let isMachineTranslated: Bool
     var score: Int
     var matchReasons: [String]
+    var videoHash: String? = nil
 }
 
 protocol SubtitleProvider: Sendable {

@@ -339,35 +339,13 @@ final class StremioClient {
         videoSize: Int64? = nil,
         filename: String? = nil
     ) async throws -> [StremioSubtitle] {
-        let encodedType = encodePathSegment(type, preservingColon: false)
-        let encodedId = encodePathSegment(id, preservingColon: true)
-
-        var extras: [String] = []
-        if let videoHash = videoHash?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !videoHash.isEmpty,
-           videoHash.utf8.count <= 256 {
-            extras.append("videoHash=\(encodeExtraValue(videoHash))")
-        }
-        if let videoSize, videoSize > 0 {
-            extras.append("videoSize=\(videoSize)")
-        }
-        if let filename = filename?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !filename.isEmpty,
-           filename.utf8.count <= 1_024 {
-            extras.append("filename=\(encodeExtraValue(filename))")
-        }
-
-        let extraPath = extras.isEmpty ? "" : "/\(extras.joined(separator: "&"))"
-        guard let url = Self.endpointURL(
-            baseURL: baseURL,
-            appendingPercentEncodedPath: "/subtitles/\(encodedType)/\(encodedId)\(extraPath).json"
-        ) else {
-            throw StremioError.invalidURL
-        }
+        guard let url = subtitleRequestURL(
+            baseURL: baseURL, type: type, id: id,
+            videoHash: videoHash, videoSize: videoSize, filename: filename
+        ) else { throw StremioError.invalidURL }
         let endpoint = Self.redactedEndpointDescription(for: url)
-
         Logger.shared.log(
-            "Stremio: Fetching subtitles contentType=\(Self.safeContentType(type)) contentIDBytes=\(id.utf8.count) extras=[hash:\(!extras.filter { $0.hasPrefix("videoHash=") }.isEmpty),size:\(!extras.filter { $0.hasPrefix("videoSize=") }.isEmpty),filename:\(!extras.filter { $0.hasPrefix("filename=") }.isEmpty)] endpoint=\(endpoint)",
+            "Stremio: Fetching subtitles contentType=\(Self.safeContentType(type)) contentIDBytes=\(id.utf8.count) extras=[hash:\(videoHash?.isEmpty == false),size:\((videoSize ?? 0) > 0),filename:\(filename?.isEmpty == false)] endpoint=\(endpoint)",
             type: "Stremio"
         )
 
@@ -401,6 +379,39 @@ final class StremioClient {
 
         Logger.shared.log("Stremio: Got \(subtitles.count) HTTP subtitle(s) from \(endpoint)", type: "Stremio")
         return subtitles
+    }
+
+    func subtitleRequestURL(
+        baseURL: String,
+        type: String,
+        id: String,
+        videoHash: String? = nil,
+        videoSize: Int64? = nil,
+        filename: String? = nil
+    ) -> URL? {
+        let encodedType = encodePathSegment(type, preservingColon: false)
+        let encodedId = encodePathSegment(id, preservingColon: true)
+
+        var extras: [String] = []
+        if let videoHash = videoHash?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !videoHash.isEmpty,
+           videoHash.utf8.count <= 256 {
+            extras.append("videoHash=\(encodeExtraValue(videoHash))")
+        }
+        if let videoSize, videoSize > 0 {
+            extras.append("videoSize=\(videoSize)")
+        }
+        if let filename = filename?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !filename.isEmpty,
+           filename.utf8.count <= 1_024 {
+            extras.append("filename=\(encodeExtraValue(filename))")
+        }
+
+        let extraPath = extras.isEmpty ? "" : "/\(extras.joined(separator: "&"))"
+        return Self.endpointURL(
+            baseURL: baseURL,
+            appendingPercentEncodedPath: "/subtitles/\(encodedType)/\(encodedId)\(extraPath).json"
+        )
     }
 
     func fetchOpenSubtitlesV3(
@@ -495,6 +506,7 @@ final class StremioClient {
     }
 
     func buildContentIds(tmdbId: Int, imdbId: String?, type: String, season: Int?, episode: Int?, anilistId: Int? = nil, anilistSeason: Int? = nil, anilistEpisode: Int? = nil, kitsuId: Int? = nil, kitsuEpisode: Int? = nil, malId: Int? = nil, malEpisode: Int? = nil, alternateSeason: Int? = nil, alternateEpisode: Int? = nil, allowParentSeriesIDs: Bool = true, idPrefixes: [String]?, addonName: String) -> [String] {
+        let isEpisodeType = type == "series" || type == "anime"
         let prefixes = idPrefixes ?? []
         let normalizedPrefixes = prefixes.map { $0.lowercased() }
         let supportsTMDB = normalizedPrefixes.isEmpty || normalizedPrefixes.contains { $0 == "tmdb" || $0.hasPrefix("tmdb:") }
@@ -519,7 +531,7 @@ final class StremioClient {
         )
 
         if allowParentSeriesIDs, supportsIMDB, let ttId = normalizedIMDbID {
-            if type == "series" {
+            if isEpisodeType {
                 for tuple in seriesTuples {
                     candidates.append("\(ttId):\(tuple.season):\(tuple.episode)")
                 }
@@ -528,7 +540,7 @@ final class StremioClient {
             }
 
             if supportsIMDBNamespace {
-                if type == "series" {
+                if isEpisodeType {
                     for tuple in seriesTuples {
                         candidates.append("imdb:\(ttId):\(tuple.season):\(tuple.episode)")
                     }
@@ -538,8 +550,8 @@ final class StremioClient {
             }
         }
 
-        if allowParentSeriesIDs, supportsTMDB {
-            if type == "series" {
+        if allowParentSeriesIDs, supportsTMDB, tmdbId > 0 {
+            if isEpisodeType {
                 for tuple in seriesTuples {
                     candidates.append("tmdb:\(tmdbId):\(tuple.season):\(tuple.episode)")
                 }
@@ -549,7 +561,7 @@ final class StremioClient {
         }
 
         if supportsAniList, let anilistId, anilistId > 0 {
-            if type == "series" {
+            if isEpisodeType {
                 if let animeEpisode = anilistEpisode, animeEpisode > 0 {
                     if let animeSeason = anilistSeason, animeSeason > 0 {
                         candidates.append("anilist:\(anilistId):\(animeSeason):\(animeEpisode)")
@@ -562,7 +574,7 @@ final class StremioClient {
         }
 
         if supportsKitsu, let kitsuId, kitsuId > 0 {
-            if type == "series" {
+            if isEpisodeType {
                 if let kitsuEpisode, kitsuEpisode > 0 {
                     candidates.append("kitsu:\(kitsuId):\(kitsuEpisode)")
                 }
@@ -572,7 +584,7 @@ final class StremioClient {
         }
 
         if supportsMAL, let malId, malId > 0 {
-            if type == "series" {
+            if isEpisodeType {
                 if let malEpisode, malEpisode > 0 {
                     candidates.append("mal:\(malId):1:\(malEpisode)")
                     candidates.append("mal:\(malId):\(malEpisode)")
@@ -593,7 +605,7 @@ final class StremioClient {
     }
 
     private func contentIdSeriesTuples(type: String, season: Int?, episode: Int?, alternateSeason: Int?, alternateEpisode: Int?) -> [(season: Int, episode: Int)] {
-        guard type == "series" else { return [] }
+        guard type == "series" || type == "anime" else { return [] }
         var tuples: [(season: Int, episode: Int)] = []
 
         if let season, let episode, season >= 0, episode > 0 {
