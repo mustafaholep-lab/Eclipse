@@ -8,6 +8,7 @@ on:
     paths:
       - "Eclipse/**"
       - "Eclipse.xcodeproj/**"
+      - "Tests/SubtitleProviderTests.swift"
       - "Package.swift"
       - "Build.xcconfig"
       - ".github/workflows/build-patched-ipa.yml"
