@@ -8969,6 +8969,16 @@ extension AniListAnime {
         tags = decodedTags
         title = try container.decode(AniListAnime.AniListTitle.self, forKey: .title)
 
+        let decodedSynonyms = try container.decodeIfPresent([String].self, forKey: .synonyms)
+        guard (decodedSynonyms?.count ?? 0) <= 128,
+              decodedSynonyms?.allSatisfy({ $0.utf8.count <= 512 }) != false else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .synonyms, in: container,
+                debugDescription: "AniList synonyms exceed the supported limit."
+            )
+        }
+        synonyms = decodedSynonyms
+
         let rawEpisodes = try container.decodeIfPresent(Int.self, forKey: .episodes)
         if let rawEpisodes, rawEpisodes != 0 {
             guard let episodes = RemoteMediaNumericBoundary.episodeCount(rawEpisodes) else {
@@ -9085,6 +9095,16 @@ extension AniListAnime.AniListRelationNode {
         }
         tags = decodedTags
         title = try container.decode(AniListAnime.AniListTitle.self, forKey: .title)
+
+        let decodedSynonyms = try container.decodeIfPresent([String].self, forKey: .synonyms)
+        guard (decodedSynonyms?.count ?? 0) <= 128,
+              decodedSynonyms?.allSatisfy({ $0.utf8.count <= 512 }) != false else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .synonyms, in: container,
+                debugDescription: "AniList relation synonyms exceed the supported limit."
+            )
+        }
+        synonyms = decodedSynonyms
 
         let rawEpisodes = try container.decodeIfPresent(Int.self, forKey: .episodes)
         if let rawEpisodes, rawEpisodes != 0 {
