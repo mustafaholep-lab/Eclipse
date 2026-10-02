@@ -296,7 +296,7 @@ struct SubtitleDocument {
     private static func assSkipReason(raw: String, plain: String, style: String, effect: String) -> SubtitleSkipReason? {
         if raw.range(of: #"\\p[1-9]"#, options: .regularExpression) != nil { return .drawing }
         if raw.range(of: #"\\(?:[kK](?:f|o)?)\d"#, options: .regularExpression) != nil { return .karaoke }
-        if style.range(of: #"(?:^|[ _-])(sign|typeset)(?:$|[ _-])"#, options: .regularExpression) != nil ||
+        if style.range(of: #"(?:^|[ _-])(signs?|typeset(?:ting)?)(?:$|[ _-])"#, options: .regularExpression) != nil ||
             raw.contains("\\pos(") || raw.contains("\\move(") { return .sign }
         if !effect.isEmpty { return .effect }
         if style.range(of: #"(?:^|[ _-])(op|ed|opening|ending)(?:$|[ _-])"#, options: .regularExpression) != nil {

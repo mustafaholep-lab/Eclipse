@@ -109,7 +109,7 @@ final class SubtitleDocumentTests: XCTestCase {
         Dialogue: 0:00:01.00,0:00:03.00,Default,1,,{\\i1}Şimdi, burada{\\i0}\\Nİğne ve çay
         Dialogue: 0:00:03.00,0:00:04.00,Default,0,,{\\p1}m 0 0 l 100 100{\\p0}
         Dialogue: 0:00:04.00,0:00:05.00,Default,0,,{\\kf20}La{\\ko30}la
-        Dialogue: 0:00:04.00,0:00:05.00,Signs,0,,{\\pos(100,200)}Exit
+        Dialogue: 0:00:04.00,0:00:05.00,Signs,0,,Exit
         Dialogue: 0:00:04.00,0:00:05.00,Default,0,scroll,scrolling effect
         Dialogue: 0:00:04.00,0:00:05.00,OP Romaji,0,,Opening lyrics
         Dialogue: 0:00:04.00,0:00:05.00,Spoken Lines,0,,{\\b1}Normal konuşma
