@@ -32,7 +32,7 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertEqual(edited.season, 2)
         XCTAssertEqual(edited.episode, 3)
         XCTAssertEqual(edited.animeSeason, 2)
-        XCTAssertEqual(edited.animeEpisode, 3)
+        XCTAssertEqual(edited.animeEpisode, 27)
         XCTAssertEqual(edited.absoluteEpisode, 27)
         XCTAssertEqual(edited.preferredLanguages, ["tr"])
         XCTAssertEqual(edited.ids.anilist, original.ids.anilist)
@@ -43,7 +43,7 @@ final class SubtitleProviderTests: XCTestCase {
             idPrefixes: ["tt", "anilist:"], addonName: "Fixture"
         )
         XCTAssertTrue(plan.contains(.init(type: "series", id: "tt1234567:2:3")))
-        XCTAssertTrue(plan.contains(.init(type: "anime", id: "anilist:113415:2:3")))
+        XCTAssertTrue(plan.contains(.init(type: "anime", id: "anilist:113415:1:27")))
     }
 
     func testSubtitleDelayPreferenceIsReleaseAndEpisodeSpecific() throws {

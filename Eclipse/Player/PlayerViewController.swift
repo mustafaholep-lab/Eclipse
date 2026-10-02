@@ -2933,6 +2933,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var openSubtitlesResults: [StremioSubtitle] = []
     private var openSubtitlesFetchTask: Task<Void, Never>?
     private var openSubtitlesFetchInProgress = false
+    private var openSubtitlesFetchError = false
     private var openSubtitlesSearchAttempted = false
     private var openSubtitlesFallbackAttempted = false
     private var openSubtitlesLoadedURLs: Set<String> = []
@@ -4541,6 +4542,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         )
 #endif
         openSubtitlesResults.removeAll()
+        openSubtitlesFetchError = false
         openSubtitlesFetchTask?.cancel()
         openSubtitlesFetchTask = nil
         openSubtitlesFetchInProgress = false
@@ -11943,7 +11945,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if openSubtitlesResults.isEmpty {
             if openSubtitlesSearchAttempted {
                 return [
-                    makeOverlayAction(title: "No OpenSubtitles results", imageName: "captions.bubble", isEnabled: false) {},
+                    makeOverlayAction(title: openSubtitlesFetchError ? "OpenSubtitles unavailable" : "No OpenSubtitles results",
+                                      imageName: openSubtitlesFetchError ? "exclamationmark.triangle" : "captions.bubble", isEnabled: false) {},
                     makeOverlayAction(title: "Refresh OpenSubtitles", imageName: "arrow.clockwise") { [weak self] in
                         self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                         self?.hideOverlayMenu()
@@ -12651,7 +12654,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(UIAction(title: "Searching OpenSubtitles...", image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
         } else if openSubtitlesResults.isEmpty {
             if openSubtitlesSearchAttempted {
-                actions.append(UIAction(title: "No OpenSubtitles results", image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
+                actions.append(UIAction(title: openSubtitlesFetchError ? "OpenSubtitles unavailable" : "No OpenSubtitles results",
+                                        image: UIImage(systemName: openSubtitlesFetchError ? "exclamationmark.triangle" : "captions.bubble"),
+                                        attributes: .disabled) { _ in })
                 actions.append(UIAction(title: "Refresh OpenSubtitles", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                     self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                 })
@@ -13103,6 +13108,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         openSubtitlesFetchTask?.cancel()
+        openSubtitlesFetchError = false
         openSubtitlesFetchInProgress = true
         openSubtitlesSearchAttempted = true
         updateSubtitleTracksMenu()
@@ -13110,7 +13116,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         openSubtitlesFetchTask = Task { [weak self] in
             guard let self else { return }
-            let results = await self.fetchOpenSubtitlesResults(reason: reason)
+            let fetched = await self.fetchOpenSubtitlesResults(reason: reason)
             guard !Task.isCancelled else { return }
 
             await MainActor.run { [weak self] in
@@ -13119,12 +13125,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                       self.playbackLoadGeneration == loadGeneration,
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
                 self.openSubtitlesFetchInProgress = false
-                self.openSubtitlesResults = results
+                self.openSubtitlesFetchError = fetched.failed
+                self.openSubtitlesResults = fetched.results
                 self.refreshOnlineSubtitlePrefetch()
-                Logger.shared.log("[PlayerVC.OpenSubtitles] fetch complete reason=\(reason) count=\(results.count)", type: "Player")
+                Logger.shared.log("[PlayerVC.OpenSubtitles] fetch complete reason=\(reason) count=\(fetched.results.count)", type: "Player")
                 if autoSelect,
                    self.canAutoApplyOpenSubtitlesFallback(),
-                   let subtitle = self.preferredOpenSubtitle(from: results, preferredLang: self.automaticSubtitleSelectionLanguage) {
+                   let subtitle = self.preferredOpenSubtitle(from: fetched.results, preferredLang: self.automaticSubtitleSelectionLanguage) {
                     self.openSubtitlesFallbackAttempted = true
                     self.loadOpenSubtitle(subtitle, userSelected: false)
                 } else {
@@ -13304,7 +13311,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         )
     }
 
-    private func fetchOpenSubtitlesResults(reason: String) async -> [StremioSubtitle] {
+    private func fetchOpenSubtitlesResults(reason: String) async -> (results: [StremioSubtitle], failed: Bool) {
         let lookup = await MainActor.run {
             (
                 metadata: openSubtitlesLookupMetadata(),
@@ -13314,7 +13321,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let metadata = lookup.metadata
         guard let metadata else {
             Logger.shared.log("[PlayerVC.OpenSubtitles] skipped \(reason): missing metadata", type: "Player")
-            return []
+            return ([], false)
         }
 
         let resolvedImdbId: String?
@@ -13326,7 +13333,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         guard let resolvedImdbId, !resolvedImdbId.isEmpty else {
             Logger.shared.log("[PlayerVC.OpenSubtitles] skipped \(reason): missing IMDb ID for tmdbId=\(metadata.tmdbId)", type: "Player")
-            return []
+            return ([], false)
         }
 
         do {
@@ -13340,10 +13347,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 videoSize: lookup.fileExtras.videoSize,
                 filename: lookup.fileExtras.filename
             )
-            return dedupeOpenSubtitles(subtitles)
+            return (dedupeOpenSubtitles(subtitles), false)
         } catch {
             Logger.shared.log("[PlayerVC.OpenSubtitles] fetch failed \(reason): \(error.localizedDescription)", type: "Error")
-            return []
+            return ([], true)
         }
     }
 
@@ -13754,7 +13761,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func presentManualSubtitleSearchFields(query: SubtitleQuery, title: String) {
         let form = UIAlertController(
             title: "Manual Subtitle Search",
-            message: "Edit the title and episode coordinates. Leave a number blank to keep the current value.",
+            message: "Edit title, season, episode, or language. Changing absolute episode also tries that anime episode number.",
             preferredStyle: .alert
         )
         let values: [(String, String, UIKeyboardType)] = [

@@ -135,7 +135,14 @@ struct SubtitleManualSearch: Equatable {
         }
         if let season, season >= 0 { query.season = season; query.animeSeason = season }
         if let episode, episode > 0 { query.episode = episode; query.animeEpisode = episode }
-        if let absoluteEpisode, absoluteEpisode > 0 { query.absoluteEpisode = absoluteEpisode }
+        if let absoluteEpisode, absoluteEpisode > 0 {
+            query.absoluteEpisode = absoluteEpisode
+            // Only an explicit change may override AniMap's local anime
+            // coordinate. TMDB/IMDb still use the season and episode above.
+            if absoluteEpisode != original.absoluteEpisode {
+                query.animeEpisode = absoluteEpisode
+            }
+        }
         let chosenLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !chosenLanguage.isEmpty { query.preferredLanguages = [chosenLanguage] }
         return query
