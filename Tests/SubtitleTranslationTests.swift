@@ -6,12 +6,29 @@ private final class TranslationHTTPFixture: URLProtocol {
     static var statusCode = 200
     static var failure: Error?
     static var seenRequest: URLRequest?
+    static var seenBody: Data?
     static var content = #"{"ok":true}"#
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.seenRequest = request
+        if let body = request.httpBody {
+            Self.seenBody = body
+        } else if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 4_096)
+            while true {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                data.append(contentsOf: buffer.prefix(count))
+            }
+            Self.seenBody = data
+        } else {
+            Self.seenBody = nil
+        }
         if let failure = Self.failure {
             client?.urlProtocol(self, didFailWithError: failure)
             return
@@ -105,7 +122,7 @@ final class SubtitleTranslationTests: XCTestCase {
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.url?.path, "/v1/chat/completions")
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.httpMethod, "POST")
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
-        let testBody = try XCTUnwrap(TranslationHTTPFixture.seenRequest?.httpBody)
+        let testBody = try XCTUnwrap(TranslationHTTPFixture.seenBody)
         let testJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: testBody) as? [String: Any])
         XCTAssertEqual(testJSON["max_tokens"] as? Int, 32)
         XCTAssertEqual(testJSON["temperature"] as? Double, 0)
@@ -326,7 +343,7 @@ final class SubtitleTranslationTests: XCTestCase {
             contextBefore: [], contextAfter: [], glossary: [], preservesHonorifics: true)
         _ = try await provider.translate(short)
         let shortJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
-            XCTUnwrap(TranslationHTTPFixture.seenRequest?.httpBody)) as? [String: Any])
+            XCTUnwrap(TranslationHTTPFixture.seenBody)) as? [String: Any])
         let shortLimit = try XCTUnwrap(shortJSON["max_tokens"] as? Int)
         XCTAssertGreaterThan(shortLimit, 32)
         XCTAssertLessThanOrEqual(shortLimit, 8_192)
@@ -334,7 +351,7 @@ final class SubtitleTranslationTests: XCTestCase {
         XCTAssertEqual(TranslationHTTPFixture.seenRequest?.timeoutInterval, 180)
         _ = try await provider.translate(long)
         let longJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
-            XCTUnwrap(TranslationHTTPFixture.seenRequest?.httpBody)) as? [String: Any])
+            XCTUnwrap(TranslationHTTPFixture.seenBody)) as? [String: Any])
         let longLimit = try XCTUnwrap(longJSON["max_tokens"] as? Int)
         XCTAssertGreaterThan(longLimit, shortLimit)
         XCTAssertLessThanOrEqual(longLimit, 8_192)

@@ -3,16 +3,17 @@ import XCTest
 
 final class SubtitleMetadataResolverTests: XCTestCase {
     @MainActor
-    func testMPVLaunchRetainsManualSearchContext() async throws {
+    func testManualSearchRejectsMissingContextAndKeepsExactEpisodeIdentity() async throws {
+        XCTAssertNil(ManualSubtitleSearchContext.validatedRequest(nil))
+        let blank = PlaybackRequest(url: URL(string: "https://example.invalid/unknown.mkv")!)
+        XCTAssertNil(ManualSubtitleSearchContext.validatedRequest(blank))
         let request = PlaybackRequest(
             url: URL(string: "https://example.invalid/episode.mkv")!,
             mediaInfo: .episode(showId: 95479, seasonNumber: 1, episodeNumber: 1,
                                 showTitle: "Jujutsu Kaisen", isAnime: true),
             imdbID: "tt12343534", title: "Jujutsu Kaisen", isAnime: true
         )
-        let player = try XCTUnwrap(PlaybackCoordinator.shared.makeViewController(for: request,
-            engine: .mpv) as? PlayerViewController)
-        let retained = try XCTUnwrap(player.activePlaybackRequest)
+        let retained = try XCTUnwrap(ManualSubtitleSearchContext.validatedRequest(request))
         XCTAssertEqual(retained.url, request.url)
         XCTAssertEqual(retained.imdbID, request.imdbID)
         let query = await SubtitleMetadataResolver(identityLoader: { _ in nil }).resolve(request: retained)

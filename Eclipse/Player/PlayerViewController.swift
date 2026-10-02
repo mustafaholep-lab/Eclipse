@@ -29,6 +29,15 @@ import AVKit
 import MediaPlayer
 #endif
 
+enum ManualSubtitleSearchContext {
+    static func validatedRequest(_ request: PlaybackRequest?) -> PlaybackRequest? {
+        guard let request else { return nil }
+        let hasTitle = !request.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard request.mediaInfo != nil || hasTitle else { return nil }
+        return request
+    }
+}
+
 #if DEBUG
 /// Observation only: identifies a seek without changing renderer or playback intent.
 struct MPVSeekDiagnosticState {
@@ -13914,7 +13923,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func presentManualSubtitleSearch() {
-        guard let request = activePlaybackRequest else {
+        guard let request = ManualSubtitleSearchContext.validatedRequest(activePlaybackRequest) else {
             let alert = UIAlertController(title: "Search Subtitles",
                 message: "This playback has no searchable media context.", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .cancel))
