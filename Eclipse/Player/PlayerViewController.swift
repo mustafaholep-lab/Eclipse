@@ -13847,7 +13847,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         var seen = Set<String>()
         let rememberedProvider = rememberedSubtitleProviderID
         return batches.flatMap(\.candidates)
-            .filter { seen.insert($0.id).inserted }
+            .filter { seen.insert("\($0.providerID):\($0.id)").inserted }
             .sorted { lhs, rhs in
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
                 if lhs.providerID == rememberedProvider && rhs.providerID != rememberedProvider { return true }
