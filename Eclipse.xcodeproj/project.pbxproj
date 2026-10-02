@@ -22,6 +22,9 @@
 		TVUTBF0600000000000000006 /* DownloadPathIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TVUTFR0500000000000000005 /* DownloadPathIdentityTests.swift */; };
 		12F745102EB52DFC00889684 /* SkyStreamSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F7450E2EB52DFC00889684 /* SkyStreamSecurityTests.swift */; };
 		A11E57102F00000000000001 /* AnimeStructurePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */; };
+		A1E100000000000000000001 /* SubtitleQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E100000000000000000004 /* SubtitleQuery.swift */; };
+		A1E100000000000000000002 /* SubtitleMetadataResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E100000000000000000005 /* SubtitleMetadataResolver.swift */; };
+		A1E100000000000000000003 /* SubtitleMetadataResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */; };
 		BPSTBF0000000000000001 /* BackupProfileSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */; };
 		NUVCMPTSTBF000000000001 /* NuvioRepositoryCompletenessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */; };
 		A11E57202F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E571E2F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift */; };
@@ -386,6 +389,9 @@
 		B03E4488C6DE4E6C8CFD5900 /* PlaybackInputSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackInputSafetyTests.swift; sourceTree = "<group>"; };
 		12F7450E2EB52DFC00889684 /* SkyStreamSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkyStreamSecurityTests.swift; sourceTree = "<group>"; };
 		A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeStructurePolicyTests.swift; sourceTree = "<group>"; };
+		A1E100000000000000000004 /* SubtitleQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleQuery.swift; sourceTree = "<group>"; };
+		A1E100000000000000000005 /* SubtitleMetadataResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleMetadataResolver.swift; sourceTree = "<group>"; };
+		A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleMetadataResolverTests.swift; sourceTree = "<group>"; };
 		BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupProfileSnapshotTests.swift; sourceTree = "<group>"; };
 		NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioRepositoryCompletenessTests.swift; sourceTree = "<group>"; };
 		RXCTSTFR0000000000000001 /* ReaderExtensionCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderExtensionCoreTests.swift; sourceTree = "<group>"; };
@@ -725,6 +731,7 @@
 			children = (
 				12F7450E2EB52DFC00889684 /* SkyStreamSecurityTests.swift */,
 				A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */,
+				A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */,
 				BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */,
 				NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */,
 				A11E571E2F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift */,
@@ -1170,6 +1177,7 @@
 				RDRLEGALFILEREF00000001 /* ReaderExtensionLicenses */,
 				OSSLEGALFILEREF000000001 /* OpenSourceLicenses */,
 				1324E7B22E940BD70036B5F5 /* Player */,
+				A1E100000000000000000007 /* Subtitles */,
 				13F5B5902E73090000565E75 /* Models */,
 				1375466E2E5F078B00B29944 /* Tracking */,
 				13F072972E4B2D9200EF90EB /* TMDB */,
@@ -1186,6 +1194,15 @@
 				1240112B2EFF3B8B00CEC6EB /* Eclipse.local.entitlements */,
 			);
 			path = Eclipse;
+			sourceTree = "<group>";
+		};
+		A1E100000000000000000007 /* Subtitles */ = {
+			isa = PBXGroup;
+			children = (
+				A1E100000000000000000004 /* SubtitleQuery.swift */,
+				A1E100000000000000000005 /* SubtitleMetadataResolver.swift */,
+			);
+			path = Subtitles;
 			sourceTree = "<group>";
 		};
 		13F0726D2E4B2D9000EF90EB /* JSLoader */ = {
@@ -1722,6 +1739,7 @@
 			files = (
 				12F745102EB52DFC00889684 /* SkyStreamSecurityTests.swift in Sources */,
 				A11E57102F00000000000001 /* AnimeStructurePolicyTests.swift in Sources */,
+				A1E100000000000000000003 /* SubtitleMetadataResolverTests.swift in Sources */,
 				BPSTBF0000000000000001 /* BackupProfileSnapshotTests.swift in Sources */,
 				NUVCMPTSTBF000000000001 /* NuvioRepositoryCompletenessTests.swift in Sources */,
 				A11E57202F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift in Sources */,
@@ -1992,6 +2010,8 @@
 				14CC00040000000000CC0004 /* HomeLayoutView.swift in Sources */,
 				13F072BA2E4B2D9200EF90EB /* TMDBService.swift in Sources */,
 				13F072C22E4B2D9200EF90EB /* AniListService.swift in Sources */,
+				A1E100000000000000000001 /* SubtitleQuery.swift in Sources */,
+				A1E100000000000000000002 /* SubtitleMetadataResolver.swift in Sources */,
 				13E1EDE82ED9E66000087629 /* MainMenu.swift in Sources */,
 				13E1EDE32ED9E66000087629 /* readerSettingsView.swift in Sources */,
 				13F0725F2E4B2D3300EF90EB /* SoraApp.swift in Sources */,
