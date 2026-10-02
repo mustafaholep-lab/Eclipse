@@ -10,6 +10,7 @@ on:
       - "Eclipse.xcodeproj/**"
       - "Tests/SubtitleProviderTests.swift"
       - "Tests/SubtitleDocumentTests.swift"
+      - "Tests/SubtitleTranslationTests.swift"
       - "Package.swift"
       - "Build.xcconfig"
       - ".github/workflows/build-patched-ipa.yml"
@@ -104,6 +105,7 @@ jobs:
             -only-testing:Tests/SubtitleMetadataResolverTests \
             -only-testing:Tests/SubtitleProviderTests \
             -only-testing:Tests/SubtitleDocumentTests \
+            -only-testing:Tests/SubtitleTranslationTests \
             -only-testing:Tests/AnimeStructurePolicyTests \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \

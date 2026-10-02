@@ -119,3 +119,42 @@ enum SubtitleProviderCredentialStore {
         }
     }
 }
+
+enum SubtitleTranslationMode: String, CaseIterable {
+    case off, ask, automatic
+
+    var title: String {
+        switch self {
+        case .off: return "Kapalı"
+        case .ask: return "Sor"
+        case .automatic: return "Otomatik"
+        }
+    }
+}
+
+enum SubtitleTranslationSettings {
+    static let keyAccount = "ai-translation.key"
+    static let promptVersion = "subtitle-tr-v1"
+
+    static var mode: SubtitleTranslationMode {
+        get { SubtitleTranslationMode(rawValue: ProfileSettingsStore.active.string(forKey: "subtitleAI.mode") ?? "off") ?? .off }
+        set { ProfileSettingsStore.active.set(newValue.rawValue, forKey: "subtitleAI.mode") }
+    }
+
+    static var baseURL: String {
+        get { ProfileSettingsStore.active.string(forKey: "subtitleAI.baseURL") ?? "https://api.openai.com/v1" }
+        set { ProfileSettingsStore.active.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "subtitleAI.baseURL") }
+    }
+
+    static var model: String {
+        get { ProfileSettingsStore.active.string(forKey: "subtitleAI.model") ?? "" }
+        set { ProfileSettingsStore.active.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "subtitleAI.model") }
+    }
+
+    static var preservesHonorifics: Bool {
+        get { ProfileSettingsStore.active.object(forKey: "subtitleAI.honorifics") as? Bool ?? true }
+        set { ProfileSettingsStore.active.set(newValue, forKey: "subtitleAI.honorifics") }
+    }
+
+    static var hasKey: Bool { SubtitleProviderCredentialStore.value(keyAccount) != nil }
+}

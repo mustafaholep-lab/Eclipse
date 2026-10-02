@@ -1862,6 +1862,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             logMPV("rendererSeek(to:) target=\(secondsText(seconds)) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)")
         }
         releaseBackgroundRecoveryProgressGate(reason: "explicit-seek")
+        if let aiTranslationEngine {
+            Task { await aiTranslationEngine.updatePlaybackPosition(seconds) }
+        }
         renderer.seek(to: seconds)
         rendererSchedulePictureInPicturePlaybackStateUpdate()
     }
@@ -2953,6 +2956,24 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var directSubtitleFetchInProgress = false
     private var directSubtitleSearchAttempted = false
     private var directSubtitleDownloadError: String?
+    private enum AITranslationSource {
+        case direct(SubtitleCandidate)
+        case stremio(StremioAddonManager.AddonSubtitleResult)
+
+        var candidate: SubtitleCandidate? {
+            switch self {
+            case .direct(let candidate): return candidate
+            case .stremio(let result): return result.candidate
+            }
+        }
+    }
+    private var aiTranslationTask: Task<Void, Never>?
+    private var aiTranslationEngine: SubtitleTranslationEngine?
+    private var aiTranslationFileURL: URL?
+    private var aiTranslationStatus: String?
+    private var aiTranslationStarted = false
+    private var aiTranslationRevision = 0
+    private var aiTranslationLastReloadAt: Date?
     private var onlineSubtitleLoadedURLs: Set<String> = []
     private var onlineSubtitleLoadedTrackNames: Set<String> = []
     private var onlineSubtitleLoadedRendererTrackIds: Set<Int> = []
@@ -4510,6 +4531,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         pendingRendererRestartRetryGeneration = nil
         playbackLoadGeneration += 1
         subtitlePlaybackSelection.beginMedia()
+        aiTranslationTask?.cancel()
+        aiTranslationTask = nil
+        aiTranslationEngine = nil
+        aiTranslationRevision += 1
+        aiTranslationStarted = false
+        aiTranslationStatus = nil
+        aiTranslationFileURL = nil
+        aiTranslationLastReloadAt = nil
         cancelMPVBackgroundAudioFallback(reason: "new-load")
         mpvBackgroundFallbackAutoPaused = false
         mpvBackgroundFallbackPauseIntentGeneration = nil
@@ -11850,6 +11879,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             sections.append(PlayerOverlayMenuSection(title: "Direct Providers", actions: directSubtitleOverlayActions()))
         }
 
+        if SubtitleTranslationSettings.mode != .off {
+            sections.append(PlayerOverlayMenuSection(title: "AI Çeviri", actions: aiTranslationOverlayActions()))
+        }
+
         if !isVLCPlayer {
             sections.append(subtitleSyncOverlaySection())
         }
@@ -12286,6 +12319,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "nativeTracks=\(nativeTrackMenuSignature)",
             "stremio=\(stremioMenuSignature)",
             "openSubtitles=\(openSubtitlesMenuSignature)",
+            "ai=\(aiTranslationStatus ?? "none")|\(aiTranslationFileURL?.absoluteString ?? "none")",
             "subtitleSync=\(String(format: "%.2f", subtitleDelaySeconds))",
             "appearance=\(appearanceEnabled)",
             appearanceEnabled ? subtitleStyleMenuSignature() : ""
@@ -12419,6 +12453,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
         if let directMenu = directSubtitleMenu() {
             menuChildren.append(directMenu)
+        }
+        if let aiMenu = aiTranslationMenu() {
+            menuChildren.append(aiMenu)
         }
         if !isVLCPlayer {
             menuChildren.append(createSubtitleSyncMenu())
@@ -13059,6 +13096,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                       self.stremioSubtitleSearchRevision == searchRevision,
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
                 self.stremioSubtitleResults = self.sortedStremioSubtitleResults(partial)
+                self.considerAutomaticAITranslation()
                 if autoSelect,
                    self.canAutoApplyStremioSubtitleFallback(),
                    let result = self.preferredStremioSubtitle(from: self.stremioSubtitleResults,
@@ -13079,6 +13117,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
                 self.stremioSubtitleFetchInProgress = false
                 self.stremioSubtitleResults = self.sortedStremioSubtitleResults(results)
+                self.considerAutomaticAITranslation()
                 self.refreshOnlineSubtitlePrefetch()
                 Logger.shared.log("[PlayerVC.StremioSubtitles] fetch complete reason=\(reason) count=\(results.count)", type: "Player")
                 if autoSelect,
@@ -13555,8 +13594,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         )
     }
 
-    private func loadOnlineSubtitle(urlString: String, displayName: String, sourceLogLabel: String, userSelected: Bool) {
-        guard userSelected || subtitlePlaybackSelection.mayApplyProviderResult else { return }
+    private func loadOnlineSubtitle(urlString: String, displayName: String, sourceLogLabel: String,
+                                    userSelected: Bool, allowAIUpgrade: Bool = false) {
+        guard userSelected || subtitlePlaybackSelection.mayApplyProviderResult ||
+              (allowAIUpgrade && subtitlePlaybackSelection.choice != .user) else { return }
         let subtitleIndex: Int
         if let existingIndex = subtitleURLs.firstIndex(of: urlString) {
             subtitleIndex = existingIndex
@@ -13835,6 +13876,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
                 self.directSubtitleSearchBatches = partial
                 self.directSubtitleResults = self.sortedDirectSubtitleCandidates(partial)
+                self.considerAutomaticAITranslation()
                 self.updateSubtitleTracksMenu()
                 self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
             }
@@ -13845,6 +13887,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             self.directSubtitleFetchInProgress = false
             self.directSubtitleSearchBatches = batches
             self.directSubtitleResults = self.sortedDirectSubtitleCandidates(batches)
+            self.considerAutomaticAITranslation()
             self.updateSubtitleTracksMenu()
             self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
         }
@@ -13861,6 +13904,230 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 if rhs.providerID == rememberedProvider && lhs.providerID != rememberedProvider { return false }
                 return lhs.id < rhs.id
             }
+    }
+
+    private var aiTranslationCandidates: [SubtitleCandidate] {
+        directSubtitleResults + stremioSubtitleResults.compactMap(\.candidate)
+    }
+
+    private func bestAIEnglishSource() -> AITranslationSource? {
+        guard let best = SubtitleTranslationSourcePolicy.bestEnglish(aiTranslationCandidates) else { return nil }
+        if let direct = directSubtitleResults.first(where: { $0.providerID == best.providerID && $0.id == best.id }) {
+            return .direct(direct)
+        }
+        if let addon = stremioSubtitleResults.first(where: {
+            $0.candidate?.providerID == best.providerID && $0.candidate?.id == best.id
+        }) { return .stremio(addon) }
+        return nil
+    }
+
+    private var hasHumanTurkishForAI: Bool {
+        if SubtitleTranslationSourcePolicy.hasGoodTurkish(aiTranslationCandidates) { return true }
+        return nativeSubtitleTracksForMenu(canReadNativeTracks: true).contains { track in
+            let tokens = Set(track.name.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted))
+            return !Set(["tr", "tur", "turkish", "türkçe"]).isDisjoint(with: tokens)
+        }
+    }
+
+    private func considerAutomaticAITranslation() {
+        guard SubtitleTranslationSettings.mode == .automatic, !aiTranslationStarted,
+              !directSubtitleFetchInProgress, !stremioSubtitleFetchInProgress,
+              !userSelectedSubtitleTrack, !isClosing else { return }
+        if hasDirectSubtitleProviders && !directSubtitleSearchAttempted { return }
+        if hasStremioSubtitleAddons && !stremioSubtitleSearchAttempted { return }
+        guard !hasHumanTurkishForAI, let source = bestAIEnglishSource() else { return }
+        startAITranslation(source: source, userConfirmed: false)
+    }
+
+    private func aiTranslationMenu() -> UIMenu? {
+        guard SubtitleTranslationSettings.mode != .off else { return nil }
+        var actions: [UIMenuElement] = []
+        if let status = aiTranslationStatus {
+            actions.append(UIAction(title: status, image: UIImage(systemName: "sparkles"),
+                                    attributes: .disabled) { _ in })
+        }
+        if let file = aiTranslationFileURL {
+            actions.append(UIAction(title: "TR · AI çeviri", image: UIImage(systemName: "captions.bubble"),
+                                    state: isOnlineSubtitleSelected(file.absoluteString) ? .on : .off) { [weak self] _ in
+                self?.selectAITranslationFile()
+            })
+        }
+        if let source = bestAIEnglishSource(), !aiTranslationStarted || aiTranslationStatus == "AI çeviri başarısız" {
+            actions.append(UIAction(title: aiTranslationStarted ? "Tekrar dene" : "Türkçeye AI ile çevir",
+                                    image: UIImage(systemName: "sparkles")) { [weak self] _ in
+                self?.startAITranslation(source: source, userConfirmed: true)
+            })
+        }
+        return UIMenu(title: "AI Çeviri", image: UIImage(systemName: "sparkles"), children: actions)
+    }
+
+    private func aiTranslationOverlayActions() -> [PlayerOverlayMenuAction] {
+        var actions: [PlayerOverlayMenuAction] = []
+        if let status = aiTranslationStatus {
+            actions.append(makeOverlayAction(title: status, imageName: "sparkles", isEnabled: false) {})
+        }
+        if aiTranslationFileURL != nil {
+            actions.append(makeOverlayAction(title: "TR · AI çeviri", imageName: "captions.bubble",
+                isSelected: isOnlineSubtitleSelected(aiTranslationFileURL?.absoluteString)) { [weak self] in
+                self?.selectAITranslationFile()
+                self?.hideOverlayMenu()
+            })
+        }
+        if let source = bestAIEnglishSource(), !aiTranslationStarted || aiTranslationStatus == "AI çeviri başarısız" {
+            actions.append(makeOverlayAction(title: aiTranslationStarted ? "Tekrar dene" : "Türkçeye AI ile çevir",
+                imageName: "sparkles") { [weak self] in
+                self?.startAITranslation(source: source, userConfirmed: true)
+                self?.hideOverlayMenu()
+            })
+        }
+        return actions
+    }
+
+    private func selectAITranslationFile() {
+        guard let file = aiTranslationFileURL else { return }
+        recordUserSubtitleSelection(enabled: true, languageTag: "tr",
+                                    displayName: "TR · AI çeviri", providerID: "subtitle-ai")
+        loadOnlineSubtitle(urlString: file.absoluteString, displayName: "TR · AI çeviri",
+                           sourceLogLabel: "AITranslation", userSelected: true)
+    }
+
+    private func startAITranslation(source: AITranslationSource, userConfirmed: Bool) {
+        let mode = SubtitleTranslationSettings.mode
+        guard SubtitleTranslationSourcePolicy.shouldStart(mode: mode,
+            hasHumanTurkish: hasHumanTurkishForAI, hasGoodHumanEnglish: true,
+            userConfirmed: userConfirmed) else { return }
+        guard let key = SubtitleProviderCredentialStore.value(SubtitleTranslationSettings.keyAccount) else {
+            aiTranslationStatus = "API anahtarı eksik"
+            updateSubtitleTracksMenu()
+            return
+        }
+        let baseURL = SubtitleTranslationSettings.baseURL
+        let model = SubtitleTranslationSettings.model
+        guard !model.isEmpty else {
+            aiTranslationStatus = "API modeli eksik"
+            updateSubtitleTracksMenu()
+            return
+        }
+        aiTranslationTask?.cancel()
+        aiTranslationRevision += 1
+        let revision = aiTranslationRevision
+        let generation = playbackLoadGeneration
+        let manualRevision = subtitleManualActionRevision
+        aiTranslationStarted = true
+        aiTranslationStatus = "AI çeviri hazırlanıyor…"
+        aiTranslationFileURL = nil
+        updateSubtitleTracksMenu()
+        refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
+
+        aiTranslationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let raw: Data
+                let fileName: String
+                switch source {
+                case .direct(let candidate):
+                    guard let provider = SubtitleProviderConfiguration.activeProviders().first(where: { $0.id == candidate.providerID }) else {
+                        throw SubtitleTranslationError.connection
+                    }
+                    raw = try await provider.download(candidate)
+                    let fileFormat = candidate.format?.lowercased() ?? "srt"
+                    fileName = fileFormat == "gz" ? "subtitle.srt.gz" : "subtitle.\(fileFormat)"
+                case .stremio(let result):
+                    guard let value = result.subtitle.url, let url = URL(string: value),
+                          url.scheme == "https" || url.scheme == "http" else {
+                        throw SubtitleTranslationError.connection
+                    }
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200,
+                          data.count <= SubtitleFileHandling.maximumBytes else {
+                        throw SubtitleTranslationError.connection
+                    }
+                    raw = data
+                    let ext = url.pathExtension.lowercased()
+                    let fallbackFormat = result.candidate?.format?.lowercased() ?? "srt"
+                    fileName = ["srt", "vtt", "ass", "ssa", "zip", "gz"].contains(ext)
+                        ? (ext == "gz" && !url.lastPathComponent.lowercased().hasSuffix(".srt.gz")
+                            ? "subtitle.srt.gz" : url.lastPathComponent)
+                        : (fallbackFormat == "gz" ? "subtitle.srt.gz" : "subtitle.\(fallbackFormat)")
+                }
+                try Task.checkCancellation()
+                let prepared = try SubtitleFileHandling.prepare(raw, fileName: fileName)
+                guard let format = SubtitleDocumentFormat(rawValue: prepared.format) else {
+                    throw SubtitleTranslationError.invalidResponse
+                }
+                guard !self.isClosing, self.playbackLoadGeneration == generation,
+                      self.aiTranslationRevision == revision,
+                      self.playbackProfileIsStillActive("AI subtitle translation") else { return }
+
+                let englishURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("subtitle-ai-source-\(UUID().uuidString)")
+                    .appendingPathExtension(prepared.format)
+                try prepared.data.write(to: englishURL, options: .atomic)
+                if !self.userSelectedSubtitleTrack && self.subtitlePlaybackSelection.mayApplyProviderResult {
+                    self.loadOnlineSubtitle(urlString: englishURL.absoluteString,
+                        displayName: "EN · \(source.candidate?.releaseName ?? "Subtitle")",
+                        sourceLogLabel: "AITranslationSource", userSelected: false)
+                }
+                let aiURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("subtitle-ai-\(UUID().uuidString)")
+                    .appendingPathExtension(prepared.format)
+                let resolved: SubtitleQuery?
+                if let request = self.activePlaybackRequest {
+                    resolved = await SubtitleMetadataResolver.shared.resolve(request: request)
+                } else {
+                    resolved = nil
+                }
+                let glossary = resolved?.titles.map(\.value) ?? []
+                let configuration = SubtitleTranslationConfiguration(baseURL: baseURL, model: model,
+                    preservesHonorifics: SubtitleTranslationSettings.preservesHonorifics,
+                    glossary: Array(glossary.prefix(12)))
+                let engine = SubtitleTranslationEngine(provider: OpenAICompatibleTranslationProvider(
+                    baseURL: baseURL, apiKey: key, model: model))
+                self.aiTranslationEngine = engine
+                _ = try await engine.translate(source: prepared.data, format: format,
+                    configuration: configuration, playbackTime: self.cachedPosition) { [weak self] snapshot in
+                    guard let self, !self.isClosing,
+                          self.playbackLoadGeneration == generation,
+                          self.aiTranslationRevision == revision,
+                          self.playbackProfileIsStillActive("AI subtitle progress") else { return }
+                    do {
+                        try Data(snapshot.text.utf8).write(to: aiURL, options: .atomic)
+                        self.aiTranslationFileURL = aiURL
+                        self.aiTranslationStatus = snapshot.isComplete
+                            ? (snapshot.translated == snapshot.total ? "AI çeviri hazır" : "AI çeviri başarısız")
+                            : "AI çeviri \(snapshot.translated)/\(snapshot.total) · kısmi"
+                        let canAutoSwap = SubtitleTranslationPlaybackGuard.mayAutoSwap(
+                            expectedGeneration: generation, currentGeneration: self.playbackLoadGeneration,
+                            expectedManualRevision: manualRevision,
+                            currentManualRevision: self.subtitleManualActionRevision,
+                            selection: self.subtitlePlaybackSelection, isClosing: self.isClosing)
+                        if canAutoSwap && snapshot.translated > 0 {
+                            if !self.isOnlineSubtitleSelected(aiURL.absoluteString) {
+                                self.loadOnlineSubtitle(urlString: aiURL.absoluteString,
+                                    displayName: "TR · AI çeviri", sourceLogLabel: "AITranslation",
+                                    userSelected: false, allowAIUpgrade: true)
+                                self.aiTranslationLastReloadAt = Date()
+                            } else if snapshot.isComplete ||
+                                        Date().timeIntervalSince(self.aiTranslationLastReloadAt ?? .distantPast) >= 2 {
+                                self.renderer.reloadCurrentExternalSubtitle()
+                                self.aiTranslationLastReloadAt = Date()
+                            }
+                        }
+                        self.updateSubtitleTracksMenu()
+                        self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
+                    } catch {
+                        self.aiTranslationStatus = "AI çeviri başarısız"
+                    }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.playbackLoadGeneration == generation, self.aiTranslationRevision == revision else { return }
+                self.aiTranslationStatus = (error as? SubtitleTranslationError)?.localizedDescription ?? "AI çeviri başarısız"
+                self.updateSubtitleTracksMenu()
+                self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
+            }
+        }
     }
 
     private func directSubtitleDisplayName(_ candidate: SubtitleCandidate) -> String {
@@ -15093,6 +15360,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #endif
         if isClosing { return }
         isClosing = true
+        aiTranslationTask?.cancel()
+        aiTranslationTask = nil
+        aiTranslationEngine = nil
         renderer.prefetchExternalSubtitles(urls: [], headersByURL: [:], allowsCellularAccess: false)
         releaseEphemeralProxyOwnership()
         releaseMPVAppExitPictureInPictureOwnership(

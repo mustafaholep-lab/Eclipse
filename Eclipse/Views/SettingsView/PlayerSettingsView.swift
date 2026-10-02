@@ -2508,6 +2508,12 @@ private struct MPVPlayerSettingsPage: View {
                 }
             }
             .playerSettingsRowButtonStyle()
+            NavigationLink(destination: SubtitleTranslationSettingsView()) {
+                GlassDetailRow(title: "Türkçe AI Altyazı", subtitle: "Çeviri API'si, mod ve önbellek ayarları.") {
+                    valueChevron("Configure")
+                }
+            }
+            .playerSettingsRowButtonStyle()
             GlassDivider(leadingInset: 16)
             settingsToggleRow(title: "OpenSubtitles", detail: "Enable subtitle search through the Stremio OpenSubtitles v3 add-on.", binding: $store.playerOpenSubtitlesEnabled)
                 .id(PlayerSettingsSearchTarget.openSubtitles.anchorID)
