@@ -52,6 +52,21 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertEqual(query().titles.map(\.value), ["Jujutsu Kaisen", "Sorcery Fight", "呪術廻戦"])
     }
 
+    func testSubtitleComponentIsEnabledByDefaultAndCanBeDisabled() throws {
+        let suite = "subtitle-component-fixture-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(StremioAddonComponentSettings.isEnabled(
+            sourceID: "stremio:fixture", component: .subtitles, defaults: defaults
+        ))
+        StremioAddonComponentSettings.setEnabled(
+            false, sourceID: "stremio:fixture", component: .subtitles, defaults: defaults
+        )
+        XCTAssertFalse(StremioAddonComponentSettings.isEnabled(
+            sourceID: "stremio:fixture", component: .subtitles, defaults: defaults
+        ))
+    }
+
     func testStremioURLPreservesFileExtrasAndEpisodeID() throws {
         let url = try XCTUnwrap(StremioClient.shared.subtitleRequestURL(
             baseURL: "https://example.org/user-key",
@@ -117,5 +132,75 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertEqual(SubtitleReleaseName.parse("Title.2160p.x264.2024").absoluteEpisode, nil)
         XCTAssertEqual(SubtitleReleaseName.parse("[Group] Title - 05v2 (1080p).mkv").absoluteEpisode, 5)
         XCTAssertEqual(SubtitleReleaseName.parse("Title EP05").absoluteEpisode, 5)
+    }
+
+    func testTurkishEncodingAndArchiveSelectCorrectEpisode() throws {
+        let cue = "1\r\n00:00:01,000 --> 00:00:02,000\r\nğĞşŞıİöÖüÜçÇ\r\n"
+        let cp1254 = try XCTUnwrap(cue.data(using: .windowsCP1254))
+        let prepared = try SubtitleFileHandling.prepare(cp1254, fileName: "Jujutsu.Kaisen.S01E01.srt")
+        XCTAssertEqual(String(data: prepared.data, encoding: .utf8), cue.replacingOccurrences(of: "\r\n", with: "\n"))
+
+        let utf16 = Data([0xff, 0xfe]) + (try XCTUnwrap(cue.data(using: .utf16LittleEndian)))
+        let prepared16 = try SubtitleFileHandling.prepare(utf16, fileName: "Jujutsu.Kaisen.S01E01.srt")
+        XCTAssertEqual(prepared16.data, prepared.data)
+
+        let zip = try XCTUnwrap(Data(base64Encoded: "UEsDBBQAAAAIAA4lQl3jHfkvHgAAACYAAAAZAAAASnVqdXRzdS5LYWlzZW4uUzAxRTAyLnNydDPkMjCwAiFDHQMDAwVdXTsFqIARSIArvCg/L50LAFBLAwQUAAAACAAOJUJdvQDiaR8AAAAnAAAAGQAAAEp1anV0c3UuS2Fpc2VuLlMwMUUwMS5zcnQz5DIwsAIhQx0DAwMFXV07BaiAEUiAyyX/yPyiUi4AUEsBAhQAFAAAAAgADiVCXeMd+S8eAAAAJgAAABkAAAAAAAAAAAAAAIABAAAAAEp1anV0c3UuS2Fpc2VuLlMwMUUwMi5zcnRQSwECFAAUAAAACAAOJUJdvQDiaR8AAAAnAAAAGQAAAAAAAAAAAAAAgAFVAAAASnVqdXRzdS5LYWlzZW4uUzAxRTAxLnNydFBLBQYAAAAAAgACAI4AAACrAAAAAAA="))
+        let selected = try SubtitleFileHandling.prepare(zip, fileName: "season.zip", query: query())
+        XCTAssertEqual(selected.fileName, "Jujutsu.Kaisen.S01E01.srt")
+        XCTAssertTrue(String(decoding: selected.data, as: UTF8.self).contains("Doğru"))
+
+        let gzip = try XCTUnwrap(Data(base64Encoded: "H4sIAIwLv2oC/zPkMjCwAiFDHQMDAwVdXTsFqIARSIAr5PCeouzDy1O5ADDR20gpAAAA"))
+        let inflated = try SubtitleFileHandling.prepare(gzip, fileName: "episode.srt.gz")
+        XCTAssertTrue(String(decoding: inflated.data, as: UTF8.self).contains("Türkçe"))
+    }
+
+    func testMalformedAndUnsupportedSubtitleFilesFailClearly() {
+        XCTAssertThrowsError(try SubtitleFileHandling.prepare(Data(), fileName: "empty.srt"))
+        XCTAssertThrowsError(try SubtitleFileHandling.prepare(Data("garbage".utf8), fileName: "bad.srt"))
+        XCTAssertThrowsError(try SubtitleFileHandling.prepare(Data("text".utf8), fileName: "bad.exe"))
+    }
+
+    func testSubDLOfficialRequestAndRecordedArchiveResponse() throws {
+        let provider = SubDLSubtitleProvider(apiKey: "fixture-key")
+        let request = try XCTUnwrap(provider.requestURL(query: query(), title: nil))
+        let items = try XCTUnwrap(URLComponents(url: request, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(items.first(where: { $0.name == "imdb_id" })?.value, "tt1234567")
+        XCTAssertEqual(items.first(where: { $0.name == "season_number" })?.value, "1")
+        XCTAssertEqual(items.first(where: { $0.name == "episode_number" })?.value, "1")
+        XCTAssertEqual(items.first(where: { $0.name == "unpack" })?.value, "1")
+        let synonymRequest = try XCTUnwrap(provider.requestURL(query: query(), title: "Sorcery Fight"))
+        XCTAssertTrue(synonymRequest.absoluteString.contains("Sorcery%20Fight"))
+
+        let data = Data("""
+        {"status":true,"subtitles":[{"release_name":"Season Pack","url":"/subtitle/pack.zip",
+          "unpack_files":[
+            {"name":"Jujutsu.Kaisen.S01E02.srt","release_name":"S01E02","language":"EN","url":"/subtitle/pack/wrong"},
+            {"name":"Jujutsu.Kaisen.S01E01.srt","release_name":"S01E01","language":"TR","format":"srt","url":"/subtitle/pack/right"}
+          ]}]}
+        """.utf8)
+        let results = try provider.decodeCandidates(data, query: query())
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[1].language, "TR")
+        XCTAssertGreaterThan(results[1].score, results[0].score)
+        XCTAssertTrue(results[1].matchReasons.contains("S01E01 eşleşti"))
+    }
+
+    func testJimakuUsesAniListAndLocalEpisodeWithoutInventingAbsoluteCoordinate() throws {
+        let provider = JimakuSubtitleProvider(apiKey: "fixture-key")
+        let urls = provider.searchURLs(query: query())
+        XCTAssertTrue(urls.first?.absoluteString.contains("anilist_id=113415") == true)
+        XCTAssertTrue(urls.contains { $0.absoluteString.contains("tmdb_id=tv%3A95479") })
+        XCTAssertTrue(urls.contains { $0.absoluteString.contains("query=Sorcery%20Fight") })
+        XCTAssertTrue(provider.filesURL(entryID: 57, episode: query().animeEpisode)?
+            .absoluteString.contains("episode=1") == true)
+
+        let fixture = Data("""
+        [{"name":"[SubsPlease] Jujutsu Kaisen - 01.ass","size":12345,
+          "url":"https://jimaku.cc/api/files/jjk-01.ass"}]
+        """.utf8)
+        let candidates = try provider.decodeCandidates(fixture, query: query())
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].language, "jpn")
+        XCTAssertTrue(candidates[0].matchReasons.contains("Absolute episode 1 eşleşti"))
     }
 }

@@ -350,7 +350,7 @@ final class StremioClient {
         )
 
         let (data, response) = try await boundedData(
-            from: url,
+            for: URLRequest(url: url, timeoutInterval: 8),
             configuredBaseURL: baseURL,
             maximumResponseBytes: Self.maximumSubtitleResponseBytes
         )
