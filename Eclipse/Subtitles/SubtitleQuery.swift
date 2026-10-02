@@ -174,6 +174,35 @@ protocol SubtitleProvider: Sendable {
     func download(_ candidate: SubtitleCandidate) async throws -> Data
 }
 
+/// Developer-only formatting. Opaque provider IDs and URLs are never included.
+enum SubtitleDiagnostics {
+    static func safeLabel(_ value: String?) -> String {
+        guard let value else { return "–" }
+        let lower = value.lowercased()
+        guard !lower.contains("://"), !lower.contains("token="),
+              !lower.contains("api_key="), !lower.contains("authorization") else { return "[redacted]" }
+        return String(value.split(separator: "?", maxSplits: 1).first.map(String.init)?.prefix(80) ?? "")
+    }
+
+    static func metadata(_ query: SubtitleQuery) -> [String] {
+        let ids = query.ids
+        return [
+            "kind=\(query.mediaKind.rawValue) anime=\(query.isAnime)",
+            "titles=\(query.titles.prefix(6).map { safeLabel($0.value) + "(" + $0.origin.rawValue + ")" }.joined(separator: ", "))",
+            "IMDb=\(safeLabel(ids.imdb)) TMDB=\(ids.tmdb.map(String.init) ?? "–") AniList=\(ids.anilist.map(String.init) ?? "–") MAL=\(ids.mal.map(String.init) ?? "–") Kitsu=\(ids.kitsu.map(String.init) ?? "–")",
+            "season=\(query.season.map(String.init) ?? "–") episode=\(query.episode.map(String.init) ?? "–") anime=\(query.animeSeason.map(String.init) ?? "–")/\(query.animeEpisode.map(String.init) ?? "–") absolute=\(query.absoluteEpisode.map(String.init) ?? "–")",
+            "file=\(safeLabel(query.fileName?.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last.map(String.init))) release=\(safeLabel(query.releaseName)) hash=\(query.videoHash.map { String($0.prefix(8)) + "…" } ?? "–") bytes=\(query.fileSize.map(String.init) ?? "–")"
+        ]
+    }
+
+    static func candidate(_ candidate: SubtitleCandidate, selected: Bool) -> String {
+        "\(safeLabel(candidate.providerID)) \(safeLabel(candidate.language)) \(safeLabel(candidate.format)) " +
+        "release=\(safeLabel(candidate.releaseName)) score=\(candidate.score) " +
+        "reasons=\(candidate.matchReasons.prefix(4).map { safeLabel($0) }.joined(separator: ",")) " +
+        "machine=\(candidate.isMachineTranslated) selected=\(selected)"
+    }
+}
+
 enum SubtitleTitlePolicy {
     private static let seasonSuffixes = [
         #"(?i)\s+(?:\d+(?:st|nd|rd|th)\s+season|season\s+\d+|part\s+(?:\d+|[IVX]+)|cour\s+(?:\d+|[IVX]+))$"#,

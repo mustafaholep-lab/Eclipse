@@ -357,3 +357,16 @@ struct SubtitleDocument {
         return result
     }
 }
+
+/// Uses B1's dialogue classification; never includes ASS script/style/sign events.
+enum SubtitlePreview {
+    static func dialogueLines(_ data: Data, format: SubtitleDocumentFormat,
+                              limit: Int = 4) throws -> [String] {
+        let document = try SubtitleDocument.parse(data, format: format)
+        return Array(document.translatableUnits.lazy
+            .map { $0.plainText.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(max(0, min(limit, 6)))
+            .map { String($0.prefix(180)) })
+    }
+}

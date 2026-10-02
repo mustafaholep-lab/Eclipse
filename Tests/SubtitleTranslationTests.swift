@@ -150,6 +150,8 @@ final class SubtitleTranslationTests: XCTestCase {
         let second = try await engine.translate(source: input, format: .srt, configuration: config(),
                                                 playbackTime: 0) { _ in }
         XCTAssertTrue(second.fromCache)
+        XCTAssertEqual(second.translated, 2)
+        XCTAssertEqual(second.total, 2)
         let calls = await provider.calls
         XCTAssertEqual(calls, 2)
     }
@@ -283,6 +285,21 @@ final class SubtitleTranslationTests: XCTestCase {
         await disk.clear()
         let afterClear = await disk.load(keyB)
         XCTAssertNil(afterClear)
+    }
+
+    func testAITemporaryCleanupOnlyRemovesManagedFiles() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-cleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("subtitle-ai-source-test.srt")
+        let translated = folder.appendingPathComponent("subtitle-ai-test.srt")
+        let unrelated = folder.appendingPathComponent("other.srt")
+        for file in [source, translated, unrelated] { try Data("cue".utf8).write(to: file) }
+        SubtitleAITemporaryFiles.cleanup([source, translated, unrelated], directory: folder)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: translated.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
     func testModeAndManualSelectionSafety() {

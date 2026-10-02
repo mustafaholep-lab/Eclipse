@@ -62,6 +62,17 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertNil(SubtitlePreferenceKey.delay(mediaKey: "episode_1_s1_e1", releaseLabel: "  "))
     }
 
+    func testDiagnosticsRedactURLsTokensAndHash() {
+        var subtitleQuery = query()
+        subtitleQuery.fileName = "https://private.example/u_secret/sub.srt?token=hidden"
+        subtitleQuery.videoHash = "1234567890abcdef"
+        let report = SubtitleDiagnostics.metadata(subtitleQuery).joined(separator: "\n")
+        XCTAssertFalse(report.contains("u_secret"))
+        XCTAssertFalse(report.contains("hidden"))
+        XCTAssertTrue(report.contains("12345678…"))
+        XCTAssertEqual(SubtitleDiagnostics.safeLabel("release?token=hidden"), "[redacted]")
+    }
+
     private struct TimedFixtureProvider: SubtitleProvider {
         let id: String
         let delay: UInt64

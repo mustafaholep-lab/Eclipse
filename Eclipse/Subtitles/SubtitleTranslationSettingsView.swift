@@ -44,7 +44,7 @@ struct SubtitleTranslationSettingsView: View {
                         SubtitleProviderCredentialStore.delete(SubtitleTranslationSettings.keyAccount)
                         hasSavedKey = false
                         apiKey = ""
-                        status = "API anahtarı kaldırıldı."
+                        status = String(localized: "API anahtarı kaldırıldı.")
                     }
                 }
                 Button(testing ? "Bağlantı sınanıyor…" : "Bağlantıyı Sına") {
@@ -58,7 +58,7 @@ struct SubtitleTranslationSettingsView: View {
                 Button("AI çeviri önbelleğini temizle", role: .destructive) {
                     Task {
                         await DiskSubtitleTranslationCache.shared.clear()
-                        status = "AI çeviri önbelleği temizlendi."
+                        status = String(localized: "AI çeviri önbelleği temizlendi.")
                     }
                 }
             }
@@ -78,9 +78,9 @@ struct SubtitleTranslationSettingsView: View {
             try SubtitleProviderCredentialStore.save(apiKey, account: SubtitleTranslationSettings.keyAccount)
             hasSavedKey = true
             apiKey = ""
-            status = "API anahtarı Keychain'e kaydedildi."
+            status = String(localized: "API anahtarı Keychain'e kaydedildi.")
         } catch {
-            status = "API anahtarı kaydedilemedi."
+            status = String(localized: "API anahtarı kaydedilemedi.")
         }
     }
 
@@ -93,7 +93,7 @@ struct SubtitleTranslationSettingsView: View {
         defer { testing = false }
         do {
             try await OpenAICompatibleTranslationProvider(baseURL: baseURL, apiKey: key, model: model).testConnection()
-            status = "Bağlantı doğrulandı."
+            status = String(localized: "Bağlantı doğrulandı.")
         } catch let error as SubtitleTranslationError {
             status = error.localizedDescription
         } catch {

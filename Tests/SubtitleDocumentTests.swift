@@ -96,6 +96,17 @@ final class SubtitleDocumentTests: XCTestCase {
         XCTAssertThrowsError(try SubtitleDocument.parse(Data([0xFF]), format: .srt))
     }
 
+    func testPreviewOnlyShowsRealDialogueWithoutChangingSource() throws {
+        let source = assFixture
+        let lines = try SubtitlePreview.dialogueLines(Data(source.utf8), format: .ass)
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertEqual(lines[0], "Şimdi, burada\nİğne ve çay")
+        XCTAssertEqual(lines[1], "Normal konuşma")
+        XCTAssertFalse(lines.joined().contains("Opening lyrics"))
+        XCTAssertFalse(lines.joined().contains("Exit"))
+        XCTAssertEqual(source, assFixture)
+    }
+
     private var assFixture: String {
         """
         [Script Info]

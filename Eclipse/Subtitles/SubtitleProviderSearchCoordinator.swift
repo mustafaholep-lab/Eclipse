@@ -4,6 +4,7 @@ struct SubtitleProviderSearchResult: Sendable {
     let providerID: String
     let candidates: [SubtitleCandidate]
     let diagnostic: String
+    var elapsedMilliseconds: Int? = nil
 
     var sourceLabel: String {
         DirectSubtitleProviderKind(rawValue: providerID)?.displayName ?? providerID
@@ -42,9 +43,11 @@ enum SubtitleProviderSearchCoordinator {
         await withTaskGroup(of: SubtitleProviderSearchResult.self) { group in
             for provider in providers {
                 group.addTask {
+                    let started = Date()
                     guard await SubtitleProviderCircuitBreaker.shared.allows(provider.id) else {
                         return SubtitleProviderSearchResult(
-                            providerID: provider.id, candidates: [], diagnostic: "circuit-open"
+                            providerID: provider.id, candidates: [], diagnostic: "circuit-open",
+                            elapsedMilliseconds: 0
                         )
                     }
                     do {
@@ -52,7 +55,8 @@ enum SubtitleProviderSearchCoordinator {
                         await SubtitleProviderCircuitBreaker.shared.record(provider.id, succeeded: true)
                         return SubtitleProviderSearchResult(
                             providerID: provider.id, candidates: candidates,
-                            diagnostic: candidates.isEmpty ? "valid-empty-response" : "matched"
+                            diagnostic: candidates.isEmpty ? "valid-empty-response" : "matched",
+                            elapsedMilliseconds: Int(Date().timeIntervalSince(started) * 1_000)
                         )
                     } catch {
                         if !(error is CancellationError) {
@@ -60,7 +64,8 @@ enum SubtitleProviderSearchCoordinator {
                         }
                         return SubtitleProviderSearchResult(
                             providerID: provider.id, candidates: [],
-                            diagnostic: error is CancellationError ? "cancelled" : "request-or-parse-failed"
+                            diagnostic: error is CancellationError ? "cancelled" : "request-or-parse-failed",
+                            elapsedMilliseconds: Int(Date().timeIntervalSince(started) * 1_000)
                         )
                     }
                 }

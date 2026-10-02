@@ -27,12 +27,12 @@ enum SubtitleTranslationError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidConfiguration: return "API adresi veya model geçersiz."
-        case .missingKey: return "API anahtarı eksik."
-        case .connection: return "API bağlantısı başarısız."
-        case .rateLimited: return "İstek sınırı aşıldı."
-        case .invalidResponse: return "Geçersiz API yanıtı."
-        case .server: return "AI çeviri başarısız."
+        case .invalidConfiguration: return String(localized: "API adresi veya model geçersiz.")
+        case .missingKey: return String(localized: "API anahtarı eksik.")
+        case .connection: return String(localized: "API bağlantısı başarısız.")
+        case .rateLimited: return String(localized: "İstek sınırı aşıldı.")
+        case .invalidResponse: return String(localized: "Geçersiz API yanıtı.")
+        case .server: return String(localized: "AI çeviri başarısız.")
         }
     }
 }
@@ -226,6 +226,18 @@ actor DiskSubtitleTranslationCache: TranslationCacheStore {
     }
 }
 
+enum SubtitleAITemporaryFiles {
+    static func cleanup(_ urls: [URL], directory: URL = FileManager.default.temporaryDirectory) {
+        let root = directory.standardizedFileURL
+        for url in urls {
+            let file = url.standardizedFileURL
+            guard file.deletingLastPathComponent() == root,
+                  file.lastPathComponent.hasPrefix("subtitle-ai-") else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+}
+
 enum SubtitleTranslationSourcePolicy {
     static func shouldStart(mode: SubtitleTranslationMode, hasHumanTurkish: Bool,
                             hasGoodHumanEnglish: Bool, userConfirmed: Bool) -> Bool {
@@ -355,18 +367,18 @@ actor SubtitleTranslationEngine {
                    configuration: SubtitleTranslationConfiguration, playbackTime: TimeInterval,
                    onProgress: @escaping @MainActor (SubtitleTranslationSnapshot) -> Void) async throws -> SubtitleTranslationSnapshot {
         try Task.checkCancellation()
+        var document = try SubtitleDocument.parse(source, format: format)
+        let units = document.translatableUnits
         let key = SubtitleTranslationIdentity.cacheKey(source: source, configuration: configuration)
         if let cached = await cache.load(key),
            let cachedDocument = try? SubtitleDocument.parse(cached, format: format),
-           !cachedDocument.units.isEmpty {
-            let snapshot = SubtitleTranslationSnapshot(text: cached, translated: 1, total: 1,
+           !units.isEmpty, cachedDocument.translatableUnits.count == units.count {
+            let snapshot = SubtitleTranslationSnapshot(text: cached, translated: units.count, total: units.count,
                                                        isComplete: true, fromCache: true)
             try Task.checkCancellation()
             await onProgress(snapshot)
             return snapshot
         }
-        var document = try SubtitleDocument.parse(source, format: format)
-        let units = document.translatableUnits
         guard !units.isEmpty else {
             return SubtitleTranslationSnapshot(text: try document.serialize(), translated: 0,
                                                total: 0, isComplete: true, fromCache: false)
