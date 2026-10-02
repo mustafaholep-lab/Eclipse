@@ -40,7 +40,7 @@ final class SubtitleProviderTests: XCTestCase {
     private func query() -> SubtitleQuery {
         SubtitleQuery(
             mediaKind: .anime, isAnime: true,
-            ids: SubtitleMediaIDs(imdb: "tt1234567", tmdb: 95479, kitsu: 42309,
+            ids: SubtitleMediaIDs(imdb: "tt1234567", tmdb: 95479, kitsu: 42765,
                                   anilist: 113415, mal: 40748),
             season: 1, episode: 1, animeSeason: 1, animeEpisode: 1,
             absoluteEpisode: 1, year: 2020,
@@ -79,7 +79,7 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertEqual(plan.first, .init(type: "series", id: "anilist:113415:1:1"))
         XCTAssertEqual(plan.dropFirst().first, .init(type: "anime", id: "anilist:113415:1:1"))
         XCTAssertTrue(plan.contains(.init(type: "anime", id: "anilist:113415:1:1")))
-        XCTAssertTrue(plan.contains(.init(type: "series", id: "kitsu:42309:1")))
+        XCTAssertTrue(plan.contains(.init(type: "series", id: "kitsu:42765:1")))
         XCTAssertTrue(plan.contains(.init(type: "anime", id: "mal:40748:1:1")))
         XCTAssertTrue(plan.contains(.init(type: "series", id: "tt1234567:1:1")))
         XCTAssertLessThan(
@@ -136,7 +136,7 @@ final class SubtitleProviderTests: XCTestCase {
         )
         XCTAssertTrue(plan.contains(.init(type: "series", id: "tt1234567:2:3")))
         XCTAssertTrue(plan.contains(.init(type: "anime", id: "anilist:113415:1:3")))
-        XCTAssertTrue(plan.contains(.init(type: "series", id: "kitsu:42309:3")))
+        XCTAssertTrue(plan.contains(.init(type: "series", id: "kitsu:42765:3")))
         XCTAssertFalse(plan.contains { $0.id == "anilist:113415:2:3"
             || $0.id == "anilist:113415:1:27" })
         let absolute = SubtitleRanking.score(candidate("Jujutsu Kaisen - 27"), for: sequel)
