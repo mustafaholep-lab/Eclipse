@@ -1415,7 +1415,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var forceProxyStremioTransport = false
     private var currentPlaybackUsesHeaderProxy = false
     private var userSelectedAudioTrack = false
-    private var userSelectedSubtitleTrack = false
+    private var subtitlePlaybackSelection = SubtitlePlaybackSelection()
+    private var userSelectedSubtitleTrack = false {
+        didSet { if userSelectedSubtitleTrack { subtitlePlaybackSelection.selectByUser() } }
+    }
     private var attemptedAudioAutoSelectSignature: String?
     private var lastAudioTracksMenuLogSignature: String?
     private var lastSubtitleTracksMenuLogSignature: String?
@@ -2929,12 +2932,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var openSubtitlesLoadedURLs: Set<String> = []
     private var stremioSubtitleResults: [StremioAddonManager.AddonSubtitleResult] = []
     private var stremioSubtitleFetchTask: Task<Void, Never>?
+    private var stremioSubtitleSearchRevision = 0
     private var stremioSubtitleFetchInProgress = false
     private var stremioSubtitleSearchAttempted = false
     private var stremioSubtitleFallbackAttempted = false
     private var stremioSubtitleLoadedURLs: Set<String> = []
     private var directSubtitleResults: [SubtitleCandidate] = []
     private var directSubtitleFetchTask: Task<Void, Never>?
+    private var directSubtitleSearchRevision = 0
+    private var directSubtitleSearchBatches: [SubtitleProviderSearchResult] = []
     private var directSubtitleDownloadTask: Task<Void, Never>?
     private var directSubtitleFetchInProgress = false
     private var directSubtitleSearchAttempted = false
@@ -4239,12 +4245,25 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if let playbackMediaSelectionIntent {
             return playbackMediaSelectionIntent.preferredSubtitleLanguage ?? ""
         }
+        if let mediaKey = externalSubtitleMediaKey,
+           let remembered = ProfileSettingsStore.active.dictionary(forKey: SubtitlePreferenceKey.choice(mediaKey: mediaKey)),
+           let language = remembered["language"] as? String, !language.isEmpty {
+            return language
+        }
         return Settings.shared.defaultSubtitleLanguage
     }
 
     private var automaticSubtitlesEnabled: Bool {
         playbackMediaSelectionIntent?.subtitlesEnabled
             ?? Settings.shared.enableSubtitlesByDefault
+    }
+
+    private var rememberedSubtitleProviderID: String? {
+        guard let mediaKey = externalSubtitleMediaKey,
+              let stored = ProfileSettingsStore.active.dictionary(
+                forKey: SubtitlePreferenceKey.choice(mediaKey: mediaKey)
+              ) else { return nil }
+        return stored["provider"] as? String
     }
 
     private func recordUserMediaSelection(
@@ -4304,8 +4323,16 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func recordUserSubtitleSelection(
         enabled: Bool,
         languageTag: String? = nil,
-        displayName: String? = nil
+        displayName: String? = nil,
+        providerID: String? = nil
     ) {
+        if enabled, let providerID, let mediaKey = externalSubtitleMediaKey,
+           let language = rendererNeutralLanguage(languageTag: languageTag, displayName: displayName) {
+            ProfileSettingsStore.active.set(
+                ["language": language, "provider": providerID],
+                forKey: SubtitlePreferenceKey.choice(mediaKey: mediaKey)
+            )
+        }
         recordUserMediaSelection(
             subtitleLanguage: rendererNeutralLanguage(
                 languageTag: languageTag,
@@ -4474,6 +4501,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #endif
         pendingRendererRestartRetryGeneration = nil
         playbackLoadGeneration += 1
+        subtitlePlaybackSelection.beginMedia()
         cancelMPVBackgroundAudioFallback(reason: "new-load")
         mpvBackgroundFallbackAutoPaused = false
         mpvBackgroundFallbackPauseIntentGeneration = nil
@@ -4514,6 +4542,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         openSubtitlesLoadedURLs.removeAll()
         stremioSubtitleResults.removeAll()
         stremioSubtitleFetchTask?.cancel()
+        stremioSubtitleSearchRevision += 1
         stremioSubtitleFetchTask = nil
         stremioSubtitleFetchInProgress = false
         stremioSubtitleSearchAttempted = false
@@ -4521,6 +4550,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         stremioSubtitleLoadedURLs.removeAll()
         directSubtitleResults.removeAll()
         directSubtitleFetchTask?.cancel()
+        directSubtitleSearchRevision += 1
+        directSubtitleSearchBatches.removeAll()
         directSubtitleFetchTask = nil
         directSubtitleDownloadTask?.cancel()
         directSubtitleDownloadTask = nil
@@ -4680,6 +4711,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         restoreSavedExternalSubtitleIfAvailable()
         prefetchOpenSubtitlesIfEnabled(reason: "load")
         prefetchStremioSubtitlesIfAvailable(reason: "load")
+        if hasDirectSubtitleProviders { fetchDirectSubtitles() }
     }
 
     private func preparePlaybackStartupMonitoring(for url: URL, headers: [String: String]) {
@@ -11787,6 +11819,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         ]))
 #endif
 
+        if hasStremioSubtitleAddons || hasDirectSubtitleProviders {
+            sections.append(PlayerOverlayMenuSection(title: "Find Subtitles", actions: [
+                makeOverlayAction(title: "Manual Search…", imageName: "magnifyingglass") { [weak self] in
+                    self?.hideOverlayMenu()
+                    self?.presentManualSubtitleSearch()
+                }
+            ]))
+        }
+
         if hasStremioSubtitleAddons {
             sections.append(PlayerOverlayMenuSection(title: "Stremio Subtitles", actions: stremioSubtitleOverlayActions()))
         }
@@ -11870,7 +11911,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(makeOverlayAction(title: error, imageName: "exclamationmark.triangle", isEnabled: false) {})
         }
         if directSubtitleSearchAttempted && !directSubtitleFetchInProgress && directSubtitleResults.isEmpty {
-            actions.append(makeOverlayAction(title: "No direct provider results", imageName: "captions.bubble", isEnabled: false) {})
+            let failed = directSubtitleSearchBatches.contains { $0.diagnostic == "request-or-parse-failed" || $0.diagnostic == "circuit-open" }
+            actions.append(makeOverlayAction(title: failed ? "Subtitle provider unavailable" : "No direct provider results",
+                                             imageName: failed ? "exclamationmark.triangle" : "captions.bubble", isEnabled: false) {})
         }
         actions.append(contentsOf: directSubtitleResults.prefix(20).map { candidate in
             makeOverlayAction(title: directSubtitleDisplayName(candidate), imageName: "captions.bubble") { [weak self] in
@@ -11933,6 +11976,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let clamped = max(-30.0, min(seconds, 30.0))
         subtitleDelaySeconds = abs(clamped) < 0.0005 ? 0 : clamped
         renderer.setSubtitleDelay(subtitleDelaySeconds)
+        if let key = selectedSubtitleDelayPreferenceKey {
+            ProfileSettingsStore.active.set(subtitleDelaySeconds, forKey: key)
+        }
         Logger.shared.log(
             "[PlayerVC.Subtitles] sync delay=\(formattedSubtitleDelay(subtitleDelaySeconds))",
             type: "Player"
@@ -11949,16 +11995,30 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         setSubtitleDelaySeconds(subtitleDelaySeconds + delta)
     }
 
+    private var selectedSubtitleDelayPreferenceKey: String? {
+        guard subtitleModel.isVisible, let mediaKey = externalSubtitleMediaKey,
+              currentSubtitleIndex >= 0, currentSubtitleIndex < subtitleNames.count else { return nil }
+        if case .embedded = vlcSubtitleSelection { return nil }
+        return SubtitlePreferenceKey.delay(mediaKey: mediaKey,
+                                           releaseLabel: subtitleNames[currentSubtitleIndex])
+    }
+
+    private func restoreSelectedSubtitleDelay() {
+        let value = selectedSubtitleDelayPreferenceKey.map {
+            ProfileSettingsStore.active.double(forKey: $0)
+        } ?? 0
+        subtitleDelaySeconds = max(-30, min(30, value))
+        renderer.setSubtitleDelay(subtitleDelaySeconds)
+    }
+
     private func subtitleSyncOverlaySection() -> PlayerOverlayMenuSection {
         let adjustments: [(String, Double)] = [
-            ("Earlier 5.0s", -5.0),
             ("Earlier 1.0s", -1.0),
-            ("Earlier 0.25s", -0.25),
-            ("Later 0.25s", 0.25),
+            ("Earlier 0.1s", -0.1),
+            ("Later 0.1s", 0.1),
             ("Later 1.0s", 1.0),
-            ("Later 5.0s", 5.0)
         ]
-        var actions = adjustments.prefix(3).map { title, delta in
+        var actions = adjustments.prefix(2).map { title, delta in
             makeOverlayAction(title: title, imageName: "backward") { [weak self] in
                 self?.adjustSubtitleDelay(by: delta)
             }
@@ -11972,7 +12032,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.setSubtitleDelaySeconds(0)
             }
         )
-        actions.append(contentsOf: adjustments.suffix(3).map { title, delta in
+        actions.append(contentsOf: adjustments.suffix(2).map { title, delta in
             makeOverlayAction(title: title, imageName: "forward") { [weak self] in
                 self?.adjustSubtitleDelay(by: delta)
             }
@@ -11985,14 +12045,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func createSubtitleSyncMenu() -> UIMenu {
         let earlier: [(String, Double)] = [
-            ("Earlier 5.0s", -5.0),
             ("Earlier 1.0s", -1.0),
-            ("Earlier 0.25s", -0.25)
+            ("Earlier 0.1s", -0.1)
         ]
         let later: [(String, Double)] = [
-            ("Later 0.25s", 0.25),
-            ("Later 1.0s", 1.0),
-            ("Later 5.0s", 5.0)
+            ("Later 0.1s", 0.1),
+            ("Later 1.0s", 1.0)
         ]
 
         let earlierActions = earlier.map { title, delta in
@@ -12122,14 +12180,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             updateSubtitleButtonAppearance()
         }
 
-        if !userSelectedSubtitleTrack {
+        if subtitlePlaybackSelection.mayChooseDefault {
             if automaticSubtitlesEnabled {
                 let preferredLang = automaticSubtitleSelectionLanguage
                 if let selectedEmbeddedTrack = preferredDefaultSubtitleTrack(from: autoSelectableEmbeddedTracks, preferredLang: preferredLang) {
                     if rendererGetCurrentSubtitleTrackId() != selectedEmbeddedTrack.0 {
                         rendererSetSubtitleTrack(id: selectedEmbeddedTrack.0)
                     }
-                    userSelectedSubtitleTrack = true
+                    subtitlePlaybackSelection.selectAutomatically(preferred: true)
                     setSubtitleVisible(true, persist: false)
                     rendererApplySubtitleStyle(currentSubtitleStyle(visible: true))
                     vlcSubtitleSelection = .embedded(trackId: selectedEmbeddedTrack.0)
@@ -12139,7 +12197,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                     loadCurrentSubtitle()
                     rendererDisableSubtitlesIfReady(reason: "default external subtitle")
                     updateVLCSubtitleOverlay(for: cachedPosition)
-                    userSelectedSubtitleTrack = true
+                    subtitlePlaybackSelection.selectAutomatically(preferred: true)
                     setSubtitleVisible(true, persist: false)
                     vlcSubtitleSelection = .external(index: selectedExternalTrack.0)
                     Logger.shared.log("[PlayerVC.Subtitles] default selected external track index=\(selectedExternalTrack.0)", type: "Player")
@@ -12151,7 +12209,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                     if rendererGetCurrentSubtitleTrackId() != fallbackEmbeddedTrack.0 {
                         rendererSetSubtitleTrack(id: fallbackEmbeddedTrack.0)
                     }
-                    userSelectedSubtitleTrack = true
+                    subtitlePlaybackSelection.selectAutomatically(preferred: false)
                     setSubtitleVisible(true, persist: false)
                     rendererApplySubtitleStyle(currentSubtitleStyle(visible: true))
                     vlcSubtitleSelection = .embedded(trackId: fallbackEmbeddedTrack.0)
@@ -12161,7 +12219,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                     loadCurrentSubtitle()
                     rendererDisableSubtitlesIfReady(reason: "fallback external subtitle")
                     updateVLCSubtitleOverlay(for: cachedPosition)
-                    userSelectedSubtitleTrack = true
+                    subtitlePlaybackSelection.selectAutomatically(preferred: false)
                     setSubtitleVisible(true, persist: false)
                     vlcSubtitleSelection = .external(index: fallbackExternalTrack.0)
                     Logger.shared.log("[PlayerVC.Subtitles] default selected fallback external track index=\(fallbackExternalTrack.0)", type: "Player")
@@ -12333,6 +12391,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         })
 #endif
         menuChildren.append(trackMenu)
+        if hasStremioSubtitleAddons || hasDirectSubtitleProviders {
+            menuChildren.append(UIAction(title: "Manual Subtitle Search…", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+                self?.presentManualSubtitleSearch()
+            })
+        }
         if let stremioMenu = stremioSubtitleMenu() {
             menuChildren.append(stremioMenu)
         }
@@ -12356,7 +12419,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func restoreRequestedEmbeddedSubtitleTrackIfNeeded(from embeddedTracks: [(Int, String)]) -> Bool {
         guard !isVLCPlayer,
-              userSelectedSubtitleTrack,
+              subtitlePlaybackSelection.choice != .none,
               let requestedTrackId = lastRequestedEmbeddedSubtitleTrackId,
               let track = embeddedTracks.first(where: { $0.0 == requestedTrackId }),
               rendererGetCurrentSubtitleTrackId() != requestedTrackId else {
@@ -12549,7 +12612,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(UIAction(title: error, image: UIImage(systemName: "exclamationmark.triangle"), attributes: .disabled) { _ in })
         }
         if directSubtitleSearchAttempted && !directSubtitleFetchInProgress && directSubtitleResults.isEmpty {
-            actions.append(UIAction(title: "No direct provider results", image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
+            let failed = directSubtitleSearchBatches.contains { $0.diagnostic == "request-or-parse-failed" || $0.diagnostic == "circuit-open" }
+            actions.append(UIAction(title: failed ? "Subtitle provider unavailable" : "No direct provider results",
+                                    image: UIImage(systemName: failed ? "exclamationmark.triangle" : "captions.bubble"),
+                                    attributes: .disabled) { _ in })
         }
         actions += directSubtitleResults.prefix(20).map { candidate in
             UIAction(title: directSubtitleDisplayName(candidate), image: UIImage(systemName: "captions.bubble")) { [weak self] _ in
@@ -12771,7 +12837,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         _ result: StremioAddonManager.AddonSubtitleResult,
         index: Int
     ) -> String {
+        let format = result.candidate?.format?.uppercased() ?? ""
         let base = stremioSubtitleDisplayName(result)
+            + (["ASS", "SSA", "SRT", "VTT"].contains(format) ? " · \(format)" : "")
+        if result.candidate?.videoHash != nil { return "Hash Match · \(base)" }
         guard isAnimeContent(), index < 3 else { return base }
 
         let score = animeSubtitleSmartScore(result)
@@ -12920,7 +12989,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         return isVLCOpenSubtitlesEnabled
             && Settings.shared.playerOpenSubtitlesAutoFallbackEnabled
             && automaticSubtitlesEnabled
-            && !userSelectedSubtitleTrack
+            && subtitlePlaybackSelection.mayApplyProviderResult
     }
 
     private func canAutoApplyStremioSubtitleFallback() -> Bool {
@@ -12930,12 +12999,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         return hasStremioSubtitleAddons
             && Settings.shared.playerOpenSubtitlesAutoFallbackEnabled
             && automaticSubtitlesEnabled
-            && !userSelectedSubtitleTrack
+            && subtitlePlaybackSelection.mayApplyProviderResult
     }
 
-    private func fetchStremioSubtitles(autoSelect: Bool, reason: String, forceRefresh: Bool = false) {
+    private func fetchStremioSubtitles(autoSelect: Bool, reason: String, forceRefresh: Bool = false,
+                                      manualQuery: SubtitleQuery? = nil) {
         guard hasStremioSubtitleAddons else { return }
-        if stremioSubtitleFetchInProgress { return }
+        if stremioSubtitleFetchInProgress && !forceRefresh { return }
         if !forceRefresh, !stremioSubtitleResults.isEmpty {
             if autoSelect,
                canAutoApplyStremioSubtitleFallback(),
@@ -12947,6 +13017,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         stremioSubtitleFetchTask?.cancel()
+        stremioSubtitleSearchRevision += 1
+        let searchRevision = stremioSubtitleSearchRevision
+        if forceRefresh { stremioSubtitleResults.removeAll() }
         stremioSubtitleFetchInProgress = true
         stremioSubtitleSearchAttempted = true
         updateSubtitleTracksMenu()
@@ -12954,12 +13027,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         stremioSubtitleFetchTask = Task { [weak self] in
             guard let self else { return }
-            let results = await self.fetchStremioSubtitleResults(reason: reason) { [weak self] partial in
+            let results = await self.fetchStremioSubtitleResults(reason: reason, manualQuery: manualQuery) { [weak self] partial in
                 guard let self,
                       !self.isClosing,
                       self.playbackLoadGeneration == loadGeneration,
+                      self.stremioSubtitleSearchRevision == searchRevision,
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
                 self.stremioSubtitleResults = self.sortedStremioSubtitleResults(partial)
+                if autoSelect,
+                   self.canAutoApplyStremioSubtitleFallback(),
+                   let result = self.preferredStremioSubtitle(from: self.stremioSubtitleResults,
+                                                               preferredLang: self.automaticSubtitleSelectionLanguage) {
+                    self.stremioSubtitleFallbackAttempted = true
+                    self.loadStremioSubtitle(result, userSelected: false)
+                }
                 self.updateSubtitleTracksMenu()
                 self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
             }
@@ -12969,6 +13050,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 guard let self,
                       !self.isClosing,
                       self.playbackLoadGeneration == loadGeneration,
+                      self.stremioSubtitleSearchRevision == searchRevision,
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
                 self.stremioSubtitleFetchInProgress = false
                 self.stremioSubtitleResults = self.sortedStremioSubtitleResults(results)
@@ -13103,6 +13185,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func fetchStremioSubtitleResults(
         reason: String,
+        manualQuery: SubtitleQuery? = nil,
         onProgress: @escaping @MainActor ([StremioAddonManager.AddonSubtitleResult]) -> Void
     ) async -> [StremioAddonManager.AddonSubtitleResult] {
         let lookup = await MainActor.run {
@@ -13165,21 +13248,30 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 + lookup.titleCandidates.map { ($0, .displayed) }
         )
         query.preferredReleaseTokens = Array(rememberedAnimeSubtitleTokens())
+        if let manualQuery {
+            query = manualQuery
+            if query.ids.imdb == nil { query.ids.imdb = resolvedImdbId }
+            if query.ids.tmdb == nil { query.ids.tmdb = metadata.tmdbId }
+            if query.fileName == nil { query.fileName = lookup.fileExtras.filename }
+            if query.videoHash == nil { query.videoHash = lookup.fileExtras.videoHash }
+            if query.fileSize == nil { query.fileSize = lookup.fileExtras.videoSize }
+        }
 
         return await StremioAddonManager.shared.fetchSubtitlesFromAddons(
             tmdbId: metadata.tmdbId,
             imdbId: resolvedImdbId,
             type: metadata.type,
-            season: metadata.season,
-            episode: metadata.episode,
+            season: query.season,
+            episode: query.episode,
             anilistId: lookup.playbackContext?.positiveAniListMediaId
                 ?? lookup.playbackContext?.anilistMediaId,
             playbackContext: lookup.playbackContext,
-            titleCandidates: lookup.titleCandidates,
+            titleCandidates: query.titles.map(\.value),
             subtitleVideoHash: lookup.fileExtras.videoHash,
             subtitleVideoSize: lookup.fileExtras.videoSize,
             subtitleFilename: lookup.fileExtras.filename,
             query: query,
+            manualCoordinates: manualQuery != nil,
             onBatch: onProgress
         )
     }
@@ -13280,6 +13372,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func sortedStremioSubtitleResults(_ results: [StremioAddonManager.AddonSubtitleResult]) -> [StremioAddonManager.AddonSubtitleResult] {
         let preferredLang = automaticSubtitleSelectionLanguage
+        let rememberedProvider = rememberedSubtitleProviderID
         return results.sorted { lhs, rhs in
             let lhsMatch = openSubtitleMatchesPreferredLanguage(lhs.subtitle, preferredLang: preferredLang)
             let rhsMatch = openSubtitleMatchesPreferredLanguage(rhs.subtitle, preferredLang: preferredLang)
@@ -13289,6 +13382,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             if lhsScore != rhsScore {
                 return lhsScore > rhsScore
             }
+            if lhs.addon.manifest.id == rememberedProvider && rhs.addon.manifest.id != rememberedProvider { return true }
+            if rhs.addon.manifest.id == rememberedProvider && lhs.addon.manifest.id != rememberedProvider { return false }
             if lhs.addon.sortIndex != rhs.addon.sortIndex {
                 return lhs.addon.sortIndex < rhs.addon.sortIndex
             }
@@ -13378,6 +13473,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func loadOpenSubtitle(_ subtitle: StremioSubtitle, userSelected: Bool) {
+        guard userSelected || subtitlePlaybackSelection.mayApplyProviderResult else { return }
         guard let urlString = subtitle.url, !urlString.isEmpty else { return }
         let urlKey = normalizedSubtitleURLKey(urlString)
         guard openSubtitlesLoadedURLs.insert(urlKey).inserted || userSelected else { return }
@@ -13387,7 +13483,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             recordUserSubtitleSelection(
                 enabled: true,
                 languageTag: subtitle.lang,
-                displayName: displayName
+                displayName: displayName,
+                providerID: "opensubtitles-v3"
             )
             rememberAnimeOpenSubtitleRelease(subtitle)
         }
@@ -13400,6 +13497,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func loadStremioSubtitle(_ result: StremioAddonManager.AddonSubtitleResult, userSelected: Bool) {
+        guard userSelected || subtitlePlaybackSelection.mayApplyProviderResult else { return }
         guard let urlString = result.subtitle.url, !urlString.isEmpty else { return }
         let urlKey = normalizedSubtitleURLKey(urlString)
         guard stremioSubtitleLoadedURLs.insert(urlKey).inserted || userSelected else { return }
@@ -13409,7 +13507,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             recordUserSubtitleSelection(
                 enabled: true,
                 languageTag: result.subtitle.lang,
-                displayName: displayName
+                displayName: displayName,
+                providerID: result.addon.manifest.id
             )
             rememberAnimeSubtitleRelease(result)
         }
@@ -13422,6 +13521,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func loadOnlineSubtitle(urlString: String, displayName: String, sourceLogLabel: String, userSelected: Bool) {
+        guard userSelected || subtitlePlaybackSelection.mayApplyProviderResult else { return }
         let subtitleIndex: Int
         if let existingIndex = subtitleURLs.firstIndex(of: urlString) {
             subtitleIndex = existingIndex
@@ -13442,12 +13542,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             setSessionAwareSubtitleVisible(true)
             userSelectedSubtitleTrack = true
         } else {
+            subtitlePlaybackSelection.selectAutomatically(preferred: true)
             setSubtitleVisible(true, persist: false)
         }
 
         currentSubtitleIndex = subtitleIndex
         if isVLCCustomSubtitleOverlayEnabled {
             vlcSubtitleSelection = .external(index: subtitleIndex)
+            restoreSelectedSubtitleDelay()
             rendererDisableSubtitlesIfReady(reason: "\(sourceLogLabel) custom overlay")
             loadCurrentSubtitle()
             updateVLCSubtitleOverlay(for: cachedPosition)
@@ -13458,6 +13560,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                     .map(\.id)
             )
             vlcSubtitleSelection = .none
+            restoreSelectedSubtitleDelay()
             rendererLoadExternalSubtitles(urls: [urlString], names: [displayName], enforce: true)
             vlcExternalSubtitlesLoadedNatively = true
             vlcExternalSubtitlePriorityDeadline = nil
@@ -13597,11 +13700,79 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         !SubtitleProviderConfiguration.activeProviders().isEmpty
     }
 
-    private func fetchDirectSubtitles(forceRefresh: Bool = false) {
-        guard hasDirectSubtitleProviders, !directSubtitleFetchInProgress else { return }
+    private func presentManualSubtitleSearch() {
+        guard let request = activePlaybackRequest else { return }
+        let generation = playbackLoadGeneration
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let query = await SubtitleMetadataResolver.shared.resolve(request: request)
+            guard !self.isClosing, self.playbackLoadGeneration == generation else { return }
+            let choices = UIAlertController(
+                title: "Search Subtitles", message: "Choose a title to search with.", preferredStyle: .alert
+            )
+            for variant in query.titles.prefix(6) {
+                choices.addAction(UIAlertAction(title: "\(variant.value) · \(variant.origin.rawValue)", style: .default) { [weak self] _ in
+                    self?.presentManualSubtitleSearchFields(query: query, title: variant.value)
+                })
+            }
+            choices.addAction(UIAlertAction(title: "Enter another title…", style: .default) { [weak self] _ in
+                self?.presentManualSubtitleSearchFields(query: query, title: query.titles.first?.value ?? "")
+            })
+            choices.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            self.present(choices, animated: true)
+        }
+    }
+
+    private func presentManualSubtitleSearchFields(query: SubtitleQuery, title: String) {
+        let form = UIAlertController(
+            title: "Manual Subtitle Search",
+            message: "Edit the title and episode coordinates. Leave a number blank to keep the current value.",
+            preferredStyle: .alert
+        )
+        let values: [(String, String, UIKeyboardType)] = [
+            ("Title", title, .default),
+            ("Season", query.season.map(String.init) ?? "", .numberPad),
+            ("Episode", query.episode.map(String.init) ?? "", .numberPad),
+            ("Absolute episode", query.absoluteEpisode.map(String.init) ?? "", .numberPad),
+            ("Language", automaticSubtitleSelectionLanguage, .default)
+        ]
+        for (placeholder, value, keyboard) in values {
+            form.addTextField { field in
+                field.placeholder = placeholder
+                field.text = value
+                field.keyboardType = keyboard
+                field.autocapitalizationType = .none
+            }
+        }
+        form.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        let generation = playbackLoadGeneration
+        form.addAction(UIAlertAction(title: "Search", style: .default) { [weak self, weak form] _ in
+            guard let self, let fields = form?.textFields,
+                  fields.count == 5, self.playbackLoadGeneration == generation else { return }
+            let edits = SubtitleManualSearch(
+                title: fields[0].text ?? "",
+                season: Int(fields[1].text ?? ""),
+                episode: Int(fields[2].text ?? ""),
+                absoluteEpisode: Int(fields[3].text ?? ""),
+                language: fields[4].text ?? ""
+            )
+            let searchQuery = edits.applying(to: query)
+            self.fetchStremioSubtitles(autoSelect: false, reason: "manual-query", forceRefresh: true,
+                                       manualQuery: searchQuery)
+            self.fetchDirectSubtitles(forceRefresh: true, manualQuery: searchQuery)
+        })
+        present(form, animated: true)
+    }
+
+    private func fetchDirectSubtitles(forceRefresh: Bool = false, manualQuery: SubtitleQuery? = nil) {
+        guard hasDirectSubtitleProviders, (!directSubtitleFetchInProgress || forceRefresh) else { return }
         if !forceRefresh, !directSubtitleResults.isEmpty { return }
         guard let request = activePlaybackRequest else { return }
         directSubtitleFetchTask?.cancel()
+        directSubtitleSearchRevision += 1
+        let searchRevision = directSubtitleSearchRevision
+        if forceRefresh { directSubtitleResults.removeAll() }
+        directSubtitleSearchBatches.removeAll()
         directSubtitleFetchInProgress = true
         directSubtitleSearchAttempted = true
         directSubtitleDownloadError = nil
@@ -13610,7 +13781,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         directSubtitleFetchTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            var query = await SubtitleMetadataResolver.shared.resolve(request: request)
+            var query: SubtitleQuery
+            if let manualQuery {
+                query = manualQuery
+            } else {
+                query = await SubtitleMetadataResolver.shared.resolve(request: request)
+            }
             let extras = self.subtitleRequestFileExtras()
             if query.videoHash == nil { query.videoHash = extras.videoHash }
             if query.fileSize == nil { query.fileSize = extras.videoSize }
@@ -13620,15 +13796,19 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             ) { [weak self] partial in
                 guard let self, !self.isClosing,
                       self.playbackLoadGeneration == generation,
+                      self.directSubtitleSearchRevision == searchRevision,
                       self.playbackProfileIsStillActive("a subtitle search") else { return }
+                self.directSubtitleSearchBatches = partial
                 self.directSubtitleResults = self.sortedDirectSubtitleCandidates(partial)
                 self.updateSubtitleTracksMenu()
                 self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
             }
             guard !Task.isCancelled, !self.isClosing,
                   self.playbackLoadGeneration == generation,
+                  self.directSubtitleSearchRevision == searchRevision,
                   self.playbackProfileIsStillActive("a subtitle search") else { return }
             self.directSubtitleFetchInProgress = false
+            self.directSubtitleSearchBatches = batches
             self.directSubtitleResults = self.sortedDirectSubtitleCandidates(batches)
             self.updateSubtitleTracksMenu()
             self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
@@ -13637,17 +13817,35 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func sortedDirectSubtitleCandidates(_ batches: [SubtitleProviderSearchResult]) -> [SubtitleCandidate] {
         var seen = Set<String>()
+        let rememberedProvider = rememberedSubtitleProviderID
         return batches.flatMap(\.candidates)
             .filter { seen.insert($0.id).inserted }
-            .sorted { $0.score > $1.score }
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
+                if lhs.providerID == rememberedProvider && rhs.providerID != rememberedProvider { return true }
+                if rhs.providerID == rememberedProvider && lhs.providerID != rememberedProvider { return false }
+                return lhs.id < rhs.id
+            }
     }
 
     private func directSubtitleDisplayName(_ candidate: SubtitleCandidate) -> String {
+        let base = directSubtitleStableName(candidate)
+        let isBestMatch = candidate.score > 0
+            && candidate.score == directSubtitleResults.first?.score
+            && !candidate.matchReasons.contains("Farklı sezon/bölüm")
+            && !candidate.matchReasons.contains("Farklı bölüm numarası")
+        let badge = candidate.videoHash != nil ? " · Hash Match" : (isBestMatch ? " · Best Match" : "")
+        return base + badge
+    }
+
+    private func directSubtitleStableName(_ candidate: SubtitleCandidate) -> String {
         let source = DirectSubtitleProviderKind(rawValue: candidate.providerID)?.displayName
             ?? candidate.providerID
         let release = candidate.releaseName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return "\(source) - \(candidate.language.uppercased())"
-            + (release.isEmpty ? "" : " - \(String(release.prefix(70)))")
+        let format = candidate.format?.uppercased() ?? ""
+        return "\(source) · \(candidate.language.uppercased())"
+            + (format.isEmpty ? "" : " · \(format)")
+            + (release.isEmpty ? "" : " · \(String(release.prefix(70)))")
     }
 
     private func loadDirectSubtitle(_ candidate: SubtitleCandidate) {
@@ -13679,9 +13877,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 guard !Task.isCancelled, !self.isClosing,
                       self.playbackLoadGeneration == generation,
                       self.playbackProfileIsStillActive("a subtitle download") else { return }
-                let name = self.directSubtitleDisplayName(candidate)
+                let name = self.directSubtitleStableName(candidate)
                 self.recordUserSubtitleSelection(
-                    enabled: true, languageTag: candidate.language, displayName: name
+                    enabled: true, languageTag: candidate.language, displayName: name,
+                    providerID: candidate.providerID
                 )
                 self.loadOnlineSubtitle(
                     urlString: localURL.absoluteString, displayName: name,
@@ -13737,7 +13936,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             urlString: savedURL.absoluteString,
             displayName: "Local Subtitle · \(savedURL.lastPathComponent)",
             sourceLogLabel: "LocalSubtitles",
-            userSelected: false
+            userSelected: true
         )
     }
 

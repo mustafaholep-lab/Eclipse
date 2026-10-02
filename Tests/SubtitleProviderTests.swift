@@ -3,6 +3,65 @@ import XCTest
 @testable import Eclipse
 
 final class SubtitleProviderTests: XCTestCase {
+    func testAutomaticAndManualSubtitleChoicesStaySeparateAcrossEpisodes() {
+        var selection = SubtitlePlaybackSelection()
+        selection.beginMedia()
+        let firstEpisode = selection.generation
+        XCTAssertTrue(selection.mayChooseDefault)
+        selection.selectAutomatically(preferred: false)
+        XCTAssertTrue(selection.mayApplyProviderResult)
+        selection.selectAutomatically(preferred: true)
+        XCTAssertFalse(selection.mayApplyProviderResult)
+        selection.selectByUser()
+        selection.selectAutomatically(preferred: false)
+        XCTAssertEqual(selection.choice, .user)
+        XCTAssertFalse(selection.mayApplyProviderResult)
+        selection.beginMedia()
+        XCTAssertFalse(selection.acceptsResult(generation: firstEpisode))
+        XCTAssertTrue(selection.mayChooseDefault)
+    }
+
+    func testManualAnimeSearchPreservesIDsAliasesAndFileExtras() {
+        let original = query()
+        let edited = SubtitleManualSearch(
+            title: "Sorcery Fight", season: 2, episode: 3,
+            absoluteEpisode: 27, language: "tr"
+        ).applying(to: original)
+        XCTAssertEqual(edited.titles.first?.value, "Sorcery Fight")
+        XCTAssertTrue(edited.titles.contains { $0.value == "呪術廻戦" })
+        XCTAssertEqual(edited.season, 2)
+        XCTAssertEqual(edited.episode, 3)
+        XCTAssertEqual(edited.animeSeason, 2)
+        XCTAssertEqual(edited.animeEpisode, 3)
+        XCTAssertEqual(edited.absoluteEpisode, 27)
+        XCTAssertEqual(edited.preferredLanguages, ["tr"])
+        XCTAssertEqual(edited.ids.anilist, original.ids.anilist)
+        XCTAssertEqual(edited.videoHash, original.videoHash)
+        XCTAssertEqual(edited.fileSize, original.fileSize)
+        let plan = StremioSubtitleRequestPlanner.attempts(
+            query: edited, supportedTypes: ["series", "anime"],
+            idPrefixes: ["tt", "anilist:"], addonName: "Fixture"
+        )
+        XCTAssertTrue(plan.contains(.init(type: "series", id: "tt1234567:2:3")))
+        XCTAssertTrue(plan.contains(.init(type: "anime", id: "anilist:113415:2:3")))
+    }
+
+    func testSubtitleDelayPreferenceIsReleaseAndEpisodeSpecific() throws {
+        let first = try XCTUnwrap(SubtitlePreferenceKey.delay(
+            mediaKey: "episode_1_s1_e1", releaseLabel: "SubDL · TR · release A"
+        ))
+        XCTAssertEqual(first, SubtitlePreferenceKey.delay(
+            mediaKey: "episode_1_s1_e1", releaseLabel: "SubDL · TR · release A"
+        ))
+        XCTAssertNotEqual(first, SubtitlePreferenceKey.delay(
+            mediaKey: "episode_1_s1_e1", releaseLabel: "SubDL · TR · release B"
+        ))
+        XCTAssertNotEqual(first, SubtitlePreferenceKey.delay(
+            mediaKey: "episode_1_s1_e2", releaseLabel: "SubDL · TR · release A"
+        ))
+        XCTAssertNil(SubtitlePreferenceKey.delay(mediaKey: "episode_1_s1_e1", releaseLabel: "  "))
+    }
+
     private struct TimedFixtureProvider: SubtitleProvider {
         let id: String
         let delay: UInt64

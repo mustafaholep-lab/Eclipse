@@ -91,6 +91,75 @@ struct SubtitleCandidate: Sendable {
     var videoHash: String? = nil
 }
 
+/// Keeps automatic track choice separate from an explicit player-menu choice.
+/// A search may replace a fallback track, but never a preferred embedded track
+/// or a track the viewer selected themselves.
+struct SubtitlePlaybackSelection: Equatable {
+    enum Choice: Equatable { case none, automaticPreferred, automaticFallback, user }
+    private(set) var choice: Choice = .none
+    private(set) var generation = 0
+
+    mutating func beginMedia() {
+        generation += 1
+        choice = .none
+    }
+
+    mutating func selectAutomatically(preferred: Bool) {
+        guard choice != .user else { return }
+        choice = preferred ? .automaticPreferred : .automaticFallback
+    }
+
+    mutating func selectByUser() { choice = .user }
+
+    var mayChooseDefault: Bool { choice == .none }
+    var mayApplyProviderResult: Bool { choice == .none || choice == .automaticFallback }
+    func acceptsResult(generation expected: Int) -> Bool { generation == expected }
+}
+
+/// Applies the viewer's search edits without changing AniMap's separate TMDB
+/// and anime episode coordinates. Only explicitly edited coordinates change.
+struct SubtitleManualSearch: Equatable {
+    var title: String
+    var season: Int?
+    var episode: Int?
+    var absoluteEpisode: Int?
+    var language: String
+
+    func applying(to original: SubtitleQuery) -> SubtitleQuery {
+        var query = original
+        let chosenTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !chosenTitle.isEmpty {
+            query.titles = SubtitleTitlePolicy.variants(
+                [(chosenTitle, .displayed)] + original.titles.map { ($0.value, $0.origin) }
+            )
+        }
+        if let season, season >= 0 { query.season = season; query.animeSeason = season }
+        if let episode, episode > 0 { query.episode = episode; query.animeEpisode = episode }
+        if let absoluteEpisode, absoluteEpisode > 0 { query.absoluteEpisode = absoluteEpisode }
+        let chosenLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !chosenLanguage.isEmpty { query.preferredLanguages = [chosenLanguage] }
+        return query
+    }
+}
+
+enum SubtitlePreferenceKey {
+    static func choice(mediaKey: String) -> String {
+        "subtitleChoice.\(mediaKey)"
+    }
+
+    /// The full selected release label, including provider and filename, must
+    /// match before a saved delay is restored. A different encode starts at 0.
+    static func delay(mediaKey: String, releaseLabel: String) -> String? {
+        let trimmed = releaseLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in trimmed.lowercased().utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return "subtitleDelay.\(mediaKey).\(String(hash, radix: 16))"
+    }
+}
+
 protocol SubtitleProvider: Sendable {
     var id: String { get }
     var supportsAnime: Bool { get }

@@ -687,13 +687,14 @@ class StremioAddonManager: ObservableObject {
         subtitleVideoSize: Int64? = nil,
         subtitleFilename: String? = nil,
         query: SubtitleQuery? = nil,
+        manualCoordinates: Bool = false,
         onBatch: (@MainActor ([AddonSubtitleResult]) -> Void)? = nil
     ) async -> [AddonSubtitleResult] {
         guard let lookupCoordinates = Self.safeLookupCoordinates(
             type: type,
             season: season,
             episode: episode,
-            playbackContext: playbackContext
+            playbackContext: manualCoordinates ? nil : playbackContext
         ) else {
             Logger.shared.log("Stremio: Skipping MAL fallback subtitle lookup without exact TMDB coordinates", type: "Stremio")
             return []
