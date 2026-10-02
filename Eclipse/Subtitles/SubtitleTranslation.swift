@@ -227,6 +227,17 @@ actor DiskSubtitleTranslationCache: TranslationCacheStore {
 }
 
 enum SubtitleAITemporaryFiles {
+    static func cleanupStale(directory: URL = FileManager.default.temporaryDirectory,
+                             olderThan age: TimeInterval = 24 * 60 * 60, now: Date = Date()) {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles) else { return }
+        for file in files where file.lastPathComponent.hasPrefix("subtitle-ai-") {
+            guard let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  now.timeIntervalSince(modified) > age else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
     static func cleanup(_ urls: [URL], directory: URL = FileManager.default.temporaryDirectory) {
         let root = directory.standardizedFileURL
         for url in urls {

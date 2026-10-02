@@ -4543,6 +4543,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         aiTranslationTask = nil
         aiTranslationEngine = nil
         cleanupAITranslationTemporaryFiles()
+        SubtitleAITemporaryFiles.cleanupStale()
         aiTranslationRevision += 1
         aiTranslationStarted = false
         aiTranslationFailed = false

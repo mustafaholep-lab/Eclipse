@@ -302,6 +302,24 @@ final class SubtitleTranslationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
+    func testStaleAITemporaryCleanupPreservesRecentAndUnrelatedFiles() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-stale-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let old = folder.appendingPathComponent("subtitle-ai-old.srt")
+        let recent = folder.appendingPathComponent("subtitle-ai-new.srt")
+        let unrelated = folder.appendingPathComponent("other.srt")
+        for file in [old, recent, unrelated] { try Data("cue".utf8).write(to: file) }
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-100_000)], ofItemAtPath: old.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-100_000)], ofItemAtPath: unrelated.path)
+        SubtitleAITemporaryFiles.cleanupStale(directory: folder, now: now)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recent.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
     func testModeAndManualSelectionSafety() {
         XCTAssertFalse(SubtitleTranslationSourcePolicy.shouldStart(mode: .off,
             hasHumanTurkish: false, hasGoodHumanEnglish: true, userConfirmed: true))
