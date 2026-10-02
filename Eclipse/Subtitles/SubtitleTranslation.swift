@@ -28,11 +28,11 @@ enum SubtitleTranslationError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidConfiguration: return String(localized: "API adresi veya model geçersiz.")
-        case .missingKey: return String(localized: "API anahtarı eksik.")
+        case .missingKey: return String(localized: "API anahtarı eksik")
         case .connection: return String(localized: "API bağlantısı başarısız.")
         case .rateLimited: return String(localized: "İstek sınırı aşıldı.")
         case .invalidResponse: return String(localized: "Geçersiz API yanıtı.")
-        case .server: return String(localized: "AI çeviri başarısız.")
+        case .server: return String(localized: "AI çeviri başarısız")
         }
     }
 }

@@ -11898,7 +11898,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         if SubtitleTranslationSettings.mode != .off {
-            sections.append(PlayerOverlayMenuSection(title: String(localized: "AI Çeviri"), actions: aiTranslationOverlayActions()))
+            sections.append(PlayerOverlayMenuSection(title: String(localized: "AI çeviri"), actions: aiTranslationOverlayActions()))
         }
 #if DEBUG
         sections.append(PlayerOverlayMenuSection(title: "Developer", actions: [
@@ -14000,7 +14000,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.startAITranslation(source: source, userConfirmed: true)
             })
         }
-        return UIMenu(title: String(localized: "AI Çeviri"), image: UIImage(systemName: "sparkles"), children: actions)
+        return UIMenu(title: String(localized: "AI çeviri"), image: UIImage(systemName: "sparkles"), children: actions)
     }
 
     private func aiTranslationOverlayActions() -> [PlayerOverlayMenuAction] {
