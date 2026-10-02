@@ -1417,8 +1417,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var userSelectedAudioTrack = false
     private var subtitlePlaybackSelection = SubtitlePlaybackSelection()
     private var userSelectedSubtitleTrack = false {
-        didSet { if userSelectedSubtitleTrack { subtitlePlaybackSelection.selectByUser() } }
+        didSet {
+            if userSelectedSubtitleTrack {
+                subtitlePlaybackSelection.selectByUser()
+                subtitleManualActionRevision += 1
+            }
+        }
     }
+    private var subtitleManualActionRevision = 0
     private var attemptedAudioAutoSelectSignature: String?
     private var lastAudioTracksMenuLogSignature: String?
     private var lastSubtitleTracksMenuLogSignature: String?
@@ -2935,6 +2941,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var stremioSubtitleSearchRevision = 0
     private var stremioSubtitleFetchInProgress = false
     private var stremioSubtitleSearchAttempted = false
+    private var stremioSubtitleDiagnostics: [String: String] = [:]
     private var stremioSubtitleFallbackAttempted = false
     private var stremioSubtitleLoadedURLs: Set<String> = []
     private var directSubtitleResults: [SubtitleCandidate] = []
@@ -4541,6 +4548,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         openSubtitlesFallbackAttempted = false
         openSubtitlesLoadedURLs.removeAll()
         stremioSubtitleResults.removeAll()
+        stremioSubtitleDiagnostics.removeAll()
         stremioSubtitleFetchTask?.cancel()
         stremioSubtitleSearchRevision += 1
         stremioSubtitleFetchTask = nil
@@ -11857,8 +11865,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
         if stremioSubtitleResults.isEmpty {
             if stremioSubtitleSearchAttempted {
+                let failed = stremioSubtitleDiagnostics.values.contains {
+                    $0 == "request-or-parse-failed" || $0 == "timeout"
+                }
                 return [
-                    makeOverlayAction(title: "No subtitle addon results", imageName: "captions.bubble", isEnabled: false) {},
+                    makeOverlayAction(title: failed ? "Subtitle addon unavailable" : "No subtitle addon results",
+                                      imageName: failed ? "exclamationmark.triangle" : "captions.bubble", isEnabled: false) {},
                     makeOverlayAction(title: "Refresh subtitle addons", imageName: "arrow.clockwise") { [weak self] in
                         self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                         self?.hideOverlayMenu()
@@ -12560,7 +12572,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(UIAction(title: "Searching subtitle addons...", image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
         } else if stremioSubtitleResults.isEmpty {
             if stremioSubtitleSearchAttempted {
-                actions.append(UIAction(title: "No subtitle addon results", image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
+                let failed = stremioSubtitleDiagnostics.values.contains {
+                    $0 == "request-or-parse-failed" || $0 == "timeout"
+                }
+                actions.append(UIAction(title: failed ? "Subtitle addon unavailable" : "No subtitle addon results",
+                                        image: UIImage(systemName: failed ? "exclamationmark.triangle" : "captions.bubble"),
+                                        attributes: .disabled) { _ in })
                 actions.append(UIAction(title: "Refresh subtitle addons", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                     self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                 })
@@ -13020,6 +13037,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         stremioSubtitleSearchRevision += 1
         let searchRevision = stremioSubtitleSearchRevision
         if forceRefresh { stremioSubtitleResults.removeAll() }
+        stremioSubtitleDiagnostics.removeAll()
         stremioSubtitleFetchInProgress = true
         stremioSubtitleSearchAttempted = true
         updateSubtitleTracksMenu()
@@ -13027,7 +13045,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         stremioSubtitleFetchTask = Task { [weak self] in
             guard let self else { return }
-            let results = await self.fetchStremioSubtitleResults(reason: reason, manualQuery: manualQuery) { [weak self] partial in
+            let results = await self.fetchStremioSubtitleResults(reason: reason, manualQuery: manualQuery,
+                                                                  generation: loadGeneration,
+                                                                  searchRevision: searchRevision) { [weak self] partial in
                 guard let self,
                       !self.isClosing,
                       self.playbackLoadGeneration == loadGeneration,
@@ -13186,6 +13206,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func fetchStremioSubtitleResults(
         reason: String,
         manualQuery: SubtitleQuery? = nil,
+        generation: Int,
+        searchRevision: Int,
         onProgress: @escaping @MainActor ([StremioAddonManager.AddonSubtitleResult]) -> Void
     ) async -> [StremioAddonManager.AddonSubtitleResult] {
         let lookup = await MainActor.run {
@@ -13272,6 +13294,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             subtitleFilename: lookup.fileExtras.filename,
             query: query,
             manualCoordinates: manualQuery != nil,
+            onDiagnostic: { [weak self] diagnostics in
+                guard let self, !self.isClosing,
+                      self.playbackLoadGeneration == generation,
+                      self.stremioSubtitleSearchRevision == searchRevision else { return }
+                self.stremioSubtitleDiagnostics = diagnostics
+            },
             onBatch: onProgress
         )
     }
@@ -13852,6 +13880,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         guard let provider = SubtitleProviderConfiguration.activeProviders().first(where: {
             $0.id == candidate.providerID
         }) else { return }
+        userSelectedSubtitleTrack = true
+        let selectionRevision = subtitleManualActionRevision
         directSubtitleDownloadTask?.cancel()
         directSubtitleDownloadError = nil
         let generation = playbackLoadGeneration
@@ -13876,6 +13906,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 try prepared.data.write(to: localURL, options: .atomic)
                 guard !Task.isCancelled, !self.isClosing,
                       self.playbackLoadGeneration == generation,
+                      self.subtitleManualActionRevision == selectionRevision,
                       self.playbackProfileIsStillActive("a subtitle download") else { return }
                 let name = self.directSubtitleStableName(candidate)
                 self.recordUserSubtitleSelection(
@@ -13887,7 +13918,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                     sourceLogLabel: "DirectSubtitles", userSelected: true
                 )
             } catch {
-                guard !Task.isCancelled, self.playbackLoadGeneration == generation else { return }
+                guard !Task.isCancelled, self.playbackLoadGeneration == generation,
+                      self.subtitleManualActionRevision == selectionRevision else { return }
                 self.directSubtitleDownloadError = "Subtitle download failed. Try another result."
                 self.updateSubtitleTracksMenu()
                 self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")

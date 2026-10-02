@@ -688,6 +688,7 @@ class StremioAddonManager: ObservableObject {
         subtitleFilename: String? = nil,
         query: SubtitleQuery? = nil,
         manualCoordinates: Bool = false,
+        onDiagnostic: (@MainActor ([String: String]) -> Void)? = nil,
         onBatch: (@MainActor ([AddonSubtitleResult]) -> Void)? = nil
     ) async -> [AddonSubtitleResult] {
         guard let lookupCoordinates = Self.safeLookupCoordinates(
@@ -768,20 +769,23 @@ class StremioAddonManager: ObservableObject {
         let maxConcurrent = 2
 
         var results: [AddonSubtitleResult] = []
-        await withTaskGroup(of: (StremioAddon, [StremioSubtitle]).self) { group in
+        var diagnostics: [String: String] = [:]
+        await withTaskGroup(of: (StremioAddon, [StremioSubtitle], String).self) { group in
             var nextIndex = 0
 
             while nextIndex < active.count && nextIndex < maxConcurrent {
                 let addon = active[nextIndex]
                 group.addTask {
-                    let subtitles = await StremioAddonSubtitleProvider(addon: addon).searchRaw(searchQuery)
-                    return (addon, subtitles)
+                    let outcome = await StremioAddonSubtitleProvider(addon: addon).searchRawOutcome(searchQuery)
+                    return (addon, outcome.subtitles, outcome.diagnostic)
                 }
                 nextIndex += 1
             }
 
-            for await (addon, subtitles) in group {
+            for await (addon, subtitles, diagnostic) in group {
                 if Task.isCancelled { group.cancelAll(); break }
+                diagnostics[addon.manifest.id] = diagnostic
+                onDiagnostic?(diagnostics)
                 let provider = StremioAddonSubtitleProvider(addon: addon)
                 results.append(contentsOf: subtitles.compactMap { subtitle in
                     guard let candidate = provider.candidate(for: subtitle, query: searchQuery) else {
@@ -800,8 +804,8 @@ class StremioAddonManager: ObservableObject {
                 if nextIndex < active.count {
                     let addon = active[nextIndex]
                     group.addTask {
-                        let subtitles = await StremioAddonSubtitleProvider(addon: addon).searchRaw(searchQuery)
-                        return (addon, subtitles)
+                        let outcome = await StremioAddonSubtitleProvider(addon: addon).searchRawOutcome(searchQuery)
+                        return (addon, outcome.subtitles, outcome.diagnostic)
                     }
                     nextIndex += 1
                 }

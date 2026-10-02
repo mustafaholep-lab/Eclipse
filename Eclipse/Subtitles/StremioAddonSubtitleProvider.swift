@@ -122,6 +122,10 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
     }
 
     func searchRaw(_ query: SubtitleQuery) async -> [StremioSubtitle] {
+        (await searchRawOutcome(query)).subtitles
+    }
+
+    func searchRawOutcome(_ query: SubtitleQuery) async -> (subtitles: [StremioSubtitle], diagnostic: String) {
         let attempts = StremioSubtitleRequestPlanner.attempts(
             query: query,
             supportedTypes: supportedTypes,
@@ -130,7 +134,7 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
         )
         guard !attempts.isEmpty else {
             Logger.shared.log("[SubtitleProvider] \(displayName) skipped: no compatible type/ID; titleAliases=\(query.titles.count)", type: "Stremio")
-            return []
+            return ([], "unsupported-query")
         }
         Logger.shared.log(
             "[SubtitleProvider] \(displayName) plan attempts=\(attempts.count) types=\(Set(attempts.map(\.type)).sorted()) titleAliases=\(query.titles.count) hash=\(query.videoHash != nil) size=\(query.fileSize != nil) filename=\(query.fileName != nil)",
@@ -184,9 +188,16 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
             Logger.shared.log("[SubtitleProvider] \(displayName) no candidates; emptyResponses=\(emptyCount) failures=\(failureCount) planned=\(attempts.count) deadlineReached=\(Date() >= deadline) (identity/type mismatch remains possible)", type: "Stremio")
         }
         var seen = Set<String>()
-        return found.filter { subtitle in
+        let subtitles = found.filter { subtitle in
             guard let url = subtitle.url else { return false }
             return seen.insert(url).inserted
         }
+        let diagnostic: String
+        if Task.isCancelled { diagnostic = "cancelled" }
+        else if !subtitles.isEmpty { diagnostic = "matched" }
+        else if emptyCount > 0 { diagnostic = "valid-empty-response" }
+        else if failureCount > 0 { diagnostic = "request-or-parse-failed" }
+        else { diagnostic = "timeout" }
+        return (subtitles, diagnostic)
     }
 }

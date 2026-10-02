@@ -399,4 +399,15 @@ final class SubtitleProviderTests: XCTestCase {
             providerID: "subdl", candidates: [], diagnostic: "valid-empty-response"
         ).sourceLabel, "SubDL")
     }
+
+    @MainActor
+    func testEmptyProviderDoesNotHideAnotherProvidersCandidates() async {
+        let results = await SubtitleProviderSearchCoordinator.search(
+            query: query(), providers: [EmptyFixtureProvider(),
+                                       TimedFixtureProvider(id: "matched-fixture", delay: 10_000_000)]
+        )
+        XCTAssertEqual(results.first(where: { $0.providerID == "empty-fixture" })?.diagnostic,
+                       "valid-empty-response")
+        XCTAssertEqual(results.flatMap(\.candidates).map(\.providerID), ["matched-fixture"])
+    }
 }
