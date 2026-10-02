@@ -29,6 +29,8 @@
 		A2E100000000000000000002 /* SubtitleRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000005 /* SubtitleRanking.swift */; };
 		A2E100000000000000000003 /* SubtitleProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000006 /* SubtitleProviderTests.swift */; };
 		A2E100000000000000000007 /* SubtitleFileHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000008 /* SubtitleFileHandling.swift */; };
+		B1E100000000000000000001 /* SubtitleDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E100000000000000000003 /* SubtitleDocument.swift */; };
+		B1E100000000000000000002 /* SubtitleDocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E100000000000000000004 /* SubtitleDocumentTests.swift */; };
 		A2E100000000000000000009 /* SubDLSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000A /* SubDLSubtitleProvider.swift */; };
 		A2E10000000000000000000B /* JimakuSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000C /* JimakuSubtitleProvider.swift */; };
 		A2E10000000000000000000D /* OpenSubtitlesRESTProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */; };
@@ -407,6 +409,8 @@
 		A2E100000000000000000005 /* SubtitleRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleRanking.swift; sourceTree = "<group>"; };
 		A2E100000000000000000006 /* SubtitleProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderTests.swift; sourceTree = "<group>"; };
 		A2E100000000000000000008 /* SubtitleFileHandling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleFileHandling.swift; sourceTree = "<group>"; };
+		B1E100000000000000000003 /* SubtitleDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleDocument.swift; sourceTree = "<group>"; };
+		B1E100000000000000000004 /* SubtitleDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleDocumentTests.swift; sourceTree = "<group>"; };
 		A2E10000000000000000000A /* SubDLSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubDLSubtitleProvider.swift; sourceTree = "<group>"; };
 		A2E10000000000000000000C /* JimakuSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JimakuSubtitleProvider.swift; sourceTree = "<group>"; };
 		A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSubtitlesRESTProvider.swift; sourceTree = "<group>"; };
@@ -755,6 +759,7 @@
 				A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */,
 				A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */,
 				A2E100000000000000000006 /* SubtitleProviderTests.swift */,
+				B1E100000000000000000004 /* SubtitleDocumentTests.swift */,
 				BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */,
 				NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */,
 				A11E571E2F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift */,
@@ -1227,6 +1232,7 @@
 				A2E100000000000000000004 /* StremioAddonSubtitleProvider.swift */,
 				A2E100000000000000000005 /* SubtitleRanking.swift */,
 				A2E100000000000000000008 /* SubtitleFileHandling.swift */,
+				B1E100000000000000000003 /* SubtitleDocument.swift */,
 				A2E10000000000000000000A /* SubDLSubtitleProvider.swift */,
 				A2E10000000000000000000C /* JimakuSubtitleProvider.swift */,
 				A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */,
@@ -1774,6 +1780,7 @@
 				A11E57102F00000000000001 /* AnimeStructurePolicyTests.swift in Sources */,
 				A1E100000000000000000003 /* SubtitleMetadataResolverTests.swift in Sources */,
 				A2E100000000000000000003 /* SubtitleProviderTests.swift in Sources */,
+				B1E100000000000000000002 /* SubtitleDocumentTests.swift in Sources */,
 				BPSTBF0000000000000001 /* BackupProfileSnapshotTests.swift in Sources */,
 				NUVCMPTSTBF000000000001 /* NuvioRepositoryCompletenessTests.swift in Sources */,
 				A11E57202F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift in Sources */,
@@ -2049,6 +2056,7 @@
 				A2E100000000000000000001 /* StremioAddonSubtitleProvider.swift in Sources */,
 				A2E100000000000000000002 /* SubtitleRanking.swift in Sources */,
 				A2E100000000000000000007 /* SubtitleFileHandling.swift in Sources */,
+				B1E100000000000000000001 /* SubtitleDocument.swift in Sources */,
 				A2E100000000000000000009 /* SubDLSubtitleProvider.swift in Sources */,
 				A2E10000000000000000000B /* JimakuSubtitleProvider.swift in Sources */,
 				A2E10000000000000000000D /* OpenSubtitlesRESTProvider.swift in Sources */,
