@@ -1,9 +1,11 @@
 import Foundation
 
 struct SubtitleReleaseName: Sendable, Equatable {
+    let title: String?
     let season: Int?
     let episode: Int?
     let absoluteEpisode: Int?
+    let revision: Int?
     let group: String?
     let source: String?
     let resolution: String?
@@ -22,14 +24,33 @@ struct SubtitleReleaseName: Sendable, Equatable {
         let source = ["web-dl", "webrip", "blu-ray", "bluray", "bdrip", "hdtv", "dvd"]
             .first(where: lower.contains)
         let resolution = ["2160p", "1080p", "720p", "480p"].first(where: lower.contains)
+        let revision = capture(#"(?i)(?:^|[^a-z])v(\d{1,2})(?:[^0-9]|$)"#, in: value)?
+            .first.flatMap(Int.init)
+        let title = releaseTitle(value)
         return SubtitleReleaseName(
+            title: title,
             season: seasonEpisode?.first.flatMap(Int.init),
             episode: seasonEpisode?.dropFirst().first.flatMap(Int.init),
             absoluteEpisode: (episodeToken ?? animeDash)?.first.flatMap(Int.init),
+            revision: revision,
             group: group,
             source: source,
             resolution: resolution
         )
+    }
+
+    private static func releaseTitle(_ value: String) -> String? {
+        var source = value.replacingOccurrences(of: #"^\[[^\]]{1,40}\]\s*"#, with: "", options: .regularExpression)
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?i)(?:s\d{1,2}[ ._-]*e\d{1,3}|[ ._]-[ ._]*\d{1,3}|(?:^|[^a-z0-9])(?:ep|episode|e)[ ._-]*\d{1,3}|(?:^|[^a-z0-9])(?:2160p|1080p|720p|480p))"#
+        ), let match = regex.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
+           let range = Range(match.range, in: source) {
+            source = String(source[..<range.lowerBound])
+        }
+        let title = source.replacingOccurrences(of: ".", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "-[]")))
+        return title.isEmpty ? nil : title
     }
 
     private static func capture(_ pattern: String, in value: String) -> [String]? {
@@ -45,6 +66,12 @@ struct SubtitleReleaseName: Sendable, Equatable {
 }
 
 enum SubtitleRanking {
+    static func accepts(_ candidate: SubtitleCandidate) -> Bool {
+        if candidate.matchReasons.contains("Video hash eşleşti") { return true }
+        return !candidate.matchReasons.contains("Farklı sezon/bölüm")
+            && !candidate.matchReasons.contains("Farklı bölüm numarası")
+    }
+
     static func score(_ candidate: SubtitleCandidate, for query: SubtitleQuery) -> SubtitleCandidate {
         var result = candidate
         var score = 0

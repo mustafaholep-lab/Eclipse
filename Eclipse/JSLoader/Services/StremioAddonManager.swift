@@ -782,13 +782,18 @@ class StremioAddonManager: ObservableObject {
             for await (addon, subtitles) in group {
                 if Task.isCancelled { group.cancelAll(); break }
                 let provider = StremioAddonSubtitleProvider(addon: addon)
-                results.append(contentsOf: subtitles.map { subtitle in
-                    AddonSubtitleResult(
-                        addon: addon, subtitle: subtitle,
-                        candidate: provider.candidate(for: subtitle, query: searchQuery)
-                    )
+                results.append(contentsOf: subtitles.compactMap { subtitle in
+                    guard let candidate = provider.candidate(for: subtitle, query: searchQuery) else {
+                        return nil
+                    }
+                    return AddonSubtitleResult(addon: addon, subtitle: subtitle, candidate: candidate)
                 })
-                Logger.shared.log("[SubtitleProvider] \(addon.manifest.name) completed candidates=\(subtitles.count) topScores=\(results.filter { $0.addon.id == addon.id }.compactMap { $0.candidate?.score }.sorted(by: >).prefix(3))", type: "Stremio")
+                let topCandidates = results.filter { $0.addon.id == addon.id }
+                    .compactMap(\.candidate)
+                    .sorted { $0.score > $1.score }
+                    .prefix(3)
+                    .map { "\($0.score):\($0.matchReasons.joined(separator: ","))" }
+                Logger.shared.log("[SubtitleProvider] \(addon.manifest.name) raw=\(subtitles.count) accepted=\(results.filter { $0.addon.id == addon.id }.count) topCandidates=\(topCandidates)", type: "Stremio")
                 onBatch?(Self.dedupeSubtitleResults(results))
 
                 if nextIndex < active.count {
@@ -1777,7 +1782,9 @@ class StremioAddonManager: ObservableObject {
                       !url.isEmpty else {
                     return false
                 }
-                return seen.insert("\(result.addon.id.uuidString)|\(url.lowercased())").inserted
+                // Signed URL path/query bytes are case-sensitive. Keep the
+                // first source label for an identical URL across addons.
+                return seen.insert(url).inserted
             }
     }
 

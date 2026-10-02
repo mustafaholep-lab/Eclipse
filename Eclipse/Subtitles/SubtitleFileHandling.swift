@@ -53,6 +53,15 @@ enum SubtitleFileHandling {
         if text.hasPrefix("\u{feff}") { text.removeFirst() }
         text = text.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
+        if format == "srt" || format == "vtt" {
+            text = text.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { line -> String in
+                    var value = String(line)
+                    while value.last == " " || value.last == "\t" { value.removeLast() }
+                    return value
+                }
+                .joined(separator: "\n")
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw SubtitleFileError.empty }
         let hasCues = ["ass", "ssa"].contains(format)
@@ -85,12 +94,13 @@ enum SubtitleFileHandling {
                 && entry.uncompressedSize <= UInt64(maximumBytes)
         }
         guard !entries.isEmpty else { throw SubtitleFileError.noMatchingSubtitle }
-        let selected = entries.max { lhs, rhs in
-            archiveScore(lhs.path, query: query) < archiveScore(rhs.path, query: query)
-        }!
-        guard archiveScore(selected.path, query: query) > -400 else {
+        let ranked = entries.map { (entry: $0, score: archiveScore($0.path, query: query)) }
+            .sorted { $0.score > $1.score }
+        guard let best = ranked.first, best.score > -400,
+              ranked.count == 1 || best.score > ranked[1].score else {
             throw SubtitleFileError.noMatchingSubtitle
         }
+        let selected = best.entry
         var extracted = Data()
         do {
             _ = try archive.extract(selected, bufferSize: 64 * 1_024, skipCRC32: false, progress: nil) { chunk in

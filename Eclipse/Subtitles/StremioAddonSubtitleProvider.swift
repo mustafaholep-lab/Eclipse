@@ -15,43 +15,48 @@ enum StremioSubtitleRequestPlanner {
         addonName: String
     ) -> [StremioSubtitleAttempt] {
         let types = query.mediaKind.stremioTypes.filter { supportedTypes.contains($0) }
-        var result: [StremioSubtitleAttempt] = []
-        for type in types {
-            var ids = StremioClient.shared.buildContentIds(
-                tmdbId: query.ids.tmdb ?? 0,
-                imdbId: query.ids.imdb,
-                type: type,
-                season: query.season,
-                episode: query.episode,
-                anilistId: query.ids.anilist,
-                anilistSeason: query.ids.anilist == nil ? nil : 1,
-                anilistEpisode: query.animeEpisode,
-                kitsuId: query.ids.kitsu,
-                kitsuEpisode: query.animeEpisode,
-                malId: query.ids.mal,
-                malEpisode: query.animeEpisode,
-                alternateSeason: query.animeSeason,
-                alternateEpisode: query.animeEpisode,
-                idPrefixes: idPrefixes,
-                addonName: addonName
-            )
-            if query.isAnime {
-                ids.sort { lhs, rhs in
-                    let left = animeIDPriority(lhs)
-                    let right = animeIDPriority(rhs)
-                    return left == right ? false : left < right
-                }
+        guard let firstType = types.first else { return [] }
+        var ids = StremioClient.shared.buildContentIds(
+            tmdbId: query.ids.tmdb ?? 0,
+            imdbId: query.ids.imdb,
+            type: firstType,
+            season: query.season,
+            episode: query.episode,
+            anilistId: query.ids.anilist,
+            anilistSeason: query.ids.anilist == nil ? nil : 1,
+            anilistEpisode: query.animeEpisode,
+            kitsuId: query.ids.kitsu,
+            kitsuEpisode: query.animeEpisode,
+            malId: query.ids.mal,
+            malEpisode: query.animeEpisode,
+            alternateSeason: query.animeSeason,
+            alternateEpisode: query.animeEpisode,
+            idPrefixes: idPrefixes,
+            addonName: addonName
+        )
+        if query.isAnime {
+            ids.sort { lhs, rhs in
+                let left = animeIDRank(lhs)
+                let right = animeIDRank(rhs)
+                return left == right ? false : left < right
             }
-            result += ids.map { StremioSubtitleAttempt(type: type, id: $0) }
         }
-        return result
+        // Try both resource types for a strong identity before spending the
+        // provider budget on lower-confidence IDs. This makes anime fallback
+        // reachable even when each empty request takes several seconds.
+        return ids.flatMap { id in
+            types.map { StremioSubtitleAttempt(type: $0, id: id) }
+        }
     }
 
-    private static func animeIDPriority(_ id: String) -> Int {
-        if id.hasPrefix("anilist:") { return 0 }
+    private static func animeIDRank(_ id: String) -> Int {
+        let shortAlternate = (id.hasPrefix("anilist:") || id.hasPrefix("mal:"))
+            && id.split(separator: ":").count == 3
+        let variantPenalty = shortAlternate ? 10 : 0
+        if id.hasPrefix("anilist:") { return variantPenalty }
         if id.hasPrefix("kitsu:") { return 1 }
-        if id.hasPrefix("mal:") { return 2 }
-        if id.hasPrefix("tt") || id.hasPrefix("imdb:") { return 3 }
+        if id.hasPrefix("tt") || id.hasPrefix("imdb:") { return 2 }
+        if id.hasPrefix("mal:") { return 3 + variantPenalty }
         return 4
     }
 }
@@ -95,7 +100,8 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
                 score: 0,
                 matchReasons: []
             )
-            return SubtitleRanking.score(candidate, for: query)
+            let ranked = SubtitleRanking.score(candidate, for: query)
+            return SubtitleRanking.accepts(ranked) ? ranked : nil
     }
 
     func download(_ candidate: SubtitleCandidate) async throws -> Data {
@@ -133,8 +139,9 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
         var found: [StremioSubtitle] = []
         var emptyCount = 0
         var failureCount = 0
+        let deadline = Date().addingTimeInterval(8)
         for attempt in attempts {
-            if Task.isCancelled { break }
+            if Task.isCancelled || Date() >= deadline { break }
             do {
                 let fetched = try await StremioClient.shared.fetchSubtitles(
                     baseURL: configuredURL,
@@ -142,14 +149,17 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
                     id: attempt.id,
                     videoHash: query.videoHash,
                     videoSize: query.fileSize,
-                    filename: query.fileName
+                    filename: query.fileName,
+                    timeout: max(0.5, deadline.timeIntervalSinceNow)
                 )
                 Logger.shared.log("[SubtitleProvider] \(displayName) type=\(attempt.type) id=\(attempt.id) candidates=\(fetched.count)", type: "Stremio")
                 found += fetched
                 if fetched.isEmpty { emptyCount += 1 }
-                if fetched.isEmpty && (query.videoHash != nil || query.fileSize != nil || query.fileName != nil) {
+                if fetched.isEmpty && Date() < deadline
+                    && (query.videoHash != nil || query.fileSize != nil || query.fileName != nil) {
                     let fallback = (try? await StremioClient.shared.fetchSubtitles(
-                        baseURL: configuredURL, type: attempt.type, id: attempt.id
+                        baseURL: configuredURL, type: attempt.type, id: attempt.id,
+                        timeout: max(0.5, deadline.timeIntervalSinceNow)
                     )) ?? []
                     found += fallback
                     Logger.shared.log("[SubtitleProvider] \(displayName) type=\(attempt.type) ID-only fallback candidates=\(fallback.count)", type: "Stremio")
@@ -157,19 +167,21 @@ struct StremioAddonSubtitleProvider: SubtitleProvider {
             } catch {
                 failureCount += 1
                 Logger.shared.log("[SubtitleProvider] \(displayName) type=\(attempt.type) id=\(attempt.id) failed=\(servicePinnedNetworkErrorToken(error))", type: "Stremio")
-                if query.videoHash != nil || query.fileSize != nil || query.fileName != nil {
+                if Date() < deadline
+                    && (query.videoHash != nil || query.fileSize != nil || query.fileName != nil) {
                     found += (try? await StremioClient.shared.fetchSubtitles(
-                        baseURL: configuredURL, type: attempt.type, id: attempt.id
+                        baseURL: configuredURL, type: attempt.type, id: attempt.id,
+                        timeout: max(0.5, deadline.timeIntervalSinceNow)
                     )) ?? []
                 }
             }
             // A subtitle endpoint returns the complete list for one video ID.
             // Prefer the first matching identity rather than delaying its UI
             // publication behind every lower-priority alias.
-            if !found.isEmpty { break }
+            if found.contains(where: { candidate(for: $0, query: query) != nil }) { break }
         }
         if found.isEmpty {
-            Logger.shared.log("[SubtitleProvider] \(displayName) no candidates; emptyResponses=\(emptyCount) failures=\(failureCount) attempted=\(attempts.count) (identity/type mismatch remains possible)", type: "Stremio")
+            Logger.shared.log("[SubtitleProvider] \(displayName) no candidates; emptyResponses=\(emptyCount) failures=\(failureCount) planned=\(attempts.count) deadlineReached=\(Date() >= deadline) (identity/type mismatch remains possible)", type: "Stremio")
         }
         var seen = Set<String>()
         return found.filter { subtitle in

@@ -337,7 +337,8 @@ final class StremioClient {
         id: String,
         videoHash: String? = nil,
         videoSize: Int64? = nil,
-        filename: String? = nil
+        filename: String? = nil,
+        timeout: TimeInterval = 8
     ) async throws -> [StremioSubtitle] {
         guard let url = subtitleRequestURL(
             baseURL: baseURL, type: type, id: id,
@@ -350,7 +351,7 @@ final class StremioClient {
         )
 
         let (data, response) = try await boundedData(
-            for: URLRequest(url: url, timeoutInterval: 8),
+            for: URLRequest(url: url, timeoutInterval: max(0.5, min(timeout, 15))),
             configuredBaseURL: baseURL,
             maximumResponseBytes: Self.maximumSubtitleResponseBytes
         )

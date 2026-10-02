@@ -31,6 +31,11 @@
 		A2E100000000000000000007 /* SubtitleFileHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000008 /* SubtitleFileHandling.swift */; };
 		A2E100000000000000000009 /* SubDLSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000A /* SubDLSubtitleProvider.swift */; };
 		A2E10000000000000000000B /* JimakuSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000C /* JimakuSubtitleProvider.swift */; };
+		A2E10000000000000000000D /* OpenSubtitlesRESTProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */; };
+		A2E10000000000000000000F /* SubtitleProviderConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000010 /* SubtitleProviderConfiguration.swift */; };
+		A2E100000000000000000011 /* SubtitleProviderSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000012 /* SubtitleProviderSettingsView.swift */; };
+		A2E100000000000000000013 /* SubtitleProviderSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000014 /* SubtitleProviderSearchCoordinator.swift */; };
+		A2E100000000000000000015 /* SubtitleMovieHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000016 /* SubtitleMovieHash.swift */; };
 		BPSTBF0000000000000001 /* BackupProfileSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */; };
 		NUVCMPTSTBF000000000001 /* NuvioRepositoryCompletenessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */; };
 		A11E57202F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E571E2F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift */; };
@@ -404,6 +409,11 @@
 		A2E100000000000000000008 /* SubtitleFileHandling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleFileHandling.swift; sourceTree = "<group>"; };
 		A2E10000000000000000000A /* SubDLSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubDLSubtitleProvider.swift; sourceTree = "<group>"; };
 		A2E10000000000000000000C /* JimakuSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JimakuSubtitleProvider.swift; sourceTree = "<group>"; };
+		A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSubtitlesRESTProvider.swift; sourceTree = "<group>"; };
+		A2E100000000000000000010 /* SubtitleProviderConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderConfiguration.swift; sourceTree = "<group>"; };
+		A2E100000000000000000012 /* SubtitleProviderSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderSettingsView.swift; sourceTree = "<group>"; };
+		A2E100000000000000000014 /* SubtitleProviderSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderSearchCoordinator.swift; sourceTree = "<group>"; };
+		A2E100000000000000000016 /* SubtitleMovieHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleMovieHash.swift; sourceTree = "<group>"; };
 		BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupProfileSnapshotTests.swift; sourceTree = "<group>"; };
 		NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioRepositoryCompletenessTests.swift; sourceTree = "<group>"; };
 		RXCTSTFR0000000000000001 /* ReaderExtensionCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderExtensionCoreTests.swift; sourceTree = "<group>"; };
@@ -1219,6 +1229,11 @@
 				A2E100000000000000000008 /* SubtitleFileHandling.swift */,
 				A2E10000000000000000000A /* SubDLSubtitleProvider.swift */,
 				A2E10000000000000000000C /* JimakuSubtitleProvider.swift */,
+				A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */,
+				A2E100000000000000000010 /* SubtitleProviderConfiguration.swift */,
+				A2E100000000000000000012 /* SubtitleProviderSettingsView.swift */,
+				A2E100000000000000000014 /* SubtitleProviderSearchCoordinator.swift */,
+				A2E100000000000000000016 /* SubtitleMovieHash.swift */,
 			);
 			path = Subtitles;
 			sourceTree = "<group>";
@@ -2036,6 +2051,11 @@
 				A2E100000000000000000007 /* SubtitleFileHandling.swift in Sources */,
 				A2E100000000000000000009 /* SubDLSubtitleProvider.swift in Sources */,
 				A2E10000000000000000000B /* JimakuSubtitleProvider.swift in Sources */,
+				A2E10000000000000000000D /* OpenSubtitlesRESTProvider.swift in Sources */,
+				A2E10000000000000000000F /* SubtitleProviderConfiguration.swift in Sources */,
+				A2E100000000000000000011 /* SubtitleProviderSettingsView.swift in Sources */,
+				A2E100000000000000000013 /* SubtitleProviderSearchCoordinator.swift in Sources */,
+				A2E100000000000000000015 /* SubtitleMovieHash.swift in Sources */,
 				13E1EDE82ED9E66000087629 /* MainMenu.swift in Sources */,
 				13E1EDE32ED9E66000087629 /* readerSettingsView.swift in Sources */,
 				13F0725F2E4B2D3300EF90EB /* SoraApp.swift in Sources */,

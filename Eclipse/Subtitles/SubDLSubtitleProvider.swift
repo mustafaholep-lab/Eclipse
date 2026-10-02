@@ -44,7 +44,7 @@ struct SubDLSubtitleProvider: SubtitleProvider {
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 throw URLError(.badServerResponse)
             }
-            for candidate in try decodeCandidates(data, query: query) {
+            for candidate in try decodeCandidates(data, query: query) where SubtitleRanking.accepts(candidate) {
                 if seen.insert(candidate.id).inserted { candidates.append(candidate) }
             }
             if !candidates.isEmpty { break }
@@ -78,7 +78,8 @@ struct SubDLSubtitleProvider: SubtitleProvider {
             for: request, maximumResponseBytes: 512 * 1_024
         )
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-              (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else {
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["status"] as? Bool != false else {
             throw SubDLError.invalidKey
         }
     }

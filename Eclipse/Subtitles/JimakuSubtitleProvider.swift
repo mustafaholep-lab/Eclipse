@@ -22,22 +22,21 @@ struct JimakuSubtitleProvider: SubtitleProvider {
     func search(_ query: SubtitleQuery) async throws -> [SubtitleCandidate] {
         guard !apiKey.isEmpty else { return [] }
         let searches = searchURLs(query: query)
-        var entries: [Entry] = []
+        var results: [SubtitleCandidate] = []
+        var seen = Set<String>()
         for url in searches {
             try Task.checkCancellation()
             let data = try await get(url, maximumBytes: 512 * 1_024)
-            entries = try JSONDecoder().decode([Entry].self, from: data)
-            if !entries.isEmpty { break }
-        }
-        guard !entries.isEmpty else { return [] }
-        var results: [SubtitleCandidate] = []
-        var seen = Set<String>()
-        for entry in entries.prefix(3) {
-            guard let url = filesURL(entryID: entry.id, episode: query.animeEpisode ?? query.episode) else { continue }
-            let data = try await get(url, maximumBytes: 2 * 1_024 * 1_024)
-            for candidate in try decodeCandidates(data, query: query) where seen.insert(candidate.id).inserted {
-                results.append(candidate)
+            let entries = try JSONDecoder().decode([Entry].self, from: data)
+            for entry in entries.prefix(3) {
+                guard let url = filesURL(entryID: entry.id, episode: query.animeEpisode ?? query.episode) else { continue }
+                let data = try await get(url, maximumBytes: 2 * 1_024 * 1_024)
+                for candidate in try decodeCandidates(data, query: query)
+                    where SubtitleRanking.accepts(candidate) && seen.insert(candidate.id).inserted {
+                    results.append(candidate)
+                }
             }
+            if !results.isEmpty { break }
         }
         return results.sorted { $0.score > $1.score }
     }
