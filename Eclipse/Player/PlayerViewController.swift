@@ -3027,19 +3027,44 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private var directSubtitlePreviewTask: Task<Void, Never>?
     private var directSubtitlePreviewCache: (key: String, prepared: PreparedSubtitleFile)?
     private var directSubtitleFetchInProgress = false
+    private var manualSubtitleSearchLanguage: String?
     private var directSubtitleSearchAttempted = false
     private var directSubtitleDownloadError: String?
     private enum AITranslationSource {
-        case direct(SubtitleCandidate)
+        case direct(SubtitleCandidate, URL?)
         case stremio(StremioAddonManager.AddonSubtitleResult)
 
         var candidate: SubtitleCandidate? {
             switch self {
-            case .direct(let candidate): return candidate
+            case .direct(let candidate, _): return candidate
             case .stremio(let result): return result.candidate
             }
         }
+
+        var selectedURL: String? {
+            switch self {
+            case .direct(_, let url): return url?.absoluteString
+            case .stremio(let result): return result.subtitle.url
+            }
+        }
+
+        var language: String? {
+            switch self {
+            case .direct(let candidate, _): return candidate.language
+            case .stremio(let result): return result.subtitle.lang ?? result.candidate?.language
+            }
+        }
+
+        var format: String? {
+            switch self {
+            case .direct(let candidate, let url): return url?.pathExtension ?? candidate.format
+            case .stremio(let result):
+                return result.candidate?.format ?? result.subtitle.url.flatMap { URL(string: $0)?.pathExtension }
+            }
+        }
     }
+    private var explicitlySelectedAISource: AITranslationSource?
+    private var explicitAISourceSelection = ExplicitAISourceSelection()
 
 #if DEBUG
     private func traceMPVSeek(kind: String, value: Double) {
@@ -4718,6 +4743,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         directSubtitleFetchInProgress = false
         directSubtitleSearchAttempted = false
         directSubtitleDownloadError = nil
+        manualSubtitleSearchLanguage = nil
+        explicitlySelectedAISource = nil
+        explicitAISourceSelection.beginMedia(generation: playbackLoadGeneration)
         onlineSubtitleLoadedURLs.removeAll()
         onlineSubtitleLoadedTrackNames.removeAll()
         onlineSubtitleLoadedRendererTrackIds.removeAll()
@@ -11989,6 +12017,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             ]))
         }
 
+        if let status = manualSubtitleSearchStatus {
+            sections.append(PlayerOverlayMenuSection(title: "Manual Search", actions: [
+                makeOverlayAction(title: status, imageName: "magnifyingglass", isEnabled: false) {}
+            ]))
+        }
+
         if hasStremioSubtitleAddons {
             sections.append(PlayerOverlayMenuSection(title: String(localized: "Stremio Subtitles"), actions: stremioSubtitleOverlayActions()))
         }
@@ -12025,16 +12059,19 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func stremioSubtitleOverlayActions() -> [PlayerOverlayMenuAction] {
-        if stremioSubtitleFetchInProgress && stremioSubtitleResults.isEmpty {
+        let results = visibleStremioSubtitleResults
+        if stremioSubtitleFetchInProgress && results.isEmpty {
             return [makeOverlayAction(title: "Searching subtitle addons...", imageName: "hourglass", isEnabled: false) {}]
         }
-        if stremioSubtitleResults.isEmpty {
+        if results.isEmpty {
             if stremioSubtitleSearchAttempted {
                 let failed = stremioSubtitleDiagnostics.values.contains {
                     $0 == "request-or-parse-failed" || $0 == "timeout"
                 }
                 return [
-                    makeOverlayAction(title: failed ? "Subtitle addon unavailable" : "No subtitle addon results",
+                    makeOverlayAction(title: failed ? "Subtitle addon unavailable" :
+                                      (manualSubtitleSearchLanguage.map { "No \($0.uppercased()) subtitle addon results" }
+                                       ?? "No subtitle addon results"),
                                       imageName: failed ? "exclamationmark.triangle" : "captions.bubble", isEnabled: false) {},
                     makeOverlayAction(title: "Refresh subtitle addons", imageName: "arrow.clockwise") { [weak self] in
                         self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
@@ -12059,7 +12096,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.hideOverlayMenu()
             })
         }
-        actions.append(contentsOf: stremioSubtitleResults.prefix(20).enumerated().map { pair in
+        actions.append(contentsOf: results.prefix(20).enumerated().map { pair in
             let index = pair.offset
             let result = pair.element
             let selected = isOnlineSubtitleSelected(result.subtitle.url)
@@ -12073,6 +12110,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func directSubtitleOverlayActions() -> [PlayerOverlayMenuAction] {
         var actions: [PlayerOverlayMenuAction] = []
+        let results = visibleDirectSubtitleResults
         if directSubtitleFetchInProgress {
             actions.append(makeOverlayAction(title: String(localized: "Searching direct providers..."), imageName: "hourglass", isEnabled: false) {})
         } else {
@@ -12087,18 +12125,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if let error = directSubtitleDownloadError {
             actions.append(makeOverlayAction(title: error, imageName: "exclamationmark.triangle", isEnabled: false) {})
         }
-        if directSubtitleSearchAttempted && !directSubtitleFetchInProgress && directSubtitleResults.isEmpty {
+        if directSubtitleSearchAttempted && !directSubtitleFetchInProgress && results.isEmpty {
             let failed = directSubtitleSearchBatches.contains { $0.diagnostic == "request-or-parse-failed" || $0.diagnostic == "circuit-open" }
-            actions.append(makeOverlayAction(title: failed ? String(localized: "Subtitle provider unavailable") : String(localized: "No direct provider results"),
+            actions.append(makeOverlayAction(title: failed ? String(localized: "Subtitle provider unavailable") :
+                                             (manualSubtitleSearchLanguage.map { "No \($0.uppercased()) direct provider results" }
+                                              ?? String(localized: "No direct provider results")),
                                              imageName: failed ? "exclamationmark.triangle" : "captions.bubble", isEnabled: false) {})
         }
-        actions.append(contentsOf: directSubtitleResults.prefix(20).map { candidate in
+        actions.append(contentsOf: results.prefix(20).map { candidate in
             makeOverlayAction(title: directSubtitleDisplayName(candidate), imageName: "captions.bubble") { [weak self] in
                 self?.loadDirectSubtitle(candidate)
                 self?.hideOverlayMenu()
             }
         })
-        actions.append(contentsOf: directSubtitleResults.prefix(3).map { candidate in
+        actions.append(contentsOf: results.prefix(3).map { candidate in
             makeOverlayAction(title: String(format: String(localized: "Önizleme · %@"), directSubtitleStableName(candidate)), imageName: "eye") { [weak self] in
                 self?.hideOverlayMenu()
                 self?.previewDirectSubtitle(candidate)
@@ -12434,7 +12474,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "enabled=\(hasStremioSubtitleAddons)",
             "fetching=\(stremioSubtitleFetchInProgress)",
             "searched=\(stremioSubtitleSearchAttempted)",
-            stremioSubtitleResults.prefix(20).map {
+            visibleStremioSubtitleResults.prefix(20).map {
                 "\($0.addon.id):\(stremioSubtitleDisplayName($0)):\($0.subtitle.id ?? ""):\($0.subtitle.url ?? ""):\(isOnlineSubtitleSelected($0.subtitle.url))"
             }.joined(separator: "|")
         ].joined(separator: ";")
@@ -12446,6 +12486,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 "\($0.id ?? ""):\(openSubtitleDisplayName($0)):\($0.url ?? "")"
             }.joined(separator: "|")
         ].joined(separator: ";")
+        let directMenuSignature = [
+            "enabled=\(hasDirectSubtitleProviders)",
+            "fetching=\(directSubtitleFetchInProgress)",
+            "searched=\(directSubtitleSearchAttempted)",
+            visibleDirectSubtitleResults.prefix(20).map {
+                "\($0.providerID):\($0.id):\(directSubtitleDisplayName($0))"
+            }.joined(separator: "|")
+        ].joined(separator: ";")
         let appearanceEnabled = !isVLCPlayer && Settings.shared.playerSubtitleAppearanceEnabled
         let menuSignature = [
             "native",
@@ -12454,7 +12502,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             "external=\(externalTrackSignature)",
             "nativeTracks=\(nativeTrackMenuSignature)",
             "stremio=\(stremioMenuSignature)",
+            "manualSearch=\(manualSubtitleSearchStatus ?? "none")",
             "openSubtitles=\(openSubtitlesMenuSignature)",
+            "direct=\(directMenuSignature)",
             "ai=\(aiTranslationStatus ?? "none")|\(aiTranslationFileURL?.absoluteString ?? "none")",
             "subtitleSync=\(String(format: "%.2f", subtitleDelaySeconds))",
             "appearance=\(appearanceEnabled)",
@@ -12580,6 +12630,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             menuChildren.append(UIAction(title: String(localized: "Manual Subtitle Search…"), image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
                 self?.presentManualSubtitleSearch()
             })
+        }
+        if let status = manualSubtitleSearchStatus {
+            menuChildren.append(UIAction(title: status, image: UIImage(systemName: "magnifyingglass"),
+                                         attributes: .disabled) { _ in })
         }
         if let stremioMenu = stremioSubtitleMenu() {
             menuChildren.append(stremioMenu)
@@ -12748,15 +12802,18 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         guard hasStremioSubtitleAddons else { return nil }
 
         var actions: [UIMenuElement] = []
+        let results = visibleStremioSubtitleResults
 
-        if stremioSubtitleFetchInProgress && stremioSubtitleResults.isEmpty {
+        if stremioSubtitleFetchInProgress && results.isEmpty {
             actions.append(UIAction(title: "Searching subtitle addons...", image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
-        } else if stremioSubtitleResults.isEmpty {
+        } else if results.isEmpty {
             if stremioSubtitleSearchAttempted {
                 let failed = stremioSubtitleDiagnostics.values.contains {
                     $0 == "request-or-parse-failed" || $0 == "timeout"
                 }
-                actions.append(UIAction(title: failed ? "Subtitle addon unavailable" : "No subtitle addon results",
+                actions.append(UIAction(title: failed ? "Subtitle addon unavailable" :
+                                        (manualSubtitleSearchLanguage.map { "No \($0.uppercased()) subtitle addon results" }
+                                         ?? "No subtitle addon results"),
                                         image: UIImage(systemName: failed ? "exclamationmark.triangle" : "captions.bubble"),
                                         attributes: .disabled) { _ in })
                 actions.append(UIAction(title: "Refresh subtitle addons", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
@@ -12776,7 +12833,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 })
             }
 
-            let subtitleActions: [UIMenuElement] = stremioSubtitleResults.prefix(20).enumerated().map { pair in
+            let subtitleActions: [UIMenuElement] = results.prefix(20).enumerated().map { pair in
                 let index = pair.offset
                 let result = pair.element
                 return UIAction(
@@ -12796,6 +12853,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func directSubtitleMenu() -> UIMenu? {
         guard hasDirectSubtitleProviders else { return nil }
         var actions: [UIMenuElement] = []
+        let results = visibleDirectSubtitleResults
         if directSubtitleFetchInProgress {
             actions.append(UIAction(title: String(localized: "Searching direct providers..."), image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
         } else {
@@ -12809,18 +12867,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if let error = directSubtitleDownloadError {
             actions.append(UIAction(title: error, image: UIImage(systemName: "exclamationmark.triangle"), attributes: .disabled) { _ in })
         }
-        if directSubtitleSearchAttempted && !directSubtitleFetchInProgress && directSubtitleResults.isEmpty {
+        if directSubtitleSearchAttempted && !directSubtitleFetchInProgress && results.isEmpty {
             let failed = directSubtitleSearchBatches.contains { $0.diagnostic == "request-or-parse-failed" || $0.diagnostic == "circuit-open" }
-            actions.append(UIAction(title: failed ? String(localized: "Subtitle provider unavailable") : String(localized: "No direct provider results"),
+            actions.append(UIAction(title: failed ? String(localized: "Subtitle provider unavailable") :
+                                    (manualSubtitleSearchLanguage.map { "No \($0.uppercased()) direct provider results" }
+                                     ?? String(localized: "No direct provider results")),
                                     image: UIImage(systemName: failed ? "exclamationmark.triangle" : "captions.bubble"),
                                     attributes: .disabled) { _ in })
         }
-        actions += directSubtitleResults.prefix(20).map { candidate in
+        actions += results.prefix(20).map { candidate in
             UIAction(title: directSubtitleDisplayName(candidate), image: UIImage(systemName: "captions.bubble")) { [weak self] _ in
                 self?.loadDirectSubtitle(candidate)
             }
         }
-        actions += directSubtitleResults.prefix(3).map { candidate in
+        actions += results.prefix(3).map { candidate in
             UIAction(title: String(format: String(localized: "Önizleme · %@"), directSubtitleStableName(candidate)), image: UIImage(systemName: "eye")) { [weak self] _ in
                 self?.previewDirectSubtitle(candidate)
             }
@@ -13209,6 +13269,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func fetchStremioSubtitles(autoSelect: Bool, reason: String, forceRefresh: Bool = false,
                                       manualQuery: SubtitleQuery? = nil) {
+        if manualQuery == nil { manualSubtitleSearchLanguage = nil }
         guard hasStremioSubtitleAddons else { return }
         if stremioSubtitleFetchInProgress && !forceRefresh { return }
         if !forceRefresh, !stremioSubtitleResults.isEmpty {
@@ -13591,11 +13652,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func sortedStremioSubtitleResults(_ results: [StremioAddonManager.AddonSubtitleResult]) -> [StremioAddonManager.AddonSubtitleResult] {
-        let preferredLang = automaticSubtitleSelectionLanguage
+        let preferredLang = manualSubtitleSearchLanguage ?? automaticSubtitleSelectionLanguage
         let rememberedProvider = rememberedSubtitleProviderID
         return results.sorted { lhs, rhs in
-            let lhsMatch = openSubtitleMatchesPreferredLanguage(lhs.subtitle, preferredLang: preferredLang)
-            let rhsMatch = openSubtitleMatchesPreferredLanguage(rhs.subtitle, preferredLang: preferredLang)
+            let lhsMatch = manualSubtitleSearchLanguage == nil
+                ? openSubtitleMatchesPreferredLanguage(lhs.subtitle, preferredLang: preferredLang)
+                : subtitleMatchesManualLanguage(lhs.subtitle, language: preferredLang)
+            let rhsMatch = manualSubtitleSearchLanguage == nil
+                ? openSubtitleMatchesPreferredLanguage(rhs.subtitle, preferredLang: preferredLang)
+                : subtitleMatchesManualLanguage(rhs.subtitle, language: preferredLang)
             if lhsMatch != rhsMatch { return lhsMatch && !rhsMatch }
             let lhsScore = lhs.candidate?.score ?? 0
             let rhsScore = rhs.candidate?.score ?? 0
@@ -13724,6 +13789,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         let displayName = stremioSubtitleDisplayName(result)
         if userSelected {
+            explicitlySelectedAISource = .stremio(result)
+            explicitAISourceSelection.select(url: urlString, generation: playbackLoadGeneration)
             recordUserSubtitleSelection(
                 enabled: true,
                 languageTag: result.subtitle.lang,
@@ -13918,6 +13985,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
     }
 
+    private func subtitleMatchesManualLanguage(_ subtitle: StremioSubtitle, language: String) -> Bool {
+        if let declared = StremioSubtitleLanguagePolicy.canonicalCode(subtitle.lang) {
+            return declared == language
+        }
+        return StremioSubtitleLanguagePolicy.matches(subtitle, preferredLanguage: language)
+    }
+
     private var hasDirectSubtitleProviders: Bool {
         !SubtitleProviderConfiguration.activeProviders().isEmpty
     }
@@ -13985,14 +14059,18 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 language: fields[4].text ?? ""
             )
             let searchQuery = edits.applying(to: query)
+            self.manualSubtitleSearchLanguage = StremioSubtitleLanguagePolicy.canonicalCode(edits.language)
             self.fetchStremioSubtitles(autoSelect: false, reason: "manual-query", forceRefresh: true,
                                        manualQuery: searchQuery)
             self.fetchDirectSubtitles(forceRefresh: true, manualQuery: searchQuery)
+            self.updateSubtitleTracksMenu()
+            self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")
         })
         present(form, animated: true)
     }
 
     private func fetchDirectSubtitles(forceRefresh: Bool = false, manualQuery: SubtitleQuery? = nil) {
+        if manualQuery == nil { manualSubtitleSearchLanguage = nil }
         guard hasDirectSubtitleProviders, (!directSubtitleFetchInProgress || forceRefresh) else { return }
         if !forceRefresh, !directSubtitleResults.isEmpty { return }
         guard let request = activePlaybackRequest else { return }
@@ -14051,11 +14129,46 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         return batches.flatMap(\.candidates)
             .filter { seen.insert("\($0.providerID):\($0.id)").inserted }
             .sorted { lhs, rhs in
+                if let language = manualSubtitleSearchLanguage {
+                    let lhsMatches = StremioSubtitleLanguagePolicy.canonicalCode(lhs.language) == language
+                    let rhsMatches = StremioSubtitleLanguagePolicy.canonicalCode(rhs.language) == language
+                    if lhsMatches != rhsMatches { return lhsMatches }
+                }
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
                 if lhs.providerID == rememberedProvider && rhs.providerID != rememberedProvider { return true }
                 if rhs.providerID == rememberedProvider && lhs.providerID != rememberedProvider { return false }
                 return lhs.id < rhs.id
             }
+    }
+
+    private var visibleStremioSubtitleResults: [StremioAddonManager.AddonSubtitleResult] {
+        SubtitleManualResultPolicy.visible(stremioSubtitleResults, language: manualSubtitleSearchLanguage) {
+            subtitleMatchesManualLanguage($0.subtitle, language: $1)
+        }
+    }
+
+    private var visibleDirectSubtitleResults: [SubtitleCandidate] {
+        SubtitleManualResultPolicy.visible(directSubtitleResults, language: manualSubtitleSearchLanguage) {
+            StremioSubtitleLanguagePolicy.canonicalCode($0.language) == $1
+        }
+    }
+
+    private var manualSubtitleSearchStatus: String? {
+        guard let language = manualSubtitleSearchLanguage else { return nil }
+        let label = language.uppercased()
+        if stremioSubtitleFetchInProgress || directSubtitleFetchInProgress {
+            return "Searching \(label) subtitles…"
+        }
+        let count = visibleStremioSubtitleResults.count + visibleDirectSubtitleResults.count
+        if count > 0 { return "\(label) · \(count) online subtitle results" }
+        let addonFailed = stremioSubtitleDiagnostics.values.contains {
+            $0 == "request-or-parse-failed" || $0 == "timeout"
+        }
+        let directFailed = directSubtitleSearchBatches.contains {
+            $0.diagnostic == "request-or-parse-failed" || $0.diagnostic == "circuit-open"
+        }
+        if addonFailed || directFailed { return "\(label) subtitle provider unavailable" }
+        return "No \(label) online subtitles found"
     }
 
     private var aiTranslationCandidates: [SubtitleCandidate] {
@@ -14065,12 +14178,47 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func bestAIEnglishSource() -> AITranslationSource? {
         guard let best = SubtitleTranslationSourcePolicy.bestEnglish(aiTranslationCandidates) else { return nil }
         if let direct = directSubtitleResults.first(where: { $0.providerID == best.providerID && $0.id == best.id }) {
-            return .direct(direct)
+            return .direct(direct, nil)
         }
         if let addon = stremioSubtitleResults.first(where: {
             $0.candidate?.providerID == best.providerID && $0.candidate?.id == best.id
         }) { return .stremio(addon) }
         return nil
+    }
+
+    private func selectedAIEnglishSource() -> AITranslationSource? {
+        guard userSelectedSubtitleTrack,
+              let source = explicitlySelectedAISource,
+              let url = source.selectedURL,
+              explicitAISourceSelection.isCurrent(url: url, generation: playbackLoadGeneration,
+                                                  isActiveTrack: isOnlineSubtitleSelected(url)),
+              SubtitleTranslationSourcePolicy.selectedEnglish(
+                language: source.language, format: source.format,
+                isMachineTranslated: source.candidate?.isMachineTranslated ?? false
+              ) else { return nil }
+        switch source {
+        case .direct(_, let file):
+            guard let file, FileManager.default.fileExists(atPath: file.path) else { return nil }
+        case .stremio:
+            guard let parsed = URL(string: url), ["https", "http"].contains(parsed.scheme?.lowercased() ?? "") else {
+                return nil
+            }
+        }
+        return source
+    }
+
+    private func sourceForAITranslation(userConfirmed: Bool) -> AITranslationSource? {
+        if userConfirmed && userSelectedSubtitleTrack { return selectedAIEnglishSource() }
+        return bestAIEnglishSource()
+    }
+
+    private var selectedEmbeddedAIUnavailableStatus: String? {
+        guard userSelectedSubtitleTrack,
+              case .embedded(let trackID) = vlcSubtitleSelection,
+              let track = nativeSubtitleTracksForMenu(canReadNativeTracks: true).first(where: { $0.id == trackID }),
+              StremioSubtitleLanguagePolicy.canonicalCode(track.name) == "en" else { return nil }
+        // The MPV wrapper exposes the selected track and current cue, not the complete timed text.
+        return String(localized: "Seçili gömülü altyazı AI çeviriye uygun değil")
     }
 
     private var hasHumanTurkishForAI: Bool {
@@ -14104,7 +14252,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.selectAITranslationFile()
             })
         }
-        if let source = bestAIEnglishSource(), !aiTranslationStarted || aiTranslationFailed {
+        if let status = selectedEmbeddedAIUnavailableStatus {
+            actions.append(UIAction(title: status, image: UIImage(systemName: "exclamationmark.triangle"),
+                                    attributes: .disabled) { _ in })
+        }
+        if let source = sourceForAITranslation(userConfirmed: true), !aiTranslationStarted || aiTranslationFailed {
             actions.append(UIAction(title: aiTranslationStarted ? String(localized: "Tekrar dene") : String(localized: "Türkçeye AI ile çevir"),
                                     image: UIImage(systemName: "sparkles")) { [weak self] _ in
                 self?.startAITranslation(source: source, userConfirmed: true)
@@ -14125,7 +14277,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self?.hideOverlayMenu()
             })
         }
-        if let source = bestAIEnglishSource(), !aiTranslationStarted || aiTranslationFailed {
+        if let status = selectedEmbeddedAIUnavailableStatus {
+            actions.append(makeOverlayAction(title: status, imageName: "exclamationmark.triangle", isEnabled: false) {})
+        }
+        if let source = sourceForAITranslation(userConfirmed: true), !aiTranslationStarted || aiTranslationFailed {
             actions.append(makeOverlayAction(title: aiTranslationStarted ? String(localized: "Tekrar dene") : String(localized: "Türkçeye AI ile çevir"),
                 imageName: "sparkles") { [weak self] in
                 self?.startAITranslation(source: source, userConfirmed: true)
@@ -14198,6 +14353,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func startAITranslation(source: AITranslationSource, userConfirmed: Bool) {
         let mode = SubtitleTranslationSettings.mode
+        if userConfirmed && userSelectedSubtitleTrack {
+            guard let selected = selectedAIEnglishSource(),
+                  selected.selectedURL == source.selectedURL else { return }
+        }
         guard SubtitleTranslationSourcePolicy.shouldStart(mode: mode,
             hasHumanTurkish: hasHumanTurkishForAI, hasGoodHumanEnglish: true,
             userConfirmed: userConfirmed) else { return }
@@ -14231,12 +14390,18 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             do {
                 let prepared: PreparedSubtitleFile
                 switch source {
-                case .direct(let candidate):
-                    guard let provider = SubtitleProviderConfiguration.activeProviders().first(where: { $0.id == candidate.providerID }) else {
-                        throw SubtitleTranslationError.connection
+                case .direct(let candidate, let selectedFile):
+                    if let selectedFile {
+                        let data = try Data(contentsOf: selectedFile)
+                        prepared = try SubtitleFileHandling.prepare(data,
+                            fileName: selectedFile.lastPathComponent)
+                    } else {
+                        guard let provider = SubtitleProviderConfiguration.activeProviders().first(where: {
+                            $0.id == candidate.providerID
+                        }) else { throw SubtitleTranslationError.connection }
+                        prepared = try await self.preparedDirectSubtitle(candidate, provider: provider,
+                            generation: generation)
                     }
-                    prepared = try await self.preparedDirectSubtitle(candidate, provider: provider,
-                        generation: generation)
                 case .stremio(let result):
                     guard let value = result.subtitle.url, let url = URL(string: value),
                           url.scheme == "https" || url.scheme == "http" else {
@@ -14386,6 +14551,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                       self.subtitleManualActionRevision == selectionRevision,
                       self.playbackProfileIsStillActive("a subtitle download") else { return }
                 let name = self.directSubtitleStableName(candidate)
+                self.explicitlySelectedAISource = .direct(candidate, localURL)
+                self.explicitAISourceSelection.select(url: localURL.absoluteString,
+                                                      generation: generation)
                 self.recordUserSubtitleSelection(
                     enabled: true, languageTag: candidate.language, displayName: name,
                     providerID: candidate.providerID

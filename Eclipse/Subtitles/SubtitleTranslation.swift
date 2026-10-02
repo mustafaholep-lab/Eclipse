@@ -258,6 +258,22 @@ enum SubtitleAITemporaryFiles {
 }
 
 enum SubtitleTranslationSourcePolicy {
+    static func selectedEnglish(language: String?, format: String?, isMachineTranslated: Bool) -> Bool {
+        guard StremioSubtitleLanguagePolicy.canonicalCode(language) == "en",
+              !isMachineTranslated else { return false }
+        guard let format, !format.isEmpty else { return true } // Inspect the downloaded bytes before translation.
+        return ["srt", "vtt", "ass", "ssa", "zip", "gz"].contains(format.lowercased())
+    }
+
+    static func embeddedEnglishText(name: String, codec: String,
+                                    hasCompleteTimedText: Bool) -> Bool {
+        guard hasCompleteTimedText,
+              StremioSubtitleLanguagePolicy.canonicalCode(name) == "en" else { return false }
+        let value = codec.lowercased()
+        return ["subrip", "ass", "ssa", "webvtt", "mov_text", "text", "tx3g"]
+            .contains { value.contains($0) }
+    }
+
     static func shouldStart(mode: SubtitleTranslationMode, hasHumanTurkish: Bool,
                             hasGoodHumanEnglish: Bool, userConfirmed: Bool) -> Bool {
         guard hasGoodHumanEnglish else { return false }
@@ -291,6 +307,25 @@ enum SubtitleTranslationSourcePolicy {
             ($0.hasPrefix("Absolute episode ") && $0.hasSuffix(" eşleşti")) ||
             ($0.hasPrefix("S") && $0.contains("E") && $0.hasSuffix(" eşleşti"))
         }
+    }
+}
+
+struct ExplicitAISourceSelection {
+    private(set) var generation = 0
+    private(set) var selectedURL: String?
+
+    mutating func beginMedia(generation: Int) {
+        self.generation = generation
+        selectedURL = nil
+    }
+
+    mutating func select(url: String, generation: Int) {
+        guard generation == self.generation else { return }
+        selectedURL = url
+    }
+
+    func isCurrent(url: String, generation: Int, isActiveTrack: Bool) -> Bool {
+        isActiveTrack && generation == self.generation && selectedURL == url
     }
 }
 

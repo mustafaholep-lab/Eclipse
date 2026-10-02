@@ -67,6 +67,7 @@ struct SubtitleQuery: Sendable {
     var fileSize: Int64?
     var duration: Double?
     var preferredLanguages: [String] = ["tr", "en"]
+    var isManualSearch = false
     var preferredReleaseTokens: [String] = []
 
     var seriesCacheKey: String? {
@@ -143,9 +144,19 @@ struct SubtitleManualSearch: Equatable {
                 query.animeEpisode = absoluteEpisode
             }
         }
-        let chosenLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !chosenLanguage.isEmpty { query.preferredLanguages = [chosenLanguage] }
+        query.isManualSearch = true
+        if let chosenLanguage = StremioSubtitleLanguagePolicy.canonicalCode(language) {
+            query.preferredLanguages = [chosenLanguage]
+        }
         return query
+    }
+}
+
+enum SubtitleManualResultPolicy {
+    static func visible<Value>(_ values: [Value], language: String?,
+                               matches: (Value, String) -> Bool) -> [Value] {
+        guard let language else { return values }
+        return values.filter { matches($0, language) }
     }
 }
 

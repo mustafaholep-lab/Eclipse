@@ -1348,6 +1348,21 @@ struct StremioSubtitle: Codable, Sendable, Hashable {
 }
 
 enum StremioSubtitleLanguagePolicy {
+    static func canonicalCode(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-").lowercased()
+        guard !normalized.isEmpty, normalized != "und" else { return nil }
+        let tokens = languageTokens(for: normalized)
+        let known: [(String, String)] = [
+            ("en", "eng"), ("tr", "tur"), ("ja", "jpn"), ("es", "spa"),
+            ("fr", "fra"), ("de", "deu"), ("it", "ita"), ("pt", "por"),
+            ("ru", "rus"), ("zh", "zho"), ("ko", "kor")
+        ]
+        if let match = known.first(where: { tokens.contains($0.1) }) { return match.0 }
+        return normalized.split(separator: "-").first.map(String.init)
+    }
+
     static func matches(_ subtitle: StremioSubtitle, preferredLanguage: String) -> Bool {
         let preferredTokens = languageTokens(for: preferredLanguage)
         guard !preferredTokens.isEmpty else { return true }

@@ -89,7 +89,7 @@ jobs:
             -skipMacroValidation
           echo "SOURCE_PACKAGES_DIR=$SOURCE_PACKAGES_DIR" >> "$GITHUB_ENV"
 
-      - name: Test subtitle metadata and anime structure
+      - name: Test full iOS unit suite
         run: |
           set -euo pipefail
           SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
@@ -102,12 +102,7 @@ jobs:
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -destination-timeout 120 \
             -parallel-testing-enabled NO \
-            -only-testing:Tests/SubtitleMetadataResolverTests \
-            -only-testing:Tests/SubtitleProviderTests \
-            -only-testing:Tests/SubtitleDocumentTests \
-            -only-testing:Tests/SubtitleTranslationTests \
-            -only-testing:Tests/AnimeStructurePolicyTests \
-            -only-testing:Tests/MPVScalerPolicyTests \
+            -only-testing:Tests \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
             -skipPackagePluginValidation \

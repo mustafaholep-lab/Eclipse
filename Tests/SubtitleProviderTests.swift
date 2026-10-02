@@ -46,6 +46,48 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertTrue(plan.contains(.init(type: "anime", id: "anilist:113415:1:27")))
     }
 
+    func testManualEnglishLanguageControlsRankingAndVisibleResults() {
+        let original = query()
+        let manual = SubtitleManualSearch(title: "Jujutsu Kaisen", season: 1, episode: 1,
+            absoluteEpisode: 1, language: "english").applying(to: original)
+        XCTAssertTrue(manual.isManualSearch)
+        XCTAssertEqual(manual.preferredLanguages, ["en"])
+        for alias in ["en", "eng", "english", "en-us", "EN_US"] {
+            XCTAssertEqual(StremioSubtitleLanguagePolicy.canonicalCode(alias), "en")
+        }
+        for alias in ["tr", "tur", "turkish", "tr-tr"] {
+            XCTAssertEqual(StremioSubtitleLanguagePolicy.canonicalCode(alias), "tr")
+        }
+        let turkish = candidate("Jujutsu.Kaisen.S01E01", language: "tur")
+        let english = candidate("Jujutsu.Kaisen.S01E01", language: "eng")
+        XCTAssertGreaterThan(SubtitleRanking.score(english, for: manual).score,
+                             SubtitleRanking.score(turkish, for: manual).score)
+        let visible = SubtitleManualResultPolicy.visible([turkish, english], language: "en") {
+            StremioSubtitleLanguagePolicy.canonicalCode($0.language) == $1
+        }
+        XCTAssertEqual(visible.map(\.language), ["eng"])
+        XCTAssertGreaterThan(SubtitleRanking.score(turkish, for: original).score,
+                             SubtitleRanking.score(english, for: original).score)
+        XCTAssertFalse(original.isManualSearch)
+    }
+
+    func testManualStremioEnglishResultsExcludeDeclaredTurkish() throws {
+        let response = try JSONDecoder().decode(StremioSubtitleResponse.self, from: Data("""
+        {"subtitles":[
+          {"id":"tr","lang":"tur","name":"English in release name","url":"https://example.invalid/tr.srt"},
+          {"id":"en","lang":"eng","name":"Kaizoku","url":"https://example.invalid/en.srt"}
+        ]}
+        """.utf8))
+        let results = try XCTUnwrap(response.subtitles)
+        let visible = SubtitleManualResultPolicy.visible(results, language: "en") { subtitle, language in
+            if let declared = StremioSubtitleLanguagePolicy.canonicalCode(subtitle.lang) {
+                return declared == language
+            }
+            return StremioSubtitleLanguagePolicy.matches(subtitle, preferredLanguage: language)
+        }
+        XCTAssertEqual(visible.map(\.id), ["en"])
+    }
+
     func testSubtitleDelayPreferenceIsReleaseAndEpisodeSpecific() throws {
         let first = try XCTUnwrap(SubtitlePreferenceKey.delay(
             mediaKey: "episode_1_s1_e1", releaseLabel: "SubDL · TR · release A"

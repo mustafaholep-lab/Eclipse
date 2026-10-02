@@ -127,14 +127,24 @@ enum SubtitleRanking {
             score += min(40, remembered.count * 15)
             reasons.append("Önceki release tercihi")
         }
-        switch candidate.language.lowercased() {
-        case "tr", "tur", "tr-tr", "turkish":
-            score += 70
-            reasons.append("Türkçe tercih edildi")
-        case "en", "eng", "en-us", "english":
-            score += 35
-            reasons.append("İngilizce")
-        default: break
+        if query.isManualSearch {
+            let language = StremioSubtitleLanguagePolicy.canonicalCode(candidate.language)
+            if let language, query.preferredLanguages.contains(where: {
+                StremioSubtitleLanguagePolicy.canonicalCode($0) == language
+            }) {
+                score += 100
+                reasons.append("Aranan dil eşleşti")
+            }
+        } else {
+            switch candidate.language.lowercased() {
+            case "tr", "tur", "tr-tr", "turkish":
+                score += 70
+                reasons.append("Türkçe tercih edildi")
+            case "en", "eng", "en-us", "english":
+                score += 35
+                reasons.append("İngilizce")
+            default: break
+            }
         }
         if candidate.isMachineTranslated {
             score -= 50

@@ -436,4 +436,49 @@ final class SubtitleTranslationTests: XCTestCase {
         let matchedTurkish = candidate(250, reasons: ["S01E01 eşleşti", "Türkçe tercih edildi"], language: "tr")
         XCTAssertTrue(SubtitleTranslationSourcePolicy.hasGoodTurkish([matchedTurkish]))
     }
+
+    func testExplicitEnglishOnlineSourceDoesNotWeakenAutomaticSelection() {
+        let lowConfidence = SubtitleCandidate(id: "selected", providerID: "stremio:fixture",
+            language: "ENG", releaseName: "Unmatched release", format: "srt", downloads: nil,
+            rating: nil, isHearingImpaired: false, isMachineTranslated: false,
+            score: 35, matchReasons: [])
+        XCTAssertNil(SubtitleTranslationSourcePolicy.bestEnglish([lowConfidence]))
+        XCTAssertTrue(SubtitleTranslationSourcePolicy.selectedEnglish(
+            language: lowConfidence.language, format: lowConfidence.format,
+            isMachineTranslated: lowConfidence.isMachineTranslated))
+        XCTAssertFalse(SubtitleTranslationSourcePolicy.selectedEnglish(
+            language: "tur", format: "srt", isMachineTranslated: false))
+        XCTAssertFalse(SubtitleTranslationSourcePolicy.selectedEnglish(
+            language: "en", format: "pgs", isMachineTranslated: false))
+        XCTAssertFalse(SubtitleTranslationSourcePolicy.selectedEnglish(
+            language: "en", format: "srt", isMachineTranslated: true))
+    }
+
+    func testEmbeddedEnglishNeedsCompleteTimedTextAndRejectsBitmapAndOtherLanguages() {
+        XCTAssertTrue(SubtitleTranslationSourcePolicy.embeddedEnglishText(
+            name: "English (Kaizoku)", codec: "ass", hasCompleteTimedText: true))
+        XCTAssertFalse(SubtitleTranslationSourcePolicy.embeddedEnglishText(
+            name: "English (Kaizoku)", codec: "ass", hasCompleteTimedText: false))
+        XCTAssertFalse(SubtitleTranslationSourcePolicy.embeddedEnglishText(
+            name: "English", codec: "hdmv_pgs_subtitle", hasCompleteTimedText: true))
+        XCTAssertFalse(SubtitleTranslationSourcePolicy.embeddedEnglishText(
+            name: "Turkish", codec: "subrip", hasCompleteTimedText: true))
+    }
+
+    func testExplicitAISourceTracksExactSelectedSubtitleAndMediaGeneration() {
+        var selection = ExplicitAISourceSelection()
+        selection.beginMedia(generation: 4)
+        selection.select(url: "https://example.invalid/english.srt", generation: 4)
+        XCTAssertTrue(selection.isCurrent(url: "https://example.invalid/english.srt",
+                                          generation: 4, isActiveTrack: true))
+        XCTAssertFalse(selection.isCurrent(url: "https://example.invalid/other.srt",
+                                           generation: 4, isActiveTrack: true))
+        XCTAssertFalse(selection.isCurrent(url: "https://example.invalid/english.srt",
+                                           generation: 4, isActiveTrack: false))
+        selection.beginMedia(generation: 5)
+        selection.select(url: "https://example.invalid/stale.srt", generation: 4)
+        XCTAssertNil(selection.selectedURL)
+        XCTAssertFalse(selection.isCurrent(url: "https://example.invalid/english.srt",
+                                           generation: 5, isActiveTrack: true))
+    }
 }
