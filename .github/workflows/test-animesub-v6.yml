@@ -1,0 +1,78 @@
+name: Test AnimeSub v6 subtitles
+
+on:
+  push:
+    branches:
+      - stremio-playback-fix-v6-animesub-subtitles
+    paths:
+      - "Eclipse/JSLoader/Services/StremioClient.swift"
+      - "Eclipse/JSLoader/Services/StremioAddonManager.swift"
+      - "Tests/AnimeStructurePolicyTests.swift"
+      - ".github/workflows/test-animesub-v6.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  subtitle-tests:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: Soupy-dev/MPVKit
+          ref: 7485d3ef01f21963443824002566a7d0d3c50fae
+          path: MPVKit
+      - run: ln -sfn "$GITHUB_WORKSPACE/MPVKit" "$GITHUB_WORKSPACE/../MPVKit"
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+      - name: Create local build config
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          test -n "${TMDB_API_KEY:-}"
+          cat > Build.local.xcconfig <<EOF
+          APP_NAME = Eclipse Patched
+          BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
+          DEVELOPMENT_TEAM = ANMK3Y568U
+          ECLIPSE_RELEASE_VERSION = 6.0.0
+          CODE_SIGN_ENTITLEMENTS =
+          ICLOUD_CONTAINER_ID =
+          TMDB_API_KEY = ${TMDB_API_KEY}
+          ANILIST_CLIENT_ID =
+          ANILIST_CLIENT_SECRET =
+          ANILIST_REDIRECT_URI = luna:/$()/anilist-callback
+          TRAKT_CLIENT_ID =
+          TRAKT_CLIENT_SECRET =
+          TRAKT_REDIRECT_URI = luna:/$()/trakt-callback
+          MAL_CLIENT_ID =
+          MAL_CLIENT_SECRET =
+          MAL_REDIRECT_URI = luna:/$()/mal-callback
+          EOF
+      - name: Resolve packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation
+      - name: Run AnimeSub subtitle regression tests
+        run: |
+          set -euo pipefail
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next(d["udid"] for group in devices.values() for d in group if d["name"].startswith("iPhone")))')"
+          xcodebuild test \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -only-testing:Tests/StremioAnimeSubtitleLookupTests \
+            -parallel-testing-enabled NO \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -disableAutomaticPackageResolution \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ECLIPSE_UNSIGNED_BUILD'

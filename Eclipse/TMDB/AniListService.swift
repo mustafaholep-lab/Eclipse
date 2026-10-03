@@ -2282,6 +2282,7 @@ struct AniListSeasonIdentity: Equatable {
     let englishTitle: String?
     let romajiTitle: String?
     let nativeTitle: String?
+    let synonyms: [String]
     let episodeCount: Int?
     let posterURL: String?
 }
@@ -3589,6 +3590,7 @@ final class AniListService {
             englishTitle: season.englishTitle,
             romajiTitle: season.romajiTitle,
             nativeTitle: season.nativeTitle,
+            synonyms: season.synonyms ?? [],
             episodeCount: season.episodes.count,
             posterURL: season.posterUrl
         )
@@ -3608,6 +3610,7 @@ final class AniListService {
             idMal
             externalLinks { site siteId url }
             title { romaji english native }
+            synonyms
             episodes
             coverImage { large medium }
         """
@@ -3672,6 +3675,7 @@ final class AniListService {
                     englishTitle: anime.title.english.map(AniListTitlePicker.cleanedTitle),
                     romajiTitle: anime.title.romaji.map(AniListTitlePicker.cleanedTitle),
                     nativeTitle: anime.title.native.map(AniListTitlePicker.cleanedTitle),
+                    synonyms: anime.synonyms ?? [],
                     episodeCount: anime.episodes,
                     posterURL: anime.coverImage?.large ?? anime.coverImage?.medium
                 )
@@ -5011,6 +5015,7 @@ final class AniListService {
                         english
                         native
                     }
+                    synonyms
                     episodes
                     status
                     startDate { year month day }
@@ -5040,6 +5045,7 @@ final class AniListService {
                                     english
                                     native
                                 }
+                                synonyms
                                 episodes
                                 status
                                 startDate { year month day }
@@ -5060,6 +5066,7 @@ final class AniListService {
                                             externalLinks { site siteId url }
                                             averageScore
                                             title { romaji english native }
+                                            synonyms
                                             episodes
                                             status
                                             startDate { year month day }
@@ -5796,6 +5803,7 @@ final class AniListService {
                 englishTitle: currentAnime.title.english.map(AniListTitlePicker.cleanedTitle),
                 romajiTitle: currentAnime.title.romaji.map(AniListTitlePicker.cleanedTitle),
                 nativeTitle: currentAnime.title.native.map(AniListTitlePicker.cleanedTitle),
+                synonyms: currentAnime.synonyms,
                 episodes: seasonEpisodes,
                 posterUrl: posterUrl
             ))
@@ -8359,6 +8367,7 @@ struct AniListSeasonWithPoster: Codable {
     let englishTitle: String?
     let romajiTitle: String?
     let nativeTitle: String?
+    var synonyms: [String]? = nil
     let episodes: [AniListEpisode]
     let posterUrl: String?
 }
@@ -8593,6 +8602,7 @@ struct AniListAnime: Codable {
     let genres: [String]?
     let tags: [AniListTag]?
     let title: AniListTitle
+    let synonyms: [String]?
     let episodes: Int?
     let status: String?
     let startDate: AniListDate?
@@ -8605,7 +8615,7 @@ struct AniListAnime: Codable {
     let relations: AniListRelations?
 
     private enum CodingKeys: String, CodingKey {
-        case id, idMal, externalLinks, averageScore, isAdult, genres, tags, title
+        case id, idMal, externalLinks, averageScore, isAdult, genres, tags, title, synonyms
         case episodes, status, startDate, seasonYear, season, coverImage, format, type
         case nextAiringEpisode, relations
     }
@@ -8706,6 +8716,7 @@ struct AniListAnime: Codable {
         let genres: [String]?
         let tags: [AniListTag]?
         let title: AniListTitle
+        let synonyms: [String]?
         let episodes: Int?
         let status: String?
         let startDate: AniListDate?
@@ -8717,7 +8728,7 @@ struct AniListAnime: Codable {
         let relations: AniListRelations?
 
         private enum CodingKeys: String, CodingKey {
-            case id, idMal, externalLinks, averageScore, isAdult, genres, tags, title
+            case id, idMal, externalLinks, averageScore, isAdult, genres, tags, title, synonyms
             case episodes, status, startDate, seasonYear, season, format, type, coverImage
             case relations
         }
@@ -8732,6 +8743,7 @@ struct AniListAnime: Codable {
                 genres: genres,
                 tags: tags,
                 title: title,
+                synonyms: synonyms,
                 episodes: episodes,
                 status: status,
                 startDate: startDate,
@@ -8957,6 +8969,16 @@ extension AniListAnime {
         tags = decodedTags
         title = try container.decode(AniListAnime.AniListTitle.self, forKey: .title)
 
+        let decodedSynonyms = try container.decodeIfPresent([String].self, forKey: .synonyms)
+        guard (decodedSynonyms?.count ?? 0) <= 128,
+              decodedSynonyms?.allSatisfy({ $0.utf8.count <= 512 }) != false else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .synonyms, in: container,
+                debugDescription: "AniList synonyms exceed the supported limit."
+            )
+        }
+        synonyms = decodedSynonyms
+
         let rawEpisodes = try container.decodeIfPresent(Int.self, forKey: .episodes)
         if let rawEpisodes, rawEpisodes != 0 {
             guard let episodes = RemoteMediaNumericBoundary.episodeCount(rawEpisodes) else {
@@ -9073,6 +9095,16 @@ extension AniListAnime.AniListRelationNode {
         }
         tags = decodedTags
         title = try container.decode(AniListAnime.AniListTitle.self, forKey: .title)
+
+        let decodedSynonyms = try container.decodeIfPresent([String].self, forKey: .synonyms)
+        guard (decodedSynonyms?.count ?? 0) <= 128,
+              decodedSynonyms?.allSatisfy({ $0.utf8.count <= 512 }) != false else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .synonyms, in: container,
+                debugDescription: "AniList relation synonyms exceed the supported limit."
+            )
+        }
+        synonyms = decodedSynonyms
 
         let rawEpisodes = try container.decodeIfPresent(Int.self, forKey: .episodes)
         if let rawEpisodes, rawEpisodes != 0 {

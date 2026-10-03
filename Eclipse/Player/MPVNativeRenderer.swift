@@ -95,6 +95,7 @@ protocol PlayerRenderer: AnyObject {
     func disableSubtitles()
     func refreshSubtitleOverlay()
     func loadExternalSubtitles(urls: [String], names: [String]?, enforce: Bool)
+    func reloadCurrentExternalSubtitle()
     func loadExternalSubtitles(urls: [String], names: [String]?, enforce: Bool, headersByURL: [String: [String: String]])
     func prefetchExternalSubtitles(urls: [String], headersByURL: [String: [String: String]], allowsCellularAccess: Bool)
     func isExternalSubtitleSelected(url: String) -> Bool?
@@ -125,6 +126,8 @@ protocol PlayerRenderer: AnyObject {
 }
 
 extension PlayerRenderer {
+
+    func reloadCurrentExternalSubtitle() {}
 
     func loadExternalSubtitles(urls: [String], names: [String]?, enforce: Bool, headersByURL: [String: [String: String]]) {
         loadExternalSubtitles(urls: urls, names: names, enforce: enforce)
@@ -2639,6 +2642,11 @@ final class MPVNativeRenderer: PlayerRenderer {
             let flag = enforce ? "select" : "auto"
             command(handle, ["sub-add", url, flag, title])
         }
+    }
+
+    func reloadCurrentExternalSubtitle() {
+        guard let handle = mpv else { return }
+        command(handle, ["sub-reload"])
     }
 
     private func externalSubtitleTitle(urlString: String, fallbackName: String?, fallbackIndex: Int) -> String {
@@ -6553,6 +6561,14 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
         for (index, url) in urls.enumerated() where !url.isEmpty {
             let title = externalSubtitleTitle(urlString: url, fallbackName: names.flatMap { index < $0.count ? $0[index] : nil }, fallbackIndex: index)
             command(handle, ["sub-add", url, enforce ? "select" : "auto", title])
+        }
+    }
+
+    func reloadCurrentExternalSubtitle() {
+        if let fallbackRenderer {
+            fallbackRenderer.reloadCurrentExternalSubtitle()
+        } else if let handle = mpv, !isUsingPiPBridge {
+            command(handle, ["sub-reload"])
         }
     }
 

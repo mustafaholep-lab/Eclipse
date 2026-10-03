@@ -3,10 +3,14 @@ name: Build Patched Eclipse IPA
 on:
   push:
     branches:
-      - stremio-playback-fix-v2.2.1
+      - stremio-playback-fix-v6-animesub-subtitles
+      - a2-smart-subtitles
     paths:
       - "Eclipse/**"
       - "Eclipse.xcodeproj/**"
+      - "Tests/SubtitleProviderTests.swift"
+      - "Tests/SubtitleDocumentTests.swift"
+      - "Tests/SubtitleTranslationTests.swift"
       - "Package.swift"
       - "Build.xcconfig"
       - ".github/workflows/build-patched-ipa.yml"
@@ -42,6 +46,9 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Test Continue Watching policy
+        run: python3 scripts/test-continue-watching.py
+
       - name: Create unsigned local build config
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
@@ -54,7 +61,7 @@ jobs:
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
-          ECLIPSE_RELEASE_VERSION = 2.2.1-patched
+          ECLIPSE_RELEASE_VERSION = 6.0.0
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =
           TMDB_API_KEY = ${TMDB_API_KEY}
@@ -82,6 +89,31 @@ jobs:
             -skipMacroValidation
           echo "SOURCE_PACKAGES_DIR=$SOURCE_PACKAGES_DIR" >> "$GITHUB_ENV"
 
+      - name: Test subtitle metadata and anime structure
+        run: |
+          set -euo pipefail
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
+          test -n "$SIMULATOR_ID"
+          xcodebuild test \
+            -jobs 1 \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -destination-timeout 120 \
+            -parallel-testing-enabled NO \
+            -only-testing:Tests/SubtitleMetadataResolverTests \
+            -only-testing:Tests/SubtitleProviderTests \
+            -only-testing:Tests/SubtitleDocumentTests \
+            -only-testing:Tests/SubtitleTranslationTests \
+            -only-testing:Tests/AnimeStructurePolicyTests \
+            -only-testing:Tests/MPVScalerPolicyTests \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -disableAutomaticPackageResolution \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO
+
       - name: Build unsigned archive
         run: |
           set -euo pipefail
@@ -90,6 +122,7 @@ jobs:
           rm -rf "$ARCHIVE_PATH" "$DERIVED_DATA_PATH"
 
           xcodebuild archive \
+            -jobs 1 \
             -project Eclipse.xcodeproj \
             -scheme Eclipse \
             -configuration Release \
@@ -108,6 +141,9 @@ jobs:
             ECLIPSE_SOURCE_REVISION="$GITHUB_SHA" \
             ECLIPSE_MPVKIT_SOURCE_REVISION="7485d3ef01f21963443824002566a7d0d3c50fae" \
             'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ECLIPSE_UNSIGNED_BUILD' \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             ENABLE_USER_SCRIPT_SANDBOXING=NO
 
           APP_PATH="$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -type d -name '*.app' -print -quit)"
@@ -119,7 +155,7 @@ jobs:
           set -euo pipefail
           PACKAGE_ROOT="$RUNNER_TEMP/unsigned-ipa"
           OUTPUT_DIR="$GITHUB_WORKSPACE/build"
-          IPA_PATH="$OUTPUT_DIR/Eclipse-2.2.1-StremioFix-unsigned.ipa"
+          IPA_PATH="$OUTPUT_DIR/Eclipse-v6-AnimeSub-unsigned.ipa"
 
           rm -rf "$PACKAGE_ROOT" "$OUTPUT_DIR"
           mkdir -p "$PACKAGE_ROOT/Payload" "$OUTPUT_DIR"
@@ -136,7 +172,126 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: Eclipse-2.2.1-StremioFix-unsigned
+          name: Eclipse-v6-AnimeSub-unsigned
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
           retention-days: 7
+
+  full-tests:
+    runs-on: macos-26
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout patched Eclipse
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Checkout matching MPVKit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: Soupy-dev/MPVKit
+          ref: 7485d3ef01f21963443824002566a7d0d3c50fae
+          path: MPVKit
+
+      - name: Expose sibling MPVKit package
+        run: ln -sfn "$GITHUB_WORKSPACE/MPVKit" "$GITHUB_WORKSPACE/../MPVKit"
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Create unsigned local build config
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          if [ -z "${TMDB_API_KEY:-}" ]; then
+            echo "::error::TMDB_API_KEY GitHub Actions secret is missing."
+            exit 1
+          fi
+          cat > Build.local.xcconfig <<EOF
+          APP_NAME = Eclipse Patched
+          BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
+          DEVELOPMENT_TEAM = ANMK3Y568U
+          ECLIPSE_RELEASE_VERSION = 6.0.0
+          CODE_SIGN_ENTITLEMENTS =
+          ICLOUD_CONTAINER_ID =
+          TMDB_API_KEY = ${TMDB_API_KEY}
+          ANILIST_CLIENT_ID =
+          ANILIST_CLIENT_SECRET =
+          ANILIST_REDIRECT_URI = luna:/$()/anilist-callback
+          TRAKT_CLIENT_ID =
+          TRAKT_CLIENT_SECRET =
+          TRAKT_REDIRECT_URI = luna:/$()/trakt-callback
+          MAL_CLIENT_ID =
+          MAL_CLIENT_SECRET =
+          MAL_REDIRECT_URI = luna:/$()/mal-callback
+          EOF
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          SOURCE_PACKAGES_DIR="$RUNNER_TEMP/SourcePackages"
+          xcodebuild -resolvePackageDependencies \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation
+          echo "SOURCE_PACKAGES_DIR=$SOURCE_PACKAGES_DIR" >> "$GITHUB_ENV"
+
+      - name: Build complete unit suite for testing
+        run: |
+          set -euo pipefail
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
+          test -n "$SIMULATOR_ID"
+          DERIVED_DATA_PATH="$RUNNER_TEMP/FullSuiteDerivedData"
+          xcodebuild build-for-testing \
+            -jobs 1 \
+            -project Eclipse.xcodeproj \
+            -scheme Eclipse \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -destination-timeout 120 \
+            -parallel-testing-enabled NO \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -disableAutomaticPackageResolution \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO
+          XCTESTRUN_PATH="$(find "$DERIVED_DATA_PATH/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)"
+          test -n "$XCTESTRUN_PATH"
+          echo "SIMULATOR_ID=$SIMULATOR_ID" >> "$GITHUB_ENV"
+          echo "XCTESTRUN_PATH=$XCTESTRUN_PATH" >> "$GITHUB_ENV"
+
+      - name: Run complete unit suite in bounded groups
+        run: |
+          set -uo pipefail
+          TEST_CLASSES=()
+          while IFS= read -r class_name; do TEST_CLASSES+=("$class_name"); done < <(
+            python3 - <<'PY'
+          import pathlib, re
+          classes = set()
+          for path in pathlib.Path("Tests").glob("*.swift"):
+              classes.update(re.findall(r"\bclass\s+(\w+)\s*:\s*XCTestCase\b", path.read_text()))
+          print("\n".join(sorted(classes)))
+          PY
+          )
+          test "${#TEST_CLASSES[@]}" -gt 0
+          failures=0
+          for ((index=0; index<${#TEST_CLASSES[@]}; index+=5)); do
+            filters=()
+            for class_name in "${TEST_CLASSES[@]:index:5}"; do
+              filters+=("-only-testing:Tests/$class_name")
+            done
+            echo "Testing classes $((index+1))-$((index+${#filters[@]})) of ${#TEST_CLASSES[@]}"
+            xcodebuild test-without-building \
+              -jobs 1 \
+              -xctestrun "$XCTESTRUN_PATH" \
+              -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+              -destination-timeout 120 \
+              -parallel-testing-enabled NO \
+              "${filters[@]}" || failures=$((failures+1))
+          done
+          echo "Completed ${#TEST_CLASSES[@]} XCTest classes in bounded groups; failed groups: $failures"
+          test "$failures" -eq 0

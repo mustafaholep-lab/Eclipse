@@ -14,7 +14,11 @@ struct BackupDocument: FileDocument {
 
     static var readableContentTypes: [UTType] { [.json] }
     static var writableContentTypes: [UTType] { [.json] }
-    static var importableContentTypes: [UTType] { [.json, .plainText, .text, .data] }
+    // Files received through AirDrop, messaging apps, or third-party providers can
+    // retain a generic/dynamic UTI even when their filename ends in `.json`.
+    // Accept selectable files here and validate the actual backup payload after
+    // selection so legitimate Eclipse backups do not appear disabled in Files.
+    static var importableContentTypes: [UTType] { [.item] }
 
     init(data: Data) {
         self.data = data
@@ -46,7 +50,6 @@ struct BackupManagementView: View {
     @State private var selectedBackupIsTemporary = false
     @State private var backupFileToExport: Data? = nil
     @State private var backupFileName = ""
-    @State private var importContentTypes: [UTType] = [.json]
     #if !os(tvOS)
     @State private var pendingImportMode: ImportMode = .direct
     #endif
@@ -132,7 +135,7 @@ struct BackupManagementView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                GlassSectionFooter("Restore all data from a previously saved backup file. This will overwrite your current settings and progress.")
+                GlassSectionFooter("Restore all data from a previously saved backup file. Matching profiles are replaced with the backup copy; profiles that exist only on this device are kept.")
                 } else {
                     GlassSectionFooter("This is a kids profile, so it cannot restore a backup — a backup replaces every profile on this device. Switch to a grown-up profile to import one.")
                 }
@@ -163,7 +166,7 @@ struct BackupManagementView: View {
         #if !os(tvOS)
         .fileImporter(
             isPresented: $showDocumentPicker,
-            allowedContentTypes: importContentTypes,
+            allowedContentTypes: BackupDocument.importableContentTypes,
             allowsMultipleSelection: false
         ) { result in
             handleImportResult(result, mode: pendingImportMode)
@@ -195,7 +198,7 @@ struct BackupManagementView: View {
                 beginRestore()
             }
         } message: {
-            Text("This will overwrite your current settings, collections, watch progress, tracker logins including MAL, and service configurations with the backup data. Continue?")
+            Text("Matching profiles, settings, collections, watch progress, tracker logins including MAL, and service configurations will be replaced with the backup copy. Profiles that exist only on this device will be kept. Continue?")
         }
         .alert("Your Other Devices", isPresented: $showSyncScopeChoice) {
             Button("Cancel", role: .cancel) {
@@ -256,12 +259,20 @@ struct BackupManagementView: View {
     private enum ImportMode {
         case direct
         case coordinatedCopy
+
+        var logLabel: String {
+            switch self {
+            case .direct:
+                return "standard"
+            case .coordinatedCopy:
+                return "alternative"
+            }
+        }
     }
 
     private func startImport(mode: ImportMode) {
         guard isAdministrable, !isProcessing else { return }
         pendingImportMode = mode
-        importContentTypes = mode == .direct ? [.json] : BackupDocument.importableContentTypes
         showDocumentPicker = true
     }
 
@@ -276,14 +287,25 @@ struct BackupManagementView: View {
 
             do {
                 clearSelectedBackup()
-                switch mode {
-                case .direct:
-                    self.selectedBackupURL = selectedFile
-                    self.selectedBackupIsTemporary = false
-                case .coordinatedCopy:
-                    self.selectedBackupURL = try prepareSelectedBackupForRestore(from: selectedFile)
-                    self.selectedBackupIsTemporary = true
+                // A document-picker URL is only guaranteed to remain readable while
+                // the picker completion is being handled. Keeping that URL until the
+                // user confirms the restore makes imports fail for some Files and
+                // messaging providers after their security scope is revoked. Stage a
+                // bounded local copy immediately for both buttons, then restore from
+                // that stable file after confirmation.
+                let stagedBackupURL = try prepareSelectedBackupForRestore(from: selectedFile)
+                do {
+                    try BackupManager.shared.validateManualBackup(at: stagedBackupURL)
+                } catch {
+                    try? FileManager.default.removeItem(at: stagedBackupURL)
+                    throw error
                 }
+                self.selectedBackupURL = stagedBackupURL
+                self.selectedBackupIsTemporary = true
+                Logger.shared.log(
+                    "Staged backup selected with \(mode.logLabel) import",
+                    type: "Info"
+                )
 
                 showRestoreConfirmation = true
             } catch {
@@ -347,7 +369,7 @@ struct BackupManagementView: View {
         let shouldRemoveBackupAfterRestore = selectedBackupIsTemporary
         let cloudSyncWasEnabled = cloudSyncCanPropagateRestore
 
-        Task.detached(priority: .userInitiated) {
+        Task { @MainActor in
             var accessGranted = false
             if shouldUseSecurityScope {
                 accessGranted = backupURL.startAccessingSecurityScopedResource()
@@ -366,30 +388,33 @@ struct BackupManagementView: View {
                 scope: scope
             )
 
-            await MainActor.run {
-                isProcessing = false
-                selectedBackupURL = nil
-                selectedBackupIsTemporary = false
-                let cloudSyncRemainsEnabled = cloudSyncCanPropagateRestore
-                if success {
-                    if scope.keepsChangesOnThisDevice && cloudSyncWasEnabled {
-                        backupMessage = "Backup restored on this device. Cloud sync is off here, and your cloud copy and other devices were not changed. Turn a provider on again when you want this device to rejoin sync."
-                    } else if cloudSyncWasEnabled {
-                        backupMessage = "Backup restored successfully. Eclipse queued the completed restore for your previously enabled cloud providers. Please restart the app to see all changes."
-                    } else {
-                        backupMessage = "Backup restored successfully! Please restart the app to see all changes."
-                    }
+            isProcessing = false
+            selectedBackupURL = nil
+            selectedBackupIsTemporary = false
+            let cloudSyncRemainsEnabled = cloudSyncCanPropagateRestore
+            if success {
+                let importedCount = BackupManager.shared.lastManualRestoreImportedRecordCount
+                let countMessage = "\(importedCount) watch record\(importedCount == 1 ? "" : "s") imported."
+                if BackupManager.shared.lastManualRestoreRequiresRelaunch {
+                    backupMessage = "\(countMessage) Backup restored safely. Close and reopen Eclipse once to load the restored profile."
+                } else if scope.keepsChangesOnThisDevice && cloudSyncWasEnabled {
+                    backupMessage = "\(countMessage) Backup restored on this device. Cloud sync is off here, and your cloud copy and other devices were not changed."
+                } else if cloudSyncWasEnabled {
+                    backupMessage = "\(countMessage) Eclipse refreshed the active profile and queued the restored data for your enabled cloud providers."
                 } else {
-                    if cloudSyncWasEnabled && !cloudSyncRemainsEnabled {
-                        backupMessage = "Failed to restore backup. Cloud sync was left off on this device to protect your other devices. The file may be corrupted or incompatible; wait for any cloud operation to finish, then try again."
-                    } else if cloudSyncWasEnabled {
-                        backupMessage = "Failed to restore backup before Eclipse could pause cloud sync. Cloud sync remains on and no restore was started. Switch to a grown-up profile if needed, wait for any cloud operation to finish, then try again."
-                    } else {
-                        backupMessage = "Failed to restore backup. The file may be corrupted or incompatible. If a cloud restore or sync was running, wait for it to finish and try again."
-                    }
+                    backupMessage = "\(countMessage) Backup restored and the app was refreshed."
                 }
-                showMessageAlert = true
+            } else {
+                let detailedFailure = BackupManager.shared.lastManualRestoreFailureReason
+                if cloudSyncWasEnabled && !cloudSyncRemainsEnabled {
+                    backupMessage = detailedFailure ?? "Failed to restore backup. Cloud sync was left off on this device to protect your other devices."
+                } else if cloudSyncWasEnabled {
+                    backupMessage = detailedFailure ?? "Failed to restore backup before Eclipse could pause cloud sync. Cloud sync remains on and no restore was started."
+                } else {
+                    backupMessage = detailedFailure ?? "Failed to restore backup. The file may be corrupted, incomplete, or incompatible."
+                }
             }
+            showMessageAlert = true
         }
     }
 

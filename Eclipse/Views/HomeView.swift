@@ -1019,9 +1019,15 @@ struct HomeView: View {
 
     @ViewBuilder
     private var continueWatchingSection: some View {
-        if !continueWatchingItems.isEmpty {
+        let items = ContinueWatchingPolicy.merged(
+            resume: continueWatchingItems,
+            next: upNextItems,
+            key: { "\($0.isMovie ? "movie" : "show")_\($0.tmdbId)" },
+            updatedAt: { $0.lastUpdated }
+        )
+        if !items.isEmpty {
             ContinueWatchingSection(
-                items: continueWatchingItems,
+                items: items,
                 tmdbService: tmdbService,
                 onDataChanged: refreshContinueWatchingItems,
                 onSectionBecameEmpty: requestTVHomeFallbackFocus,
@@ -2213,20 +2219,17 @@ struct HomeView: View {
             }
             guard !Task.isCancelled else { return }
             refreshLocalContinueWatchingItems()
+            refreshUpNextItemsIfNeeded()
         }
     }
 
     private func refreshRemotePlaybackCatalogItems() {
         let enabledIds = Set(enabledCatalogs.map(\.id))
-        let shouldLoadUpNext = enabledIds.contains(Catalog.upNextCatalogId)
         let shouldLoadTraktContinueWatching = enabledIds.contains(Catalog.traktContinueWatchingCatalogId)
 
-        if shouldLoadUpNext {
-            refreshUpNextItemsIfNeeded()
-        } else {
-            cancelUpNextResolution()
-            upNextItems = []
-        }
+        // Continue Watching also needs the next episode when its separate
+        // catalog is disabled, otherwise completed shows disappear from Home.
+        refreshUpNextItemsIfNeeded()
 
         if shouldLoadTraktContinueWatching {
 
@@ -2290,6 +2293,8 @@ struct HomeView: View {
 
     private func refreshUpNextItemsIfNeeded() {
         let candidates = ProgressManager.shared.getWatchNextCandidates(limit: 20)
+        let candidateIDs = Set(candidates.map(\.tmdbId))
+        upNextItems.removeAll { !candidateIDs.contains($0.tmdbId) }
 
         let owner = ProfileManager.shared.activeProfileID
         let isKidsMode = ProfileManager.shared.isKidsModeActive

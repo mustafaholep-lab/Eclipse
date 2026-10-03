@@ -2502,6 +2502,19 @@ private struct MPVPlayerSettingsPage: View {
         disclosureHeader("OpenSubtitles", icon: "globe", iconColor: .indigo, key: "openSubs")
         if isExpanded("openSubs") {
             GlassDivider(leadingInset: 16)
+            NavigationLink(destination: SubtitleProviderSettingsView()) {
+                GlassDetailRow(title: "Direct Subtitle Providers", subtitle: "Configure OpenSubtitles.com, SubDL, and Jimaku API credentials.") {
+                    valueChevron("Configure")
+                }
+            }
+            .playerSettingsRowButtonStyle()
+            NavigationLink(destination: SubtitleTranslationSettingsView()) {
+                GlassDetailRow(title: "Türkçe AI Altyazı", subtitle: "Çeviri API'si, mod ve önbellek ayarları.") {
+                    valueChevron("Configure")
+                }
+            }
+            .playerSettingsRowButtonStyle()
+            GlassDivider(leadingInset: 16)
             settingsToggleRow(title: "OpenSubtitles", detail: "Enable subtitle search through the Stremio OpenSubtitles v3 add-on.", binding: $store.playerOpenSubtitlesEnabled)
                 .id(PlayerSettingsSearchTarget.openSubtitles.anchorID)
 

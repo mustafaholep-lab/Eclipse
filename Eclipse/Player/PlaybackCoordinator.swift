@@ -138,6 +138,7 @@ final class PlaybackCoordinator {
             mediaInfo: request.mediaInfo,
             imdbId: request.imdbID
         )
+        controller.activePlaybackRequest = request
         controller.isAnimeHint = request.isAnime
         controller.isAnimationContentHint = request.isAnimation
         controller.playerTitleOverride = request.title

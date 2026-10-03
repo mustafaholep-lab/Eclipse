@@ -9049,11 +9049,45 @@ class BackupManager {
 
     private let manualBackupFailureLock = NSLock()
     private var manualBackupFailureReason: String?
+    private let manualRestoreResultLock = NSLock()
+    private var manualRestoreFailureReason: String?
+    private var manualRestoreImportedRecordCount = 0
+    private var manualRestoreRequiresRelaunch = false
 
     var lastManualBackupFailureReason: String? {
         manualBackupFailureLock.lock()
         defer { manualBackupFailureLock.unlock() }
         return manualBackupFailureReason
+    }
+
+    var lastManualRestoreFailureReason: String? {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        return manualRestoreFailureReason
+    }
+
+    var lastManualRestoreImportedRecordCount: Int {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        return manualRestoreImportedRecordCount
+    }
+
+    var lastManualRestoreRequiresRelaunch: Bool {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        return manualRestoreRequiresRelaunch
+    }
+
+    private func recordManualRestoreResult(
+        failureReason: String?,
+        importedRecordCount: Int = 0,
+        requiresRelaunch: Bool = false
+    ) {
+        manualRestoreResultLock.lock()
+        defer { manualRestoreResultLock.unlock() }
+        manualRestoreFailureReason = failureReason
+        manualRestoreImportedRecordCount = importedRecordCount
+        manualRestoreRequiresRelaunch = requiresRelaunch
     }
 
     private func recordManualBackupFailureReason(_ reason: String?) {
@@ -9087,10 +9121,27 @@ class BackupManager {
 
     private enum BackupRestoreError: LocalizedError {
         case activeProfileChanged
+        case invalidDocument
+        case missingBackupPayload
+        case unsupportedVersion(String)
 
         var errorDescription: String? {
-            "The active profile or profile roster changed while the restore was starting. Try importing again."
+            switch self {
+            case .activeProfileChanged:
+                return "The active profile or profile roster changed while the restore was starting. Try importing again."
+            case .invalidDocument:
+                return "This file is not a valid Eclipse backup JSON document."
+            case .missingBackupPayload:
+                return "This backup is incomplete: it does not contain settings, profiles, collections, or watch history."
+            case .unsupportedVersion(let version):
+                return "This backup uses format version \(version), which this Eclipse version cannot read. Update Eclipse and try again."
+            }
         }
+    }
+
+    private struct ManualRestorePreflight {
+        let watchRecordCount: Int
+        let preferredActiveProfileID: UUID?
     }
 
     private struct ActiveProfileScopeToken: Equatable {
@@ -12854,10 +12905,9 @@ private struct ScopedSettingsDefaults {
             )
         }
 
-        Task { @MainActor in
-            ServiceManager.shared.loadServicesFromCloud()
-            StremioAddonManager.shared.loadAddons()
-        }
+        // The enclosing restore transaction performs one coordinated reload.
+        // Starting another reload here races the remaining profile restore and
+        // can invalidate stores while they are still being written.
     }
 
     private static func captureProfileSources(
@@ -13282,6 +13332,17 @@ private struct ScopedSettingsDefaults {
         from url: URL,
         scope: ManualBackupRestoreScope
     ) async -> Bool {
+        recordManualRestoreResult(failureReason: nil)
+        let preflight: ManualRestorePreflight
+        do {
+            preflight = try manualRestorePreflight(from: url)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            recordManualRestoreResult(failureReason: message)
+            Logger.shared.log("Backup restore validation failed: \(message)", type: "Error")
+            return false
+        }
 #if os(iOS)
         guard let syncSession = await MainActor.run(body: {
             ExperimentalCloudSyncManager.shared.beginManualRestore(
@@ -13292,6 +13353,9 @@ private struct ScopedSettingsDefaults {
                 "Backup restore waited because a cloud operation is still active",
                 type: "CloudSync"
             )
+            recordManualRestoreResult(
+                failureReason: "A cloud sync or restore is still running. Wait for it to finish, then import the backup again."
+            )
             return false
         }
 
@@ -13299,26 +13363,118 @@ private struct ScopedSettingsDefaults {
         if #available(iOS 17.0, *) {
             succeeded = await MediaStateSyncManager.shared
                 .performAuthoritativeSnapshotRestore {
-                    await self.restoreBackup(from: url)
+                    await self.restoreBackup(
+                        from: url,
+                        defersRuntimeReloadUntilRelaunch: true
+                    )
                 }
         } else {
-            succeeded = await restoreBackup(from: url)
+            succeeded = await restoreBackup(
+                from: url,
+                defersRuntimeReloadUntilRelaunch: true
+            )
         }
         await MainActor.run {
             ExperimentalCloudSyncManager.shared.finishManualRestore(
                 syncSession,
                 succeeded: succeeded
             )
+            guard succeeded,
+                  let preferredProfileID = preflight.preferredActiveProfileID,
+                  preferredProfileID != ProfileManager.shared.activeProfileID else {
+                return
+            }
+            _ = ProfileManager.shared.stageRestoredProfileForNextLaunch(
+                preferredProfileID
+            )
+        }
+        if succeeded {
+            recordManualRestoreResult(
+                failureReason: nil,
+                importedRecordCount: preflight.watchRecordCount,
+                requiresRelaunch: true
+            )
+        } else if lastManualRestoreFailureReason == nil {
+            recordManualRestoreResult(
+                failureReason: "The backup could not be applied. No restored data was selected; wait for any cloud operation to finish and try again."
+            )
         }
         return succeeded
 #else
-        return await restoreBackup(from: url)
+        let succeeded = await restoreBackup(
+            from: url,
+            defersRuntimeReloadUntilRelaunch: true
+        )
+        if succeeded {
+            recordManualRestoreResult(
+                failureReason: nil,
+                importedRecordCount: preflight.watchRecordCount,
+                requiresRelaunch: true
+            )
+        }
+        return succeeded
 #endif
+    }
+
+    private func manualRestorePreflight(from url: URL) throws -> ManualRestorePreflight {
+        let data = try BoundedLocalStoreReader.read(
+            from: url,
+            maximumBytes: Self.maximumManualBackupFileBytes
+        )
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw BackupRestoreError.invalidDocument
+        }
+
+        let version = (object["version"] as? String) ?? "1.0"
+        guard Self.compareSchemaVersion(
+            version,
+            to: BackupData.currentCloudSchemaVersion
+        ) != .orderedDescending else {
+            throw BackupRestoreError.unsupportedVersion(version)
+        }
+
+        let knownPayloadKeys: Set<String> = [
+            "profiles", "progressData", "collections", "settings", "services",
+            "stremioAddons", "catalogs", "trackerState"
+        ]
+        guard !knownPayloadKeys.isDisjoint(with: Set(object.keys)) else {
+            throw BackupRestoreError.missingBackupPayload
+        }
+
+        func progressCount(in value: Any?) -> Int {
+            guard let progress = value as? [String: Any] else { return 0 }
+            let movieCount = (progress["movieProgress"] as? [Any])?.count ?? 0
+            let episodeCount = (progress["episodeProgress"] as? [Any])?.count ?? 0
+            return movieCount + episodeCount
+        }
+
+        let profiles = object["profiles"] as? [[String: Any]]
+        let profileRecordCount = profiles?.reduce(into: 0) { count, profile in
+            count += progressCount(in: profile["progressData"])
+        } ?? 0
+        let watchRecordCount = profileRecordCount > 0
+            ? profileRecordCount
+            : progressCount(in: object["progressData"])
+        let preferredActiveProfileID = (object["activeProfileID"] as? String)
+            .flatMap(UUID.init(uuidString:))
+
+        return ManualRestorePreflight(
+            watchRecordCount: watchRecordCount,
+            preferredActiveProfileID: preferredActiveProfileID
+        )
+    }
+
+    /// Validates a staged manual backup before the destructive confirmation is
+    /// presented. The restore repeats this bounded preflight so the file cannot
+    /// be replaced between selection and application without being rechecked.
+    func validateManualBackup(at url: URL) throws {
+        _ = try manualRestorePreflight(from: url)
     }
 
     func restoreBackup(
         from url: URL,
-        preservesSyncedMediaState: Bool = false
+        preservesSyncedMediaState: Bool = false,
+        defersRuntimeReloadUntilRelaunch: Bool = false
     ) async -> Bool {
         do {
             let jsonData = try BoundedLocalStoreReader.read(
@@ -13379,6 +13535,14 @@ private struct ScopedSettingsDefaults {
                     return false
                 }
                 let postApplyScope = postApply.scope
+                if defersRuntimeReloadUntilRelaunch {
+                    completeShareServicesRestoreTransaction(shareServicesTransaction)
+                    Logger.shared.log(
+                        "BackupManager: deferred source runtime reload until relaunch after manual restore",
+                        type: "Info"
+                    )
+                    return true
+                }
                 await SkyStreamPluginManager.shared.captureSourceDefaultsState(
                     expectedScopeGeneration: postApplyScope.servicesGeneration
                 )
@@ -13431,6 +13595,14 @@ private struct ScopedSettingsDefaults {
                 return false
             }
             let postApplyScope = postApply.scope
+            if defersRuntimeReloadUntilRelaunch {
+                completeShareServicesRestoreTransaction(shareServicesTransaction)
+                Logger.shared.log(
+                    "BackupManager: deferred source runtime reload until relaunch after manual restore",
+                    type: "Info"
+                )
+                return true
+            }
             await SkyStreamPluginManager.shared.captureSourceDefaultsState(
                 expectedScopeGeneration: postApplyScope.servicesGeneration
             )

@@ -461,6 +461,27 @@ enum ContinueWatchingRemovalTarget {
     }
 }
 
+enum ContinueWatchingPolicy {
+    static func canResume(currentTime: Double, duration: Double) -> Bool {
+        guard currentTime.isFinite, duration.isFinite, duration > 0 else { return false }
+        // Tracker completion at 85% must not hide a position the player can
+        // still resume. Manual completion stores the position at the end.
+        return currentTime >= min(30, duration * 0.05) && currentTime / duration < 0.95
+    }
+
+    static func merged<Item>(
+        resume: [Item], next: [Item],
+        key: (Item) -> String, updatedAt: (Item) -> Date, limit: Int = 10
+    ) -> [Item] {
+        var seen = Set<String>()
+        return Array((resume + next).filter { seen.insert(key($0)).inserted }
+            .sorted {
+                let lhs = updatedAt($0), rhs = updatedAt($1)
+                return lhs == rhs ? key($0) < key($1) : lhs > rhs
+            }.prefix(max(0, limit)))
+    }
+}
+
 struct ContinueWatchingItem: Identifiable {
     let id: String
     let tmdbId: Int
@@ -2933,7 +2954,7 @@ final class ProgressManager: ObservableObject {
         accessQueue.sync {
 
             let movies = self.progressData.movieProgress
-                .filter { !$0.isWatched && $0.progress > Self.continueWatchingMinimumProgress && $0.progress < Self.watchedProgressThreshold }
+                .filter { ContinueWatchingPolicy.canResume(currentTime: $0.currentTime, duration: $0.totalDuration) }
                 .map { movie in
                     ContinueWatchingItem(
                         id: "movie_\(movie.id)",
@@ -2956,7 +2977,7 @@ final class ProgressManager: ObservableObject {
                 }
 
             var showMap: [Int: EpisodeProgressEntry] = [:]
-            for episode in self.progressData.episodeProgress where Self.isActiveContinueWatchingEpisode(episode) {
+            for episode in self.progressData.episodeProgress where episode.currentTime > 0 || episode.isWatched {
                 if let existing = showMap[episode.showId] {
                     if episode.lastUpdated > existing.lastUpdated {
                         showMap[episode.showId] = episode
@@ -2966,7 +2987,7 @@ final class ProgressManager: ObservableObject {
                 }
             }
 
-            let episodes = showMap.values.map { episode in
+            let episodes = showMap.values.filter(Self.isActiveContinueWatchingEpisode).map { episode in
 
                 let showMeta = self.progressData.getShowMetadata(showId: episode.showId)
                 return ContinueWatchingItem(
@@ -3010,7 +3031,10 @@ final class ProgressManager: ObservableObject {
                     }
 
                     let regularEpisodes = episodes.filter(Self.isRegularEpisode)
-                    guard !regularEpisodes.contains(where: Self.isActiveContinueWatchingEpisode) else {
+                    let latest = regularEpisodes
+                        .filter { $0.currentTime > 0 || $0.isWatched }
+                        .max { $0.lastUpdated < $1.lastUpdated }
+                    guard latest.map(Self.isActiveContinueWatchingEpisode) != true else {
                         return nil
                     }
 
@@ -3056,9 +3080,7 @@ final class ProgressManager: ObservableObject {
     }
 
     private static func isActiveContinueWatchingEpisode(_ episode: EpisodeProgressEntry) -> Bool {
-        !episode.isWatched &&
-        episode.progress > continueWatchingMinimumProgress &&
-        episode.progress < watchedProgressThreshold
+        ContinueWatchingPolicy.canResume(currentTime: episode.currentTime, duration: episode.totalDuration)
     }
 
     private static func isEpisodeBefore(_ lhs: EpisodeProgressEntry, _ rhs: EpisodeProgressEntry) -> Bool {
