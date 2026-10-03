@@ -14405,20 +14405,17 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 case .stremio(let result):
                     guard let value = result.subtitle.url, let url = URL(string: value),
                           url.scheme == "https" || url.scheme == "http" else {
-                        throw SubtitleTranslationError.connection
+                        throw SubtitleAISourceError.downloadFailed
                     }
-                    let (data, response) = try await URLSession.shared.data(from: url)
-                    guard (response as? HTTPURLResponse)?.statusCode == 200,
-                          data.count <= SubtitleFileHandling.maximumBytes else {
-                        throw SubtitleTranslationError.connection
+                    let download: (Data, URLResponse)
+                    do {
+                        download = try await URLSession.shared.data(from: url)
+                    } catch {
+                        try Task.checkCancellation()
+                        throw SubtitleAISourceError.downloadFailed
                     }
-                    let ext = url.pathExtension.lowercased()
-                    let fallbackFormat = result.candidate?.format?.lowercased() ?? "srt"
-                    let fileName = ["srt", "vtt", "ass", "ssa", "zip", "gz"].contains(ext)
-                        ? (ext == "gz" && !url.lastPathComponent.lowercased().hasSuffix(".srt.gz")
-                            ? "subtitle.srt.gz" : url.lastPathComponent)
-                        : (fallbackFormat == "gz" ? "subtitle.srt.gz" : "subtitle.\(fallbackFormat)")
-                    prepared = try SubtitleFileHandling.prepare(data, fileName: fileName)
+                    prepared = try StremioAISubtitleInput.prepare(download.0, response: download.1,
+                        url: url, candidateFormat: result.candidate?.format)
                 }
                 try Task.checkCancellation()
                 guard let format = SubtitleDocumentFormat(rawValue: prepared.format) else {
@@ -14500,7 +14497,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 return
             } catch {
                 guard self.playbackLoadGeneration == generation, self.aiTranslationRevision == revision else { return }
-                self.aiTranslationStatus = (error as? SubtitleTranslationError)?.localizedDescription ?? String(localized: "AI çeviri başarısız")
+                self.aiTranslationStatus = (error as? SubtitleFileError)?.aiStatus
+                    ?? (error as? SubtitleAISourceError)?.localizedDescription
+                    ?? (error as? SubtitleTranslationError)?.localizedDescription
+                    ?? String(localized: "AI çeviri başarısız")
                 self.aiTranslationFailed = true
                 self.updateSubtitleTracksMenu()
                 self.refreshVisibleOverlayMenuIfNeeded(kind: "subtitles")

@@ -450,6 +450,8 @@ final class SubtitleTranslationTests: XCTestCase {
             language: "tur", format: "srt", isMachineTranslated: false))
         XCTAssertFalse(SubtitleTranslationSourcePolicy.selectedEnglish(
             language: "en", format: "pgs", isMachineTranslated: false))
+        XCTAssertTrue(SubtitleTranslationSourcePolicy.selectedEnglish(
+            language: "en", format: "bin", isMachineTranslated: false))
         XCTAssertFalse(SubtitleTranslationSourcePolicy.selectedEnglish(
             language: "en", format: "srt", isMachineTranslated: true))
     }
@@ -480,5 +482,40 @@ final class SubtitleTranslationTests: XCTestCase {
         XCTAssertNil(selection.selectedURL)
         XCTAssertFalse(selection.isCurrent(url: "https://example.invalid/english.srt",
                                            generation: 5, isActiveTrack: true))
+    }
+
+    func testStremioAIInputAcceptsTwoHundredsAndRejectsOtherHTTPStatuses() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.invalid/subtitles"))
+        let body = source(1)
+        for code in [200, 201, 206, 299] {
+            let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: code,
+                httpVersion: "HTTP/1.1", headerFields: nil))
+            XCTAssertEqual(try StremioAISubtitleInput.prepare(body, response: response,
+                url: url, candidateFormat: nil).format, "srt")
+        }
+        for code in [199, 300, 404, 500] {
+            let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: code,
+                httpVersion: "HTTP/1.1", headerFields: nil))
+            XCTAssertThrowsError(try StremioAISubtitleInput.prepare(body, response: response,
+                url: url, candidateFormat: nil)) { error in
+                XCTAssertEqual((error as? SubtitleAISourceError)?.localizedDescription, "Altyazı indirilemedi")
+            }
+        }
+    }
+
+    func testExtensionlessStremioSubtitleReachesTranslationProvider() async throws {
+        let url = try XCTUnwrap(URL(string: "https://example.invalid/subtitles?id=opaque"))
+        let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206,
+            httpVersion: "HTTP/1.1", headerFields: nil))
+        let prepared = try StremioAISubtitleInput.prepare(source(1), response: response,
+            url: url, candidateFormat: nil)
+        let format = try XCTUnwrap(SubtitleDocumentFormat(rawValue: prepared.format))
+        let provider = MockTranslationProvider()
+        let engine = SubtitleTranslationEngine(provider: provider, cache: MockTranslationCache())
+        let result = try await engine.translate(source: prepared.data, format: format,
+            configuration: config(), playbackTime: 0) { _ in }
+        XCTAssertEqual(result.translated, 1)
+        let calls = await provider.calls
+        XCTAssertEqual(calls, 1)
     }
 }

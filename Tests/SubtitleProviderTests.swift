@@ -328,13 +328,47 @@ final class SubtitleProviderTests: XCTestCase {
         let selected = try SubtitleFileHandling.prepare(zip, fileName: "season.zip", query: query())
         XCTAssertEqual(selected.fileName, "Jujutsu.Kaisen.S01E01.srt")
         XCTAssertTrue(String(decoding: selected.data, as: UTF8.self).contains("Doğru"))
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(zip, hintedFileName: "subtitle.bin",
+            query: query()).format, "srt")
 
         let gzip = try XCTUnwrap(Data(base64Encoded: "H4sIAIwLv2oC/zPkMjCwAiFDHQMDAwVdXTsFqIARSIAr5PCeouzDy1O5ADDR20gpAAAA"))
         let inflated = try SubtitleFileHandling.prepare(gzip, fileName: "episode.srt.gz")
         XCTAssertTrue(String(decoding: inflated.data, as: UTF8.self).contains("Türkçe"))
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(gzip, hintedFileName: "subtitle.json").format, "srt")
 
         let ass = Data("[Script Info]\nTitle: Jujutsu Kaisen\n[Events]\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Türkçe\n".utf8)
         XCTAssertEqual(try SubtitleFileHandling.prepare(ass, fileName: "episode.ass").format, "ass")
+    }
+
+    func testStremioAIFormatDetectionUsesContentOverMissingOrMisleadingExtension() throws {
+        let srt = Data("1\n00:00:01,000 --> 00:00:02,000\nHello\n".utf8)
+        let vtt = Data("WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n".utf8)
+        let ass = Data("[Script Info]\nTitle: Example\n[Events]\nFormat: Start, End, Text\nDialogue: 0:00:01.00,0:00:02.00,Hello\n".utf8)
+        let ssa = Data("[Script Info]\nTitle: Example\n[V4 Styles]\nFormat: Name, Fontname\n[Events]\nFormat: Start, End, Text\nDialogue: 0:00:01.00,0:00:02.00,Hello\n".utf8)
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(srt, hintedFileName: "subtitle").format, "srt")
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(vtt, hintedFileName: "subtitle").format, "vtt")
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(ass, hintedFileName: "subtitle").format, "ass")
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(ssa, hintedFileName: "subtitle").format, "ssa")
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(srt, hintedFileName: "subtitle.bin").format, "srt")
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(vtt, hintedFileName: "subtitle.json",
+            hintedFormat: "srt").format, "vtt")
+        XCTAssertEqual(try SubtitleFileHandling.prepareDetected(ass, hintedFileName: "subtitle.srt").format, "ass")
+    }
+
+    func testStremioAIFormatDetectionRejectsMalformedBodyAndPreservesLimit() {
+        XCTAssertThrowsError(try SubtitleFileHandling.prepareDetected(Data("garbage".utf8),
+            hintedFileName: "subtitle.bin")) { error in
+            XCTAssertEqual((error as? SubtitleFileError)?.aiStatus, "Altyazı biçimi tanınamadı")
+        }
+        XCTAssertThrowsError(try SubtitleFileHandling.prepareDetected(Data("wrong --> timestamps".utf8),
+            hintedFileName: "subtitle.srt")) { error in
+            XCTAssertEqual((error as? SubtitleFileError)?.aiStatus, "Altyazıda zaman kodu bulunamadı")
+        }
+        XCTAssertThrowsError(try SubtitleFileHandling.prepareDetected(
+            Data(repeating: 0x41, count: SubtitleFileHandling.maximumBytes + 1), hintedFileName: "subtitle.srt")) {
+            error in
+            XCTAssertEqual((error as? SubtitleFileError)?.aiStatus, "Altyazı 12 MB sınırını aşıyor")
+        }
     }
 
     func testMalformedAndUnsupportedSubtitleFilesFailClearly() {

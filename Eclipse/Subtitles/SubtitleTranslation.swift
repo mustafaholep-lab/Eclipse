@@ -261,8 +261,9 @@ enum SubtitleTranslationSourcePolicy {
     static func selectedEnglish(language: String?, format: String?, isMachineTranslated: Bool) -> Bool {
         guard StremioSubtitleLanguagePolicy.canonicalCode(language) == "en",
               !isMachineTranslated else { return false }
-        guard let format, !format.isEmpty else { return true } // Inspect the downloaded bytes before translation.
-        return ["srt", "vtt", "ass", "ssa", "zip", "gz"].contains(format.lowercased())
+        // An extension can be missing or misleading. The downloaded bytes are validated before translation.
+        guard let format else { return true }
+        return !["pgs", "sup", "sub", "idx", "dvb", "xsub"].contains(format.lowercased())
     }
 
     static func embeddedEnglishText(name: String, codec: String,
@@ -326,6 +327,24 @@ struct ExplicitAISourceSelection {
 
     func isCurrent(url: String, generation: Int, isActiveTrack: Bool) -> Bool {
         isActiveTrack && generation == self.generation && selectedURL == url
+    }
+}
+
+enum SubtitleAISourceError: LocalizedError {
+    case downloadFailed
+
+    var errorDescription: String? { "Altyazı indirilemedi" }
+}
+
+enum StremioAISubtitleInput {
+    static func prepare(_ data: Data, response: URLResponse, url: URL,
+                        candidateFormat: String?) throws -> PreparedSubtitleFile {
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            throw SubtitleAISourceError.downloadFailed
+        }
+        return try SubtitleFileHandling.prepareDetected(data,
+            hintedFileName: url.lastPathComponent, hintedFormat: candidateFormat)
     }
 }
 

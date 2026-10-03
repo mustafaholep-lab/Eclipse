@@ -24,6 +24,17 @@ enum SubtitleFileError: LocalizedError {
         case .missingTimedCues: return "The file does not contain timed subtitle cues."
         }
     }
+
+    var aiStatus: String {
+        switch self {
+        case .empty: return "Altyazı dosyası boş"
+        case .tooLarge: return "Altyazı 12 MB sınırını aşıyor"
+        case .unsupportedFormat: return "Altyazı biçimi tanınamadı"
+        case .unreadableArchive, .noMatchingSubtitle: return "Altyazı arşivi okunamadı"
+        case .invalidEncoding: return "Altyazı metni okunamadı"
+        case .missingTimedCues: return "Altyazıda zaman kodu bulunamadı"
+        }
+    }
 }
 
 struct PreparedSubtitleFile: Sendable {
@@ -36,6 +47,48 @@ enum SubtitleFileHandling {
     static let maximumBytes = 12 * 1_024 * 1_024
     private static let formats: Set<String> = ["srt", "vtt", "ass", "ssa"]
 
+    /// For online AI sources, the response body is authoritative; URL and addon formats are hints.
+    static func prepareDetected(_ data: Data, hintedFileName: String? = nil,
+                                hintedFormat: String? = nil, query: SubtitleQuery? = nil) throws -> PreparedSubtitleFile {
+        guard !data.isEmpty else { throw SubtitleFileError.empty }
+        guard data.count <= maximumBytes else { throw SubtitleFileError.tooLarge }
+        if data.starts(with: [0x50, 0x4b, 0x03, 0x04]) {
+            return try validateTimedDocument(prepare(data, fileName: "subtitle.zip", query: query))
+        }
+        if data.starts(with: [0x1f, 0x8b]) {
+            return try prepare(data, fileName: "subtitle.gz", query: query)
+        }
+        guard let decoded = decodeText(data) else { throw SubtitleFileError.invalidEncoding }
+        var text = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("\u{feff}") { text.removeFirst() }
+        let detected: String?
+        if text.hasPrefix("WEBVTT") {
+            detected = "vtt"
+        } else if text.range(of: #"(?im)^\s*\[Events\]\s*$"#, options: .regularExpression) != nil,
+                  text.range(of: #"(?im)^\s*Dialogue\s*:"#, options: .regularExpression) != nil {
+            detected = text.range(of: #"(?im)^\s*\[V4 Styles\]\s*$"#, options: .regularExpression) != nil
+                ? "ssa" : "ass"
+        } else if text.contains("-->") {
+            detected = "srt"
+        } else {
+            detected = nil
+        }
+        let hinted = [hintedFormat, hintedFileName.map { ($0 as NSString).pathExtension }]
+            .compactMap { $0?.lowercased() }.first(where: { formats.contains($0) })
+        guard let format = detected ?? hinted, formats.contains(format) else {
+            throw SubtitleFileError.unsupportedFormat
+        }
+        let prepared = try prepare(data, fileName: "subtitle.\(format)", query: query)
+        return try validateTimedDocument(prepared)
+    }
+
+    private static func validateTimedDocument(_ prepared: PreparedSubtitleFile) throws -> PreparedSubtitleFile {
+        guard let documentFormat = SubtitleDocumentFormat(rawValue: prepared.format),
+              let document = try? SubtitleDocument.parse(prepared.data, format: documentFormat),
+              !document.units.isEmpty else { throw SubtitleFileError.missingTimedCues }
+        return prepared
+    }
+
     static func prepare(_ data: Data, fileName: String, query: SubtitleQuery? = nil) throws -> PreparedSubtitleFile {
         guard !data.isEmpty else { throw SubtitleFileError.empty }
         guard data.count <= maximumBytes else { throw SubtitleFileError.tooLarge }
@@ -45,7 +98,7 @@ enum SubtitleFileHandling {
         if data.starts(with: [0x1f, 0x8b]) {
             guard let inflated = inflateGZIP(data) else { throw SubtitleFileError.unreadableArchive }
             let name = (fileName as NSString).deletingPathExtension
-            return try prepare(inflated, fileName: name, query: query)
+            return try prepareDetected(inflated, hintedFileName: name, query: query)
         }
         let format = (fileName as NSString).pathExtension.lowercased()
         guard formats.contains(format) else { throw SubtitleFileError.unsupportedFormat }
