@@ -1526,6 +1526,18 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private let backgroundRecoveryProgressSuppressionWindow: TimeInterval = 12.0
     private let backgroundRecoveryProgressMaxGuardWindow: TimeInterval = 60.0
     private let backgroundRecoveryProgressJumpTolerance: Double = 12.0
+    private struct LifecycleMediaStateGuard {
+        let mediaKey: String
+        var lastVerified: PlaybackLifecycleRecoveryPolicy.Sample
+        var foregroundedAt: Date?
+        var positionAtForeground: Double?
+        var pendingRecoveryPosition: Double?
+    }
+    private var lifecycleMediaStateGuard: LifecycleMediaStateGuard?
+    private var lifecycleRecoveryAttempts = 0
+    private var isPerformingLifecycleRecoveryLoad = false
+    private let lifecycleGuardVerifiedPlaybackWindow: Double = 60.0
+    private var playbackPausedIntent: Bool?
     private struct VLCSubtitleStyleReloadProgressGate {
         let id: Int
         let armedAt: Date
@@ -1676,6 +1688,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             mpvBackgroundFallbackPauseIntentGeneration = nil
             mpvBackgroundFallbackPauseLifecycleGeneration = nil
         }
+        playbackPausedIntent = false
         if vlcRenderer != nil {
             logVLCUI("rendererPlay requested cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)", type: "Stream")
         } else {
@@ -1694,6 +1707,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             mpvBackgroundFallbackPauseIntentGeneration = nil
             mpvBackgroundFallbackPauseLifecycleGeneration = nil
         }
+        playbackPausedIntent = true
         if vlcRenderer != nil {
             logVLCUI("rendererPause requested cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)", type: "Stream")
         } else {
@@ -1708,6 +1722,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         mpvBackgroundFallbackAutoPaused = false
         mpvBackgroundFallbackPauseIntentGeneration = nil
         mpvBackgroundFallbackPauseLifecycleGeneration = nil
+        playbackPausedIntent = !rendererIsPausedState()
         if vlcRenderer != nil {
             logVLCUI("rendererTogglePause requested paused=\(rendererIsPausedState()) loading=\(isRendererLoading) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration))", type: "VLCPlayback")
         } else {
@@ -1927,6 +1942,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             logMPV("rendererSeek(to:) target=\(secondsText(seconds)) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)")
         }
         releaseBackgroundRecoveryProgressGate(reason: "explicit-seek")
+        rebaseLifecycleMediaStateGuard(toRequestedPosition: seconds)
 #if DEBUG
         traceMPVSeek(kind: "absolute", value: seconds)
 #endif
@@ -1954,6 +1970,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             logMPV("rendererSeek(by:) delta=\(secondsText(seconds)) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) loading=\(isRendererLoading)")
         }
         releaseBackgroundRecoveryProgressGate(reason: "explicit-relative-seek")
+        rebaseLifecycleMediaStateGuard(toRequestedPosition: cachedPosition + seconds)
 #if DEBUG
         traceMPVSeek(kind: "relative", value: seconds)
 #endif
@@ -2000,6 +2017,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
               mediaInfo != nil else {
             return
         }
+        armLifecycleMediaStateGuardIfNeeded(mediaKey: mediaKey, source: source)
 
         let wasPlaying = !rendererIsPausedState() && (playbackDidStart || cachedPosition > 0.1)
         guard wasPlaying else {
@@ -2031,6 +2049,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func markBackgroundRecoveryForegrounded(source: String) {
+        markLifecycleMediaStateGuardForegrounded(source: source)
         guard var gate = backgroundRecoveryProgressGate else { return }
         if gate.foregroundedAt == nil {
             gate.foregroundedAt = Date()
@@ -2052,6 +2071,183 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         guard let gate = backgroundRecoveryProgressGate else { return }
         backgroundRecoveryProgressGate = nil
         Logger.shared.log("[PlayerVC.Recovery] released progress gate id=\(gate.id) reason=\(reason) renderer=\(gate.rendererName) media=\(gate.mediaKey) armedSource=\(gate.source)", type: "Progress")
+    }
+
+    // MARK: Lifecycle media-state guard
+    //
+    // The progress gate above only delays persistence. This guard validates what mpv reports
+    // after a background/foreground cycle against what could actually have played, and reloads
+    // the item at the last verified position when the media session did not survive suspension
+    // (see PlaybackLifecycleRecoveryPolicy).
+
+    private func armLifecycleMediaStateGuardIfNeeded(mediaKey: String, source: String) {
+        guard isMPVRenderer, !isVLCPlayer, playbackDidStart, !isClosing else { return }
+        if var existing = lifecycleMediaStateGuard, existing.mediaKey == mediaKey {
+            guard existing.foregroundedAt != nil else { return }
+            existing.foregroundedAt = nil
+            existing.positionAtForeground = nil
+            lifecycleMediaStateGuard = existing
+            Logger.shared.log("[PlayerVC.Lifecycle] guard re-armed source=\(source) verified=\(secondsText(existing.lastVerified.position))", type: "Progress")
+            return
+        }
+        lifecycleRecoveryAttempts = 0
+        lifecycleMediaStateGuard = LifecycleMediaStateGuard(
+            mediaKey: mediaKey,
+            lastVerified: .init(position: max(0, cachedPosition), at: Date())
+        )
+        Logger.shared.log("[PlayerVC.Lifecycle] guard armed source=\(source) verified=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) paused=\(rendererIsPausedState())", type: "Progress")
+    }
+
+    private func markLifecycleMediaStateGuardForegrounded(source: String) {
+        guard var mediaGuard = lifecycleMediaStateGuard,
+              mediaGuard.foregroundedAt == nil,
+              UIApplication.shared.applicationState != .background else { return }
+        let now = Date()
+        // A suspended process cannot advance playback, so suspended wall-clock time must not
+        // widen the plausible-advance window. Running background playback (PiP/audio) keeps
+        // refreshing the verified sample through position updates and loses nothing here.
+        mediaGuard.lastVerified = .init(position: mediaGuard.lastVerified.position, at: now)
+        mediaGuard.foregroundedAt = now
+        mediaGuard.positionAtForeground = mediaGuard.lastVerified.position
+        let pendingRecoveryPosition = mediaGuard.pendingRecoveryPosition
+        mediaGuard.pendingRecoveryPosition = nil
+        lifecycleMediaStateGuard = mediaGuard
+        Logger.shared.log("[PlayerVC.Lifecycle] guard foregrounded source=\(source) verified=\(secondsText(mediaGuard.lastVerified.position)) pausedIntent=\(String(describing: playbackPausedIntent)) rendererPaused=\(rendererIsPausedState())", type: "Progress")
+
+        if let pendingRecoveryPosition {
+            recoverLifecycleMediaState(reason: "background-eof-jump", resumePosition: pendingRecoveryPosition)
+            return
+        }
+        let mediaKey = mediaGuard.mediaKey
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + PlaybackLifecycleRecoveryPolicy.foregroundStallThreshold + 0.5
+        ) { [weak self] in
+            self?.evaluateLifecycleForegroundStall(mediaKey: mediaKey, foregroundedAt: now)
+        }
+    }
+
+    private func evaluateLifecycleForegroundStall(mediaKey: String, foregroundedAt: Date) {
+        guard let mediaGuard = lifecycleMediaStateGuard,
+              mediaGuard.mediaKey == mediaKey,
+              mediaGuard.foregroundedAt == foregroundedAt,
+              let positionAtForeground = mediaGuard.positionAtForeground,
+              !isClosing,
+              !playbackFailureHandled,
+              !isSeeking,
+              pendingInitialResumeTarget == nil,
+              !rendererIsPictureInPictureActive(),
+              UIApplication.shared.applicationState == .active else { return }
+        let pausedIntent = playbackPausedIntent ?? rendererIsPausedState()
+        let stalled = PlaybackLifecycleRecoveryPolicy.isStalledAfterForeground(
+            positionAtForeground: positionAtForeground,
+            currentPosition: mediaGuard.lastVerified.position,
+            foregroundedAt: foregroundedAt,
+            now: Date(),
+            isPausedIntent: pausedIntent
+        )
+        Logger.shared.log("[PlayerVC.Lifecycle] foreground check stalled=\(stalled) foreground=\(secondsText(positionAtForeground)) verified=\(secondsText(mediaGuard.lastVerified.position)) pausedIntent=\(pausedIntent) loading=\(isRendererLoading)", type: "Progress")
+        guard stalled else { return }
+        recoverLifecycleMediaState(reason: "foreground-stall", resumePosition: positionAtForeground)
+    }
+
+    private func rebaseLifecycleMediaStateGuard(toRequestedPosition position: Double) {
+        guard var mediaGuard = lifecycleMediaStateGuard, position.isFinite else { return }
+        mediaGuard.lastVerified = .init(position: clampedPlaybackPosition(position), at: Date())
+        mediaGuard.positionAtForeground = mediaGuard.foregroundedAt == nil ? nil : mediaGuard.lastVerified.position
+        lifecycleMediaStateGuard = mediaGuard
+    }
+
+    private func releaseLifecycleMediaStateGuard(reason: String) {
+        guard let mediaGuard = lifecycleMediaStateGuard else { return }
+        lifecycleMediaStateGuard = nil
+        Logger.shared.log("[PlayerVC.Lifecycle] guard released reason=\(reason) verified=\(secondsText(mediaGuard.lastVerified.position))", type: "Progress")
+    }
+
+    /// Returns true when the reported position is a symptom of a lost media session and must not
+    /// update UI state, progress persistence, or next-episode logic.
+    private func shouldDiscardPositionAfterLifecycleTransition(_ position: Double, duration: Double) -> Bool {
+        guard var mediaGuard = lifecycleMediaStateGuard else { return false }
+        guard isMPVRenderer, !isVLCPlayer, currentMediaProgressKey() == mediaGuard.mediaKey else {
+            releaseLifecycleMediaStateGuard(reason: "media-changed")
+            return false
+        }
+        let now = Date()
+        // An initial or source-refresh resume seek legitimately moves far forward.
+        guard pendingInitialResumeTarget == nil else {
+            mediaGuard.lastVerified = .init(position: position, at: now)
+            lifecycleMediaStateGuard = mediaGuard
+            return false
+        }
+
+        let referenceDuration = max(duration.isFinite ? duration : 0, cachedDuration)
+        let verdict = PlaybackLifecycleRecoveryPolicy.evaluate(
+            position: position,
+            duration: referenceDuration,
+            at: now,
+            lastVerified: mediaGuard.lastVerified,
+            playbackSpeed: rendererGetSpeed()
+        )
+        switch verdict {
+        case .accept:
+            mediaGuard.lastVerified = .init(position: position, at: now)
+            lifecycleMediaStateGuard = mediaGuard
+            if let positionAtForeground = mediaGuard.positionAtForeground,
+               position >= positionAtForeground + lifecycleGuardVerifiedPlaybackWindow {
+                releaseLifecycleMediaStateGuard(reason: "verified-playback")
+            }
+            return false
+        case .spuriousEndOfFileJump(let resumePosition):
+            Logger.shared.log("[PlayerVC.Lifecycle] discarded unrequested jump to end position=\(secondsText(position))/\(secondsText(referenceDuration)) verified=\(secondsText(resumePosition)) foregrounded=\(mediaGuard.foregroundedAt != nil) rendererPaused=\(rendererIsPausedState()) pausedIntent=\(String(describing: playbackPausedIntent)) attempts=\(lifecycleRecoveryAttempts)", type: "Progress")
+            guard mediaGuard.foregroundedAt != nil else {
+                mediaGuard.pendingRecoveryPosition = resumePosition
+                lifecycleMediaStateGuard = mediaGuard
+                return true
+            }
+            recoverLifecycleMediaState(reason: "spurious-eof-jump", resumePosition: resumePosition)
+            return true
+        }
+    }
+
+    private func recoverLifecycleMediaState(reason: String, resumePosition: Double) {
+        guard !isClosing, !isBeingDismissed, let mediaKey = currentMediaProgressKey() else { return }
+        let pausedIntent = playbackPausedIntent ?? false
+        guard lifecycleRecoveryAttempts < PlaybackLifecycleRecoveryPolicy.maximumRecoveryAttempts else {
+            Logger.shared.log("[PlayerVC.Lifecycle] recovery abandoned reason=\(reason) attempts=\(lifecycleRecoveryAttempts) verified=\(secondsText(resumePosition))", type: "Progress")
+            releaseLifecycleMediaStateGuard(reason: "recovery-abandoned")
+            rendererPausePlayback()
+            showTransientErrorBanner("Playback could not be restored after returning to the app. Your position was kept; reopen the video to continue.", duration: 8)
+            return
+        }
+        lifecycleRecoveryAttempts += 1
+        Logger.shared.log("[PlayerVC.Lifecycle] recovering media session reason=\(reason) attempt=\(lifecycleRecoveryAttempts) resume=\(secondsText(resumePosition)) pausedIntent=\(pausedIntent)", type: "Progress")
+
+        guard let context = playbackLaunchContext,
+              let preset = initialPreset,
+              let url = URL(string: context.streamURL) else {
+            rendererSeek(to: resumePosition)
+            if pausedIntent {
+                rendererPausePlayback()
+            }
+            return
+        }
+
+        initialSubtitles = context.subtitles.isEmpty ? nil : context.subtitles
+        initialSubtitleNames = context.subtitleNames
+        initialSubtitleHeadersByURL = context.subtitleHeadersByURL
+        pendingSourceRefreshResumePosition = resumePosition
+        playbackFailureHandled = false
+        isPerformingLifecycleRecoveryLoad = true
+        load(url: url, preset: preset, headers: context.headers, playbackShouldResumeAfterLoad: !pausedIntent)
+        isPerformingLifecycleRecoveryLoad = false
+
+        // Keep validating the reloaded session so a repeat of the same failure is bounded.
+        let now = Date()
+        lifecycleMediaStateGuard = LifecycleMediaStateGuard(
+            mediaKey: mediaKey,
+            lastVerified: .init(position: resumePosition, at: now),
+            foregroundedAt: now,
+            positionAtForeground: resumePosition
+        )
     }
 
     private func setVLCSubtitleStyleReloadProgressGate(active: Bool, reason: String) {
@@ -4644,6 +4840,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         mpvBackgroundFallbackAutoPaused = false
         mpvBackgroundFallbackPauseIntentGeneration = nil
         mpvBackgroundFallbackPauseLifecycleGeneration = nil
+        playbackPausedIntent = !shouldResume
         if shouldResume {
             renderer.play()
         } else {
@@ -4831,6 +5028,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         pendingWatchTogetherPlaybackState = nil
 #endif
         releaseBackgroundRecoveryProgressGate(reason: "new-load")
+        if !isPerformingLifecycleRecoveryLoad {
+            releaseLifecycleMediaStateGuard(reason: "new-load")
+            lifecycleRecoveryAttempts = 0
+            playbackPausedIntent = nil
+        }
         setVLCSubtitleStyleReloadProgressGate(active: false, reason: "new-load")
         if let info = mediaInfo {
             prepareSeekToLastPosition(for: info)
@@ -16470,6 +16672,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if mpvBridgeDurationLooksLikeWindow && abs(duration - lastIgnoredMPVBridgeDurationLogValue) > 0.5 {
             lastIgnoredMPVBridgeDurationLogValue = duration
             Logger.shared.log("[PlayerVC.progress] ignoring tiny MPV bridge duration raw=\(secondsText(duration)) position=\(secondsText(safePosition)); treating HLS window as unknown duration", type: "MPV")
+        }
+
+        if shouldDiscardPositionAfterLifecycleTransition(safePosition, duration: duration) {
+            return
         }
 
         let previousPosition = cachedPosition

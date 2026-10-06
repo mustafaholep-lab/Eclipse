@@ -11,6 +11,7 @@ on:
       - "Tests/SubtitleProviderTests.swift"
       - "Tests/SubtitleDocumentTests.swift"
       - "Tests/SubtitleTranslationTests.swift"
+      - "Tests/PlaybackLifecycleRecoveryPolicyTests.swift"
       - "Package.swift"
       - "Build.xcconfig"
       - ".github/workflows/build-patched-ipa.yml"
@@ -108,6 +109,7 @@ jobs:
             -only-testing:Tests/SubtitleTranslationTests \
             -only-testing:Tests/AnimeStructurePolicyTests \
             -only-testing:Tests/MPVScalerPolicyTests \
+            -only-testing:Tests/PlaybackLifecycleRecoveryPolicyTests \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
             -skipPackagePluginValidation \

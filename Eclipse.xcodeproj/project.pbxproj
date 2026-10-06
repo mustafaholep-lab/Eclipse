@@ -52,6 +52,7 @@
 		SRPTESTBF000000000000001 /* StreamReachabilityVerdictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */; };
 		WTSYNCTESTBF000000000001 /* WatchTogetherProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */; };
 		SCLRPTSTBF00000000000001 /* MPVScalerPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */; };
+		LCRPTSTBF000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */; };
 		SCLRPTSTTVB0000000000001 /* MPVScalerPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */; };
 		A11E57402F00000000000001 /* ProfileLaunchGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E573E2F00000000000001 /* ProfileLaunchGateTests.swift */; };
 		A11E57502F00000000000001 /* MaturityRatingRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E574E2F00000000000001 /* MaturityRatingRegionTests.swift */; };
@@ -155,6 +156,7 @@
 		SHDRLIBIOSBUILD000000001 /* MPVUserShaderLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */; };
 		SHDRLIBTVBUILD0000000001 /* MPVUserShaderLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */; };
 		SCLRPOLIOSBUILD000000001 /* MPVScalerPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */; };
+		LCRPOLIOSBUILD0000000001 /* PlaybackLifecycleRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = LCRPOLFILEREF00000000001 /* PlaybackLifecycleRecoveryPolicy.swift */; };
 		SCLRPOLTVBUILD0000000001 /* MPVScalerPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */; };
 		SHDRDIRIOSBUILD000000001 /* Shaders in Resources */ = {isa = PBXBuildFile; fileRef = SHDRDIRFILEREF0000000001 /* Shaders */; };
 		SHDRDIRTVBUILD0000000001 /* Shaders in Resources */ = {isa = PBXBuildFile; fileRef = SHDRDIRFILEREF0000000001 /* Shaders */; };
@@ -437,6 +439,7 @@
 		SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamReachabilityVerdictTests.swift; sourceTree = "<group>"; };
 		WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTogetherProtocolTests.swift; sourceTree = "<group>"; };
 		SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVScalerPolicyTests.swift; sourceTree = "<group>"; };
+		LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackLifecycleRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		A11E573E2F00000000000001 /* ProfileLaunchGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileLaunchGateTests.swift; sourceTree = "<group>"; };
 		A11E574E2F00000000000001 /* MaturityRatingRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaturityRatingRegionTests.swift; sourceTree = "<group>"; };
 		A11E575E2F00000000000001 /* MediaStateMergeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaStateMergeTests.swift; sourceTree = "<group>"; };
@@ -518,6 +521,7 @@
 		1324E7B32E940BD70036B5F5 /* PlayerPreset.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PlayerPreset.swift; sourceTree = "<group>"; };
 		SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MPVUserShaderLibrary.swift; sourceTree = "<group>"; };
 		SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MPVScalerPolicy.swift; sourceTree = "<group>"; };
+		LCRPOLFILEREF00000000001 /* PlaybackLifecycleRecoveryPolicy.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PlaybackLifecycleRecoveryPolicy.swift; sourceTree = "<group>"; };
 		SHDRDIRFILEREF0000000001 /* Shaders */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Shaders; sourceTree = "<group>"; };
 		RDRLEGALFILEREF00000001 /* ReaderExtensionLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ReaderExtensionLicenses; path = Legal/ReaderExtensions; sourceTree = "<group>"; };
 		OSSLEGALFILEREF000000001 /* OpenSourceLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OpenSourceLicenses; path = Legal/OpenSourceLicenses; sourceTree = "<group>"; };
@@ -778,6 +782,7 @@
 				SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */,
 				WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */,
 				SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */,
+				LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */,
 				B03E4488C6DE4E6C8CFD5900 /* PlaybackInputSafetyTests.swift */,
 				C90B9356AC0D4DD8B8D31500 /* DownloadResumeTests.swift */,
 				A11E573E2F00000000000001 /* ProfileLaunchGateTests.swift */,
@@ -856,6 +861,7 @@
 				1324E7B42E940BD70036B5F5 /* MPVNativeRenderer.swift */,
 				SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */,
 				SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */,
+				LCRPOLFILEREF00000000001 /* PlaybackLifecycleRecoveryPolicy.swift */,
 				SHDRDIRFILEREF0000000001 /* Shaders */,
 				F9A1B2D12F90000100A1B2D1 /* MPVHeaderProxy.swift */,
 				1324E7B62E940BD70036B5F5 /* SampleBufferDisplayView.swift */,
@@ -1802,6 +1808,7 @@
 				SRPTESTBF000000000000001 /* StreamReachabilityVerdictTests.swift in Sources */,
 				WTSYNCTESTBF000000000001 /* WatchTogetherProtocolTests.swift in Sources */,
 				SCLRPTSTBF00000000000001 /* MPVScalerPolicyTests.swift in Sources */,
+				LCRPTSTBF000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift in Sources */,
 				B03E4488C6DE4E6C8CFD5901 /* PlaybackInputSafetyTests.swift in Sources */,
 				C90B9356AC0D4DD8B8D31501 /* DownloadResumeTests.swift in Sources */,
 				A11E57402F00000000000001 /* ProfileLaunchGateTests.swift in Sources */,
@@ -2123,6 +2130,7 @@
 				1324E7BC2E940BD70036B5F5 /* MPVNativeRenderer.swift in Sources */,
 				SHDRLIBIOSBUILD000000001 /* MPVUserShaderLibrary.swift in Sources */,
 				SCLRPOLIOSBUILD000000001 /* MPVScalerPolicy.swift in Sources */,
+				LCRPOLIOSBUILD0000000001 /* PlaybackLifecycleRecoveryPolicy.swift in Sources */,
 				13E1EDE12ED9E66000087629 /* readerManagerView.swift in Sources */,
 				1324E7BF2E940BD70036B5F5 /* MusicProgressSlider.swift in Sources */,
 				13E1EDD92ED9E65F00087629 /* pageData.swift in Sources */,
