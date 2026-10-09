@@ -3,6 +3,39 @@ import XCTest
 
 final class BackupProfileSnapshotTests: XCTestCase {
 
+    func testManualBackupPreflightAcceptsExportedVersionTwoDocument() throws {
+        let document: [String: Any] = [
+            "version": "2.0",
+            "createdDate": "2026-09-29T21:16:06Z",
+            "activeProfileID": UUID().uuidString,
+            "profiles": [],
+            "collections": [],
+            "progressData": [
+                "movieProgress": [],
+                "episodeProgress": []
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: document)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eclipse-backup-preflight-\(UUID().uuidString)")
+            .appendingPathExtension("json")
+        try data.write(to: url, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertNoThrow(try BackupManager.shared.validateManualBackup(at: url))
+    }
+
+    func testManualBackupPreflightRejectsUnrelatedJSON() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["message": "not a backup"])
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eclipse-invalid-backup-\(UUID().uuidString)")
+            .appendingPathExtension("json")
+        try data.write(to: url, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertThrowsError(try BackupManager.shared.validateManualBackup(at: url))
+    }
+
     private func profileSnapshot(id: UUID, name: String) -> BackupProfileSnapshot {
         BackupProfileSnapshot(
             id: id,

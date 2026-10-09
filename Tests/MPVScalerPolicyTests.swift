@@ -3,6 +3,39 @@ import XCTest
 
 final class MPVScalerPolicyTests: XCTestCase {
 
+#if DEBUG
+    func testSeekTraceRejectsSupersededAndNewLoadSamples() {
+        var state = MPVSeekDiagnosticState()
+        let start = Date(timeIntervalSince1970: 1_000)
+        state.beginLoad(generation: 4, position: 10)
+        let first = state.request(generation: 4, position: 10, at: start)!
+        XCTAssertFalse(state.isStalled(generation: 4, sequence: first, paused: false,
+                                       at: start.addingTimeInterval(7), threshold: 8))
+        let second = state.request(generation: 4, position: 20, at: start.addingTimeInterval(2))!
+        XCTAssertFalse(state.isCurrent(generation: 4, sequence: first))
+        state.notePosition(25, generation: 3, at: start.addingTimeInterval(3))
+        XCTAssertTrue(state.isStalled(generation: 4, sequence: second, paused: false,
+                                      at: start.addingTimeInterval(11), threshold: 8))
+        state.notePosition(25, generation: 4, at: start.addingTimeInterval(12))
+        XCTAssertFalse(state.isStalled(generation: 4, sequence: second, paused: false,
+                                       at: start.addingTimeInterval(15), threshold: 8))
+        state.beginLoad(generation: 5)
+        XCTAssertFalse(state.isCurrent(generation: 4, sequence: second))
+        XCTAssertNil(state.request(generation: 4, position: 30, at: start))
+    }
+
+    func testSeekTraceDoesNotReportAnIntentionalPauseAsStall() {
+        var state = MPVSeekDiagnosticState()
+        let start = Date(timeIntervalSince1970: 1_000)
+        state.beginLoad(generation: 8, position: 40)
+        let sequence = state.request(generation: 8, position: 40, at: start)!
+        XCTAssertFalse(state.isStalled(generation: 8, sequence: sequence, paused: true,
+                                       at: start.addingTimeInterval(30), threshold: 8))
+        state.noteState("loading=false", generation: 8)
+        XCTAssertEqual(state.lastStateSignal, "loading=false")
+    }
+#endif
+
     private func inline(
         mode: MPVUpscalingMode,
         neuralActive: Bool = false,

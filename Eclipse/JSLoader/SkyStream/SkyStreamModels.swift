@@ -1428,18 +1428,21 @@ public struct SkyStreamStreamRecord: Codable, Sendable, Hashable, Identifiable {
 
     public var id: String {
 
-        var components = [
-            url,
-            source ?? "",
-            name ?? "",
-            qualityLabel ?? "",
-            quality.map(String.init) ?? "",
-            mediaType ?? "",
-            referer ?? "",
-            drmKeyID ?? "",
-            drmKey ?? "",
-            licenseURL ?? ""
-        ]
+        // Keep this incremental. A single heterogeneous-looking array literal
+        // here intermittently exceeds Swift's type-checking budget in release
+        // archives even though every resulting value is a String.
+        var components: [String] = []
+        components.reserveCapacity(10 + headers.count * 2 + subtitles.count * 3)
+        components.append(url)
+        components.append(source ?? "")
+        components.append(name ?? "")
+        components.append(qualityLabel ?? "")
+        components.append(quality.map(String.init) ?? "")
+        components.append(mediaType ?? "")
+        components.append(referer ?? "")
+        components.append(drmKeyID ?? "")
+        components.append(drmKey ?? "")
+        components.append(licenseURL ?? "")
         for key in headers.keys.sorted(by: Self.canonicalHeaderOrder) {
             components.append(key.lowercased())
             components.append(headers[key] ?? "")

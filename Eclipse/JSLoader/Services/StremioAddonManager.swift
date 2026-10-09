@@ -27,6 +27,7 @@ class StremioAddonManager: ObservableObject {
     @Published var isDownloading = false
     private var catalogResolutionCache: [String: TMDBSearchResult] = [:]
     private var catalogResolutionMisses: Set<String> = []
+    private var subtitleCapabilityRefreshAttempts: Set<String> = []
     private static let maximumCatalogResolutionEntries = 2_000
     private var imdbResolutionCache: [String: String] = [:]
 
@@ -67,6 +68,9 @@ class StremioAddonManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             self?.loadAddons()
+        }
+        Task { @MainActor [weak self] in
+            await self?.refreshSubtitleCapabilitiesIfNeeded(type: "series")
         }
     }
 
@@ -259,6 +263,57 @@ class StremioAddonManager: ObservableObject {
         loadAddons()
     }
 
+    /// Installed addons keep a manifest snapshot in Core Data. Refresh only the
+    /// addons whose cached manifest cannot participate in the current subtitle
+    /// lookup so newly-added subtitle resources become available without asking
+    /// the user to remove and reinstall the addon.
+    private func refreshSubtitleCapabilitiesIfNeeded(type: String) async {
+        let scopeEpoch = ServiceStoreScope.generation
+        let candidates = activeAddons.filter { addon in
+            addon.manifest.supportsStreams
+                && Self.manifestNeedsSubtitleCapabilityRefresh(addon.manifest, type: type)
+        }
+        var storedUpdatedManifest = false
+
+        for addon in candidates {
+            let attemptKey = "\(scopeEpoch)|\(addon.id.uuidString)|\(type.lowercased())"
+            guard subtitleCapabilityRefreshAttempts.insert(attemptKey).inserted else { continue }
+
+            do {
+                let manifest = try await StremioClient.shared.fetchManifest(from: addon.configuredURL)
+                guard ServiceStoreScope.isCurrent(scopeEpoch) else { return }
+                guard manifest.supportsInstallableResources else { continue }
+
+                let manifestData = try JSONEncoder().encode(manifest)
+                let manifestJSON = String(data: manifestData, encoding: .utf8) ?? ""
+                StremioAddonStore.shared.storeAddon(
+                    id: addon.id,
+                    configuredURL: addon.configuredURL,
+                    manifestJSON: manifestJSON,
+                    isActive: addon.isActive
+                )
+                storedUpdatedManifest = true
+                Logger.shared.log("Stremio: Refreshed cached addon subtitle capabilities", type: "Stremio")
+            } catch {
+                Logger.shared.log(
+                    "Stremio: Subtitle capability refresh failed reason=\(servicePinnedNetworkErrorToken(error))",
+                    type: "Stremio"
+                )
+            }
+        }
+
+        if storedUpdatedManifest {
+            loadAddons()
+        }
+    }
+
+    nonisolated static func manifestNeedsSubtitleCapabilityRefresh(
+        _ manifest: StremioManifest,
+        type: String
+    ) -> Bool {
+        !manifest.supportsSubtitles || !manifest.supportsResource("subtitles", type: type)
+    }
+
     struct AddonStreamResult: Identifiable {
         let id = UUID()
         let addon: StremioAddon
@@ -269,6 +324,7 @@ class StremioAddonManager: ObservableObject {
         let id = UUID()
         let addon: StremioAddon
         let subtitle: StremioSubtitle
+        let candidate: SubtitleCandidate?
     }
 
     /// Re-resolves a durable Stremio selection under its original profile and
@@ -629,40 +685,44 @@ class StremioAddonManager: ObservableObject {
         expectedYear: Int? = nil,
         subtitleVideoHash: String? = nil,
         subtitleVideoSize: Int64? = nil,
-        subtitleFilename: String? = nil
+        subtitleFilename: String? = nil,
+        query: SubtitleQuery? = nil,
+        manualCoordinates: Bool = false,
+        onDiagnostic: (@MainActor ([String: String]) -> Void)? = nil,
+        onBatch: (@MainActor ([AddonSubtitleResult]) -> Void)? = nil
     ) async -> [AddonSubtitleResult] {
         guard let lookupCoordinates = Self.safeLookupCoordinates(
             type: type,
             season: season,
             episode: episode,
-            playbackContext: playbackContext
+            playbackContext: manualCoordinates ? nil : playbackContext
         ) else {
             Logger.shared.log("Stremio: Skipping MAL fallback subtitle lookup without exact TMDB coordinates", type: "Stremio")
             return []
         }
-        let isAnimeRequest = anilistId != nil || playbackContext?.hasAnimeMediaId == true
+        await refreshSubtitleCapabilitiesIfNeeded(type: type)
+        let isAnimeRequest = query?.isAnime ?? (anilistId != nil || playbackContext?.hasAnimeMediaId == true)
+        let requestedTypes = query?.mediaKind.stremioTypes ?? [type]
+        let installed = addons
+        let enabled = activeAddons
+        let subtitleCapable = enabled.filter(\.manifest.supportsSubtitles)
+        let componentEnabled = subtitleCapable.filter { isComponentEnabled($0, .subtitles) }
         let active = activeSubtitleAddons
             .filter { addon in
-                addon.manifest.supportsResource("subtitles", type: type)
+                requestedTypes.contains {
+                    addon.manifest.supportsResource("subtitles", type: $0)
+                }
             }
             .sorted { lhs, rhs in
-                guard isAnimeRequest else {
-                    if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
-                    return lhs.manifest.name.localizedCaseInsensitiveCompare(rhs.manifest.name) == .orderedAscending
-                }
-                let lhsAnimeSub = lhs.manifest.id.lowercased() == "org.soluserv.animesub"
-                let rhsAnimeSub = rhs.manifest.id.lowercased() == "org.soluserv.animesub"
-                if lhsAnimeSub != rhsAnimeSub { return lhsAnimeSub && !rhsAnimeSub }
                 if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
                 return lhs.manifest.name.localizedCaseInsensitiveCompare(rhs.manifest.name) == .orderedAscending
             }
         Logger.shared.log(
-            "Stremio: Fetching subtitles from \(active.count) active addon(s) anime=\(isAnimeRequest) animeSubPlus=\(active.contains { $0.manifest.id.lowercased() == "org.soluserv.animesub" })",
+            "Stremio: Subtitle eligibility installed=\(installed.count) enabled=\(enabled.count) resource=\(subtitleCapable.count) component=\(componentEnabled.count) active=\(active.count) globalBlock=\(ContentBlockingSettings.blocksAddonSubtitles()) types=\(requestedTypes) anime=\(isAnimeRequest)",
             type: "Stremio"
         )
         guard !active.isEmpty else { return [] }
 
-        let client = StremioClient.shared
         async let resolvedIMDbIDTask = resolveIMDbID(
             tmdbId: tmdbId,
             providedIMDbID: imdbId,
@@ -680,57 +740,72 @@ class StremioAddonManager: ObservableObject {
             resolvedIMDbIDTask,
             effectivePlaybackContextTask
         )
+        var effectiveQuery = query ?? SubtitleQuery(
+            mediaKind: type == "movie" ? .movie : (isAnimeRequest ? .anime : .series),
+            isAnime: isAnimeRequest,
+            ids: SubtitleMediaIDs(imdb: resolvedIMDbID, tmdb: tmdbId,
+                                  kitsu: effectivePlaybackContext?.kitsuMediaId,
+                                  anilist: anilistId, mal: effectivePlaybackContext?.exactMALMediaId),
+            season: lookupCoordinates.season,
+            episode: lookupCoordinates.episode,
+            animeSeason: effectivePlaybackContext?.localSeasonNumber,
+            animeEpisode: effectivePlaybackContext?.localEpisodeNumber,
+            absoluteEpisode: effectivePlaybackContext?.animeAbsoluteEpisodeNumber,
+            year: expectedYear,
+            titles: SubtitleTitlePolicy.variants(titleCandidates.map { ($0, .displayed) }),
+            fileName: subtitleFilename,
+            releaseName: subtitleFilename,
+            videoHash: subtitleVideoHash,
+            fileSize: subtitleVideoSize,
+            duration: nil
+        )
+        if effectiveQuery.ids.imdb == nil { effectiveQuery.ids.imdb = resolvedIMDbID }
+        if effectiveQuery.ids.kitsu == nil { effectiveQuery.ids.kitsu = effectivePlaybackContext?.kitsuMediaId }
+        if effectiveQuery.ids.mal == nil { effectiveQuery.ids.mal = effectivePlaybackContext?.exactMALMediaId }
+        if effectiveQuery.ids.anilist == nil { effectiveQuery.ids.anilist = anilistId }
+        effectiveQuery.season = lookupCoordinates.season
+        effectiveQuery.episode = lookupCoordinates.episode
+        let searchQuery = effectiveQuery
         let maxConcurrent = 2
 
         var results: [AddonSubtitleResult] = []
-        await withTaskGroup(of: (StremioAddon, [StremioSubtitle]).self) { group in
+        var diagnostics: [String: String] = [:]
+        await withTaskGroup(of: (StremioAddon, [StremioSubtitle], String).self) { group in
             var nextIndex = 0
 
             while nextIndex < active.count && nextIndex < maxConcurrent {
                 let addon = active[nextIndex]
                 group.addTask {
-                    let subtitles = await Self.resolveSubtitlesForAddon(
-                        addon,
-                        client: client,
-                        tmdbId: tmdbId,
-                        imdbId: resolvedIMDbID,
-                        type: type,
-                        season: lookupCoordinates.season,
-                        episode: lookupCoordinates.episode,
-                        anilistId: anilistId,
-                        playbackContext: effectivePlaybackContext,
-                        subtitleVideoHash: subtitleVideoHash,
-                        subtitleVideoSize: subtitleVideoSize,
-                        subtitleFilename: subtitleFilename
-                    )
-                    return (addon, subtitles)
+                    let outcome = await StremioAddonSubtitleProvider(addon: addon).searchRawOutcome(searchQuery)
+                    return (addon, outcome.subtitles, outcome.diagnostic)
                 }
                 nextIndex += 1
             }
 
-            for await (addon, subtitles) in group {
-                results.append(contentsOf: subtitles.map { subtitle in
-                    AddonSubtitleResult(addon: addon, subtitle: subtitle)
+            for await (addon, subtitles, diagnostic) in group {
+                if Task.isCancelled { group.cancelAll(); break }
+                diagnostics[addon.manifest.id] = diagnostic
+                onDiagnostic?(diagnostics)
+                let provider = StremioAddonSubtitleProvider(addon: addon)
+                results.append(contentsOf: subtitles.compactMap { subtitle in
+                    guard let candidate = provider.candidate(for: subtitle, query: searchQuery) else {
+                        return nil
+                    }
+                    return AddonSubtitleResult(addon: addon, subtitle: subtitle, candidate: candidate)
                 })
+                let topCandidates = results.filter { $0.addon.id == addon.id }
+                    .compactMap(\.candidate)
+                    .sorted { $0.score > $1.score }
+                    .prefix(3)
+                    .map { "\($0.score):\($0.matchReasons.joined(separator: ","))" }
+                Logger.shared.log("[SubtitleProvider] \(addon.manifest.name) raw=\(subtitles.count) accepted=\(results.filter { $0.addon.id == addon.id }.count) topCandidates=\(topCandidates)", type: "Stremio")
+                onBatch?(Self.dedupeSubtitleResults(results))
 
                 if nextIndex < active.count {
                     let addon = active[nextIndex]
                     group.addTask {
-                        let subtitles = await Self.resolveSubtitlesForAddon(
-                            addon,
-                            client: client,
-                            tmdbId: tmdbId,
-                            imdbId: resolvedIMDbID,
-                            type: type,
-                            season: lookupCoordinates.season,
-                            episode: lookupCoordinates.episode,
-                            anilistId: anilistId,
-                            playbackContext: effectivePlaybackContext,
-                            subtitleVideoHash: subtitleVideoHash,
-                            subtitleVideoSize: subtitleVideoSize,
-                            subtitleFilename: subtitleFilename
-                        )
-                        return (addon, subtitles)
+                        let outcome = await StremioAddonSubtitleProvider(addon: addon).searchRawOutcome(searchQuery)
+                        return (addon, outcome.subtitles, outcome.diagnostic)
                     }
                     nextIndex += 1
                 }
@@ -1273,98 +1348,6 @@ class StremioAddonManager: ObservableObject {
         return ""
     }
 
-    private static func resolveSubtitlesForAddon(
-        _ addon: StremioAddon,
-        client: StremioClient,
-        tmdbId: Int,
-        imdbId: String?,
-        type: String,
-        season: Int?,
-        episode: Int?,
-        anilistId: Int?,
-        playbackContext: EpisodePlaybackContext?,
-        subtitleVideoHash: String?,
-        subtitleVideoSize: Int64?,
-        subtitleFilename: String?
-    ) async -> [StremioSubtitle] {
-        guard addon.manifest.supportsSubtitles,
-              addon.manifest.supportsResource("subtitles", type: type) else {
-            return []
-        }
-        let contentIds = client.buildContentIds(
-            tmdbId: tmdbId,
-            imdbId: imdbId,
-            type: type,
-            season: season,
-            episode: episode,
-            anilistId: anilistId,
-            anilistSeason: animeLocalStremioSeason(from: playbackContext),
-            anilistEpisode: animeLocalStremioEpisode(from: playbackContext),
-            kitsuId: playbackContext?.kitsuMediaId,
-            kitsuEpisode: animeLocalKitsuEpisode(from: playbackContext),
-            alternateSeason: animeLocalSeriesSeason(from: playbackContext),
-            alternateEpisode: animeLocalSeriesEpisode(from: playbackContext),
-            allowParentSeriesIDs: true,
-            idPrefixes: addon.manifest.subtitleIdPrefixes,
-            addonName: addon.manifest.name
-        )
-
-        guard !contentIds.isEmpty else {
-            Logger.shared.log("Stremio: No supported subtitle content ID", type: "Stremio")
-            return []
-        }
-
-        var subtitles: [StremioSubtitle] = []
-        for contentId in contentIds {
-            do {
-                let fetched = try await client.fetchSubtitles(
-                    baseURL: addon.configuredURL,
-                    type: type,
-                    id: contentId,
-                    videoHash: subtitleVideoHash,
-                    videoSize: subtitleVideoSize,
-                    filename: subtitleFilename
-                )
-                Logger.shared.log("Stremio: Subtitle candidate returned \(fetched.count) subtitle(s)", type: "Stremio")
-                subtitles.append(contentsOf: fetched)
-            } catch {
-                let hasFileExtras = subtitleVideoHash?.isEmpty == false
-                    || (subtitleVideoSize ?? 0) > 0
-                    || subtitleFilename?.isEmpty == false
-
-                guard hasFileExtras else {
-                    Logger.shared.log(
-                        "Stremio: Subtitle candidate failed reason=\(servicePinnedNetworkErrorToken(error))",
-                        type: "Stremio"
-                    )
-                    continue
-                }
-
-                // Compatibility path for older/custom servers that expose only
-                // /subtitles/{type}/{id}.json and do not accept standard extras.
-                do {
-                    let fetched = try await client.fetchSubtitles(
-                        baseURL: addon.configuredURL,
-                        type: type,
-                        id: contentId
-                    )
-                    Logger.shared.log(
-                        "Stremio: Subtitle extra route unsupported; legacy fallback returned \(fetched.count) subtitle(s)",
-                        type: "Stremio"
-                    )
-                    subtitles.append(contentsOf: fetched)
-                } catch {
-                    Logger.shared.log(
-                        "Stremio: Subtitle candidate failed with extras and legacy fallback reason=\(servicePinnedNetworkErrorToken(error))",
-                        type: "Stremio"
-                    )
-                }
-            }
-        }
-
-        return dedupeSubtitles(subtitles)
-    }
-
     private static func fetchStreamsByCatalogSearch(
         _ addon: StremioAddon,
         client: StremioClient,
@@ -1606,6 +1589,16 @@ class StremioAddonManager: ObservableObject {
         return context.localEpisodeNumber
     }
 
+    private static func animeLocalMALEpisode(from context: EpisodePlaybackContext?) -> Int? {
+        guard let context,
+              context.exactMALMediaId != nil,
+              (context.isSpecial || !context.titleOnlySearch),
+              context.localEpisodeNumber > 0 else {
+            return nil
+        }
+        return context.localEpisodeNumber
+    }
+
     private static func animeLocalSeriesSeason(from context: EpisodePlaybackContext?) -> Int? {
         guard let context,
               !context.isSpecial,
@@ -1780,17 +1773,6 @@ class StremioAddonManager: ObservableObject {
         }
     }
 
-    private static func dedupeSubtitles(_ subtitles: [StremioSubtitle]) -> [StremioSubtitle] {
-        var seen = Set<String>()
-        return subtitles.filter { subtitle in
-            guard let url = subtitle.url?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !url.isEmpty else {
-                return false
-            }
-            return seen.insert(url.lowercased()).inserted
-        }
-    }
-
     private static func dedupeSubtitleResults(_ results: [AddonSubtitleResult]) -> [AddonSubtitleResult] {
         var seen = Set<String>()
         return results
@@ -1805,7 +1787,9 @@ class StremioAddonManager: ObservableObject {
                       !url.isEmpty else {
                     return false
                 }
-                return seen.insert(url.lowercased()).inserted
+                // Signed URL path/query bytes are case-sensitive. Keep the
+                // first source label for an identical URL across addons.
+                return seen.insert(url).inserted
             }
     }
 

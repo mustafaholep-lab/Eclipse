@@ -296,17 +296,33 @@ enum TrackerCloudSyncError: Error {
 final class TrackerCloudKitTransport: TrackerCloudSyncTransport {
     static let zoneName = "EclipseTrackerAccountsV1"
     static let recordType = "EclipseMediaState"
-    private let database: CKDatabase
+    private var database: CKDatabase?
+    private let cloudKitIsAvailable: () -> Bool
     private let zoneID = CKRecordZone.ID(
         zoneName: zoneName,
         ownerName: CKCurrentUserDefaultName
     )
 
-    init(database: CKDatabase = CKContainer(identifier: "iCloud.Eclipse.Soupy").privateCloudDatabase) {
+    init(
+        database: CKDatabase? = nil,
+        cloudKitIsAvailable: @escaping () -> Bool = { MediaStateSyncBootstrap.hasCloudKitEntitlement }
+    ) {
         self.database = database
+        self.cloudKitIsAvailable = cloudKitIsAvailable
+    }
+
+    private func resolvedDatabase() throws -> CKDatabase {
+        // Local restore also constructs this transport to suspend sync. Never
+        // open a CloudKit container until a permitted network operation needs it.
+        if let database { return database }
+        guard cloudKitIsAvailable() else { throw TrackerCloudSyncError.unavailable }
+        let resolved = CKContainer(identifier: "iCloud.Eclipse.Soupy").privateCloudDatabase
+        database = resolved
+        return resolved
     }
 
     func fetchAll() async throws -> [String: TrackerCloudRemoteRecord] {
+        let database = try resolvedDatabase()
         var records: [String: TrackerCloudRemoteRecord] = [:]
         var token: CKServerChangeToken?
         var receivedCount = 0
@@ -359,6 +375,7 @@ final class TrackerCloudKitTransport: TrackerCloudSyncTransport {
         expected: TrackerCloudRemoteRecord?
     ) async throws -> TrackerCloudSaveResult {
         try Task.checkCancellation()
+        let database = try resolvedDatabase()
         let id = CKRecord.ID(recordName: record.recordName, zoneID: zoneID)
         let cloudRecord = try encode(record, expected: expected)
         do {
@@ -411,6 +428,7 @@ final class TrackerCloudKitTransport: TrackerCloudSyncTransport {
     }
 
     func deleteZone() async throws {
+        let database = try resolvedDatabase()
         do {
             _ = try await database.deleteRecordZone(withID: zoneID)
         } catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem {

@@ -14,6 +14,8 @@ ECLIPSE_RELEASE_VERSION = 2.2.1
 // Official release workflows stamp immutable Git revisions into the app.
 ECLIPSE_SOURCE_REVISION =
 ECLIPSE_MPVKIT_SOURCE_REVISION =
+// Eclipse Sync is inert until configured. Use wss:/$()/host/path in local overrides.
+ECLIPSE_SYNC_SERVER_URL =
 ICLOUD_CONTAINER_ID = iCloud.Eclipse.Soupy
 // Development for local/dev signing; the TestFlight workflow overrides this to Production.
 ICLOUD_CONTAINER_ENVIRONMENT = Development

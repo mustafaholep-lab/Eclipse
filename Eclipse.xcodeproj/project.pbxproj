@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3C90E2239531A7EB59464043 /* EclipseSyncPlayerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97887B9F757FD5A989F87F2 /* EclipseSyncPlayerIntegrationTests.swift */; };
+		0B8AD17EEC5E61FAEA0FFB6F /* EclipseSyncPlayerAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8328B9C644A3E7BE5084A3 /* EclipseSyncPlayerAdapter.swift */; };
+		5DC053F5F802C29B6A381A18 /* EclipseSyncProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */; };
+		801A99DC1C4282F38491E1AE /* EclipseSyncProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8EBD72B5CB62585C6EF866 /* EclipseSyncProtocolTests.swift */; };
+		BBB6770DD8F4730966C2A28B /* EclipseSyncTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AA4EFD8D045968D646D8E1 /* EclipseSyncTransport.swift */; };
+		4E2B7483F9EF51C735C52177 /* EclipseSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131AC13F28386AAF9239D957 /* EclipseSyncCoordinator.swift */; };
+		50AA687D1EEF631F3E5E7A68 /* EclipseSyncCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51A292931C2CB626A85E3B03 /* EclipseSyncCoordinatorTests.swift */; };
+		F0CEA364CB4801B4400DB865 /* EclipseSyncTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D3A732C76B624DCD96EE244 /* EclipseSyncTransportTests.swift */; };
 		9C50A0010000000000000001 = {isa = PBXBuildFile; fileRef = 9C50A0010000000000000005; };
 		9C50A0010000000000000002 = {isa = PBXBuildFile; fileRef = 9C50A0010000000000000005; };
 		9C50A0010000000000000003 = {isa = PBXBuildFile; fileRef = 9C50A0010000000000000006; };
@@ -22,6 +30,22 @@
 		TVUTBF0600000000000000006 /* DownloadPathIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TVUTFR0500000000000000005 /* DownloadPathIdentityTests.swift */; };
 		12F745102EB52DFC00889684 /* SkyStreamSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F7450E2EB52DFC00889684 /* SkyStreamSecurityTests.swift */; };
 		A11E57102F00000000000001 /* AnimeStructurePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */; };
+		A1E100000000000000000001 /* SubtitleQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E100000000000000000004 /* SubtitleQuery.swift */; };
+		A1E100000000000000000002 /* SubtitleMetadataResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E100000000000000000005 /* SubtitleMetadataResolver.swift */; };
+		A1E100000000000000000003 /* SubtitleMetadataResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */; };
+		A2E100000000000000000001 /* StremioAddonSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000004 /* StremioAddonSubtitleProvider.swift */; };
+		A2E100000000000000000002 /* SubtitleRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000005 /* SubtitleRanking.swift */; };
+		A2E100000000000000000003 /* SubtitleProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000006 /* SubtitleProviderTests.swift */; };
+		A2E100000000000000000007 /* SubtitleFileHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000008 /* SubtitleFileHandling.swift */; };
+		B1E100000000000000000001 /* SubtitleDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E100000000000000000003 /* SubtitleDocument.swift */; };
+		B1E100000000000000000002 /* SubtitleDocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E100000000000000000004 /* SubtitleDocumentTests.swift */; };
+		A2E100000000000000000009 /* SubDLSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000A /* SubDLSubtitleProvider.swift */; };
+		A2E10000000000000000000B /* JimakuSubtitleProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000C /* JimakuSubtitleProvider.swift */; };
+		A2E10000000000000000000D /* OpenSubtitlesRESTProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */; };
+		A2E10000000000000000000F /* SubtitleProviderConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000010 /* SubtitleProviderConfiguration.swift */; };
+		A2E100000000000000000011 /* SubtitleProviderSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000012 /* SubtitleProviderSettingsView.swift */; };
+		A2E100000000000000000013 /* SubtitleProviderSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000014 /* SubtitleProviderSearchCoordinator.swift */; };
+		A2E100000000000000000015 /* SubtitleMovieHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E100000000000000000016 /* SubtitleMovieHash.swift */; };
 		BPSTBF0000000000000001 /* BackupProfileSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */; };
 		NUVCMPTSTBF000000000001 /* NuvioRepositoryCompletenessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */; };
 		A11E57202F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E571E2F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift */; };
@@ -33,6 +57,7 @@
 		SRPTESTBF000000000000001 /* StreamReachabilityVerdictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */; };
 		WTSYNCTESTBF000000000001 /* WatchTogetherProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */; };
 		SCLRPTSTBF00000000000001 /* MPVScalerPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */; };
+		LCRPTSTBF000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */; };
 		SCLRPTSTTVB0000000000001 /* MPVScalerPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */; };
 		A11E57402F00000000000001 /* ProfileLaunchGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E573E2F00000000000001 /* ProfileLaunchGateTests.swift */; };
 		A11E57502F00000000000001 /* MaturityRatingRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11E574E2F00000000000001 /* MaturityRatingRegionTests.swift */; };
@@ -136,6 +161,7 @@
 		SHDRLIBIOSBUILD000000001 /* MPVUserShaderLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */; };
 		SHDRLIBTVBUILD0000000001 /* MPVUserShaderLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */; };
 		SCLRPOLIOSBUILD000000001 /* MPVScalerPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */; };
+		LCRPOLIOSBUILD0000000001 /* PlaybackLifecycleRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = LCRPOLFILEREF00000000001 /* PlaybackLifecycleRecoveryPolicy.swift */; };
 		SCLRPOLTVBUILD0000000001 /* MPVScalerPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */; };
 		SHDRDIRIOSBUILD000000001 /* Shaders in Resources */ = {isa = PBXBuildFile; fileRef = SHDRDIRFILEREF0000000001 /* Shaders */; };
 		SHDRDIRTVBUILD0000000001 /* Shaders in Resources */ = {isa = PBXBuildFile; fileRef = SHDRDIRFILEREF0000000001 /* Shaders */; };
@@ -386,6 +412,22 @@
 		B03E4488C6DE4E6C8CFD5900 /* PlaybackInputSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackInputSafetyTests.swift; sourceTree = "<group>"; };
 		12F7450E2EB52DFC00889684 /* SkyStreamSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkyStreamSecurityTests.swift; sourceTree = "<group>"; };
 		A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeStructurePolicyTests.swift; sourceTree = "<group>"; };
+		A1E100000000000000000004 /* SubtitleQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleQuery.swift; sourceTree = "<group>"; };
+		A1E100000000000000000005 /* SubtitleMetadataResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleMetadataResolver.swift; sourceTree = "<group>"; };
+		A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleMetadataResolverTests.swift; sourceTree = "<group>"; };
+		A2E100000000000000000004 /* StremioAddonSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StremioAddonSubtitleProvider.swift; sourceTree = "<group>"; };
+		A2E100000000000000000005 /* SubtitleRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleRanking.swift; sourceTree = "<group>"; };
+		A2E100000000000000000006 /* SubtitleProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderTests.swift; sourceTree = "<group>"; };
+		A2E100000000000000000008 /* SubtitleFileHandling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleFileHandling.swift; sourceTree = "<group>"; };
+		B1E100000000000000000003 /* SubtitleDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleDocument.swift; sourceTree = "<group>"; };
+		B1E100000000000000000004 /* SubtitleDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleDocumentTests.swift; sourceTree = "<group>"; };
+		A2E10000000000000000000A /* SubDLSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubDLSubtitleProvider.swift; sourceTree = "<group>"; };
+		A2E10000000000000000000C /* JimakuSubtitleProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JimakuSubtitleProvider.swift; sourceTree = "<group>"; };
+		A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSubtitlesRESTProvider.swift; sourceTree = "<group>"; };
+		A2E100000000000000000010 /* SubtitleProviderConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderConfiguration.swift; sourceTree = "<group>"; };
+		A2E100000000000000000012 /* SubtitleProviderSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderSettingsView.swift; sourceTree = "<group>"; };
+		A2E100000000000000000014 /* SubtitleProviderSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviderSearchCoordinator.swift; sourceTree = "<group>"; };
+		A2E100000000000000000016 /* SubtitleMovieHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleMovieHash.swift; sourceTree = "<group>"; };
 		BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupProfileSnapshotTests.swift; sourceTree = "<group>"; };
 		NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioRepositoryCompletenessTests.swift; sourceTree = "<group>"; };
 		RXCTSTFR0000000000000001 /* ReaderExtensionCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderExtensionCoreTests.swift; sourceTree = "<group>"; };
@@ -399,6 +441,7 @@
 		SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamReachabilityVerdictTests.swift; sourceTree = "<group>"; };
 		WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTogetherProtocolTests.swift; sourceTree = "<group>"; };
 		SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVScalerPolicyTests.swift; sourceTree = "<group>"; };
+		LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackLifecycleRecoveryPolicyTests.swift; sourceTree = "<group>"; };
 		A11E573E2F00000000000001 /* ProfileLaunchGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileLaunchGateTests.swift; sourceTree = "<group>"; };
 		A11E574E2F00000000000001 /* MaturityRatingRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaturityRatingRegionTests.swift; sourceTree = "<group>"; };
 		A11E575E2F00000000000001 /* MediaStateMergeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaStateMergeTests.swift; sourceTree = "<group>"; };
@@ -480,6 +523,7 @@
 		1324E7B32E940BD70036B5F5 /* PlayerPreset.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PlayerPreset.swift; sourceTree = "<group>"; };
 		SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MPVUserShaderLibrary.swift; sourceTree = "<group>"; };
 		SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MPVScalerPolicy.swift; sourceTree = "<group>"; };
+		LCRPOLFILEREF00000000001 /* PlaybackLifecycleRecoveryPolicy.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PlaybackLifecycleRecoveryPolicy.swift; sourceTree = "<group>"; };
 		SHDRDIRFILEREF0000000001 /* Shaders */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Shaders; sourceTree = "<group>"; };
 		RDRLEGALFILEREF00000001 /* ReaderExtensionLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ReaderExtensionLicenses; path = Legal/ReaderExtensions; sourceTree = "<group>"; };
 		OSSLEGALFILEREF000000001 /* OpenSourceLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OpenSourceLicenses; path = Legal/OpenSourceLicenses; sourceTree = "<group>"; };
@@ -666,6 +710,14 @@
 		RXCMPFR0000000000000001 /* ReaderExtensionCompatibility.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ReaderExtensionCompatibility.swift; sourceTree = "<group>"; };
 		A5D100012FE1000000A5D001 /* ReaderDownloadManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ReaderDownloadManager.swift; sourceTree = "<group>"; };
 		A5D100032FE1000000A5D003 /* ReaderDownloadsSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ReaderDownloadsSettingsView.swift; sourceTree = "<group>"; };
+		84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncProtocol.swift; sourceTree = "<group>"; };
+		7B8EBD72B5CB62585C6EF866 /* EclipseSyncProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncProtocolTests.swift; sourceTree = "<group>"; };
+		20AA4EFD8D045968D646D8E1 /* EclipseSyncTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncTransport.swift; sourceTree = "<group>"; };
+		131AC13F28386AAF9239D957 /* EclipseSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncCoordinator.swift; sourceTree = "<group>"; };
+		51A292931C2CB626A85E3B03 /* EclipseSyncCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncCoordinatorTests.swift; sourceTree = "<group>"; };
+		8D3A732C76B624DCD96EE244 /* EclipseSyncTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncTransportTests.swift; sourceTree = "<group>"; };
+		8F8328B9C644A3E7BE5084A3 /* EclipseSyncPlayerAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncPlayerAdapter.swift; sourceTree = "<group>"; };
+		B97887B9F757FD5A989F87F2 /* EclipseSyncPlayerIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncPlayerIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -725,6 +777,9 @@
 			children = (
 				12F7450E2EB52DFC00889684 /* SkyStreamSecurityTests.swift */,
 				A11E570E2F00000000000001 /* AnimeStructurePolicyTests.swift */,
+				A1E100000000000000000006 /* SubtitleMetadataResolverTests.swift */,
+				A2E100000000000000000006 /* SubtitleProviderTests.swift */,
+				B1E100000000000000000004 /* SubtitleDocumentTests.swift */,
 				BPSTFR0000000000000001 /* BackupProfileSnapshotTests.swift */,
 				NUVCMPTSTFR000000000001 /* NuvioRepositoryCompletenessTests.swift */,
 				A11E571E2F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift */,
@@ -735,7 +790,12 @@
 				A11E5760000000000PRET1 /* KanzenCatalogPresetTests.swift */,
 				SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */,
 				WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */,
+				B97887B9F757FD5A989F87F2 /* EclipseSyncPlayerIntegrationTests.swift */,
+				8D3A732C76B624DCD96EE244 /* EclipseSyncTransportTests.swift */,
+				51A292931C2CB626A85E3B03 /* EclipseSyncCoordinatorTests.swift */,
+				7B8EBD72B5CB62585C6EF866 /* EclipseSyncProtocolTests.swift */,
 				SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */,
+				LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */,
 				B03E4488C6DE4E6C8CFD5900 /* PlaybackInputSafetyTests.swift */,
 				C90B9356AC0D4DD8B8D31500 /* DownloadResumeTests.swift */,
 				A11E573E2F00000000000001 /* ProfileLaunchGateTests.swift */,
@@ -811,9 +871,14 @@
 				13F315AF2EAD03F70025BD7A /* SubtitleLoader.swift */,
 				1324E7B52E940BD70036B5F5 /* PlayerViewController.swift */,
 				6BCFA99B6F2344E8850E02AD /* WatchTogetherCoordinator.swift */,
+				8F8328B9C644A3E7BE5084A3 /* EclipseSyncPlayerAdapter.swift */,
+				131AC13F28386AAF9239D957 /* EclipseSyncCoordinator.swift */,
+				20AA4EFD8D045968D646D8E1 /* EclipseSyncTransport.swift */,
+				84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */,
 				1324E7B42E940BD70036B5F5 /* MPVNativeRenderer.swift */,
 				SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */,
 				SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */,
+				LCRPOLFILEREF00000000001 /* PlaybackLifecycleRecoveryPolicy.swift */,
 				SHDRDIRFILEREF0000000001 /* Shaders */,
 				F9A1B2D12F90000100A1B2D1 /* MPVHeaderProxy.swift */,
 				1324E7B62E940BD70036B5F5 /* SampleBufferDisplayView.swift */,
@@ -1170,6 +1235,7 @@
 				RDRLEGALFILEREF00000001 /* ReaderExtensionLicenses */,
 				OSSLEGALFILEREF000000001 /* OpenSourceLicenses */,
 				1324E7B22E940BD70036B5F5 /* Player */,
+				A1E100000000000000000007 /* Subtitles */,
 				13F5B5902E73090000565E75 /* Models */,
 				1375466E2E5F078B00B29944 /* Tracking */,
 				13F072972E4B2D9200EF90EB /* TMDB */,
@@ -1186,6 +1252,26 @@
 				1240112B2EFF3B8B00CEC6EB /* Eclipse.local.entitlements */,
 			);
 			path = Eclipse;
+			sourceTree = "<group>";
+		};
+		A1E100000000000000000007 /* Subtitles */ = {
+			isa = PBXGroup;
+			children = (
+				A1E100000000000000000004 /* SubtitleQuery.swift */,
+				A1E100000000000000000005 /* SubtitleMetadataResolver.swift */,
+				A2E100000000000000000004 /* StremioAddonSubtitleProvider.swift */,
+				A2E100000000000000000005 /* SubtitleRanking.swift */,
+				A2E100000000000000000008 /* SubtitleFileHandling.swift */,
+				B1E100000000000000000003 /* SubtitleDocument.swift */,
+				A2E10000000000000000000A /* SubDLSubtitleProvider.swift */,
+				A2E10000000000000000000C /* JimakuSubtitleProvider.swift */,
+				A2E10000000000000000000E /* OpenSubtitlesRESTProvider.swift */,
+				A2E100000000000000000010 /* SubtitleProviderConfiguration.swift */,
+				A2E100000000000000000012 /* SubtitleProviderSettingsView.swift */,
+				A2E100000000000000000014 /* SubtitleProviderSearchCoordinator.swift */,
+				A2E100000000000000000016 /* SubtitleMovieHash.swift */,
+			);
+			path = Subtitles;
 			sourceTree = "<group>";
 		};
 		13F0726D2E4B2D9000EF90EB /* JSLoader */ = {
@@ -1722,6 +1808,9 @@
 			files = (
 				12F745102EB52DFC00889684 /* SkyStreamSecurityTests.swift in Sources */,
 				A11E57102F00000000000001 /* AnimeStructurePolicyTests.swift in Sources */,
+				A1E100000000000000000003 /* SubtitleMetadataResolverTests.swift in Sources */,
+				A2E100000000000000000003 /* SubtitleProviderTests.swift in Sources */,
+				B1E100000000000000000002 /* SubtitleDocumentTests.swift in Sources */,
 				BPSTBF0000000000000001 /* BackupProfileSnapshotTests.swift in Sources */,
 				NUVCMPTSTBF000000000001 /* NuvioRepositoryCompletenessTests.swift in Sources */,
 				A11E57202F00000000000001 /* UserDefaultsSuiteSemanticsProbe.swift in Sources */,
@@ -1732,7 +1821,12 @@
 				A11E5761000000000PRET2 /* KanzenCatalogPresetTests.swift in Sources */,
 				SRPTESTBF000000000000001 /* StreamReachabilityVerdictTests.swift in Sources */,
 				WTSYNCTESTBF000000000001 /* WatchTogetherProtocolTests.swift in Sources */,
+				3C90E2239531A7EB59464043 /* EclipseSyncPlayerIntegrationTests.swift in Sources */,
+				F0CEA364CB4801B4400DB865 /* EclipseSyncTransportTests.swift in Sources */,
+				50AA687D1EEF631F3E5E7A68 /* EclipseSyncCoordinatorTests.swift in Sources */,
+				801A99DC1C4282F38491E1AE /* EclipseSyncProtocolTests.swift in Sources */,
 				SCLRPTSTBF00000000000001 /* MPVScalerPolicyTests.swift in Sources */,
+				LCRPTSTBF000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift in Sources */,
 				B03E4488C6DE4E6C8CFD5901 /* PlaybackInputSafetyTests.swift in Sources */,
 				C90B9356AC0D4DD8B8D31501 /* DownloadResumeTests.swift in Sources */,
 				A11E57402F00000000000001 /* ProfileLaunchGateTests.swift in Sources */,
@@ -1992,6 +2086,19 @@
 				14CC00040000000000CC0004 /* HomeLayoutView.swift in Sources */,
 				13F072BA2E4B2D9200EF90EB /* TMDBService.swift in Sources */,
 				13F072C22E4B2D9200EF90EB /* AniListService.swift in Sources */,
+				A1E100000000000000000001 /* SubtitleQuery.swift in Sources */,
+				A1E100000000000000000002 /* SubtitleMetadataResolver.swift in Sources */,
+				A2E100000000000000000001 /* StremioAddonSubtitleProvider.swift in Sources */,
+				A2E100000000000000000002 /* SubtitleRanking.swift in Sources */,
+				A2E100000000000000000007 /* SubtitleFileHandling.swift in Sources */,
+				B1E100000000000000000001 /* SubtitleDocument.swift in Sources */,
+				A2E100000000000000000009 /* SubDLSubtitleProvider.swift in Sources */,
+				A2E10000000000000000000B /* JimakuSubtitleProvider.swift in Sources */,
+				A2E10000000000000000000D /* OpenSubtitlesRESTProvider.swift in Sources */,
+				A2E10000000000000000000F /* SubtitleProviderConfiguration.swift in Sources */,
+				A2E100000000000000000011 /* SubtitleProviderSettingsView.swift in Sources */,
+				A2E100000000000000000013 /* SubtitleProviderSearchCoordinator.swift in Sources */,
+				A2E100000000000000000015 /* SubtitleMovieHash.swift in Sources */,
 				13E1EDE82ED9E66000087629 /* MainMenu.swift in Sources */,
 				13E1EDE32ED9E66000087629 /* readerSettingsView.swift in Sources */,
 				13F0725F2E4B2D3300EF90EB /* SoraApp.swift in Sources */,
@@ -2016,6 +2123,10 @@
 				13F072AB2E4B2D9200EF90EB /* Movie-Details.swift in Sources */,
 				1324E7BD2E940BD70036B5F5 /* PlayerViewController.swift in Sources */,
 				7BC72B40F59C41D6B2D8EB9B /* WatchTogetherCoordinator.swift in Sources */,
+				0B8AD17EEC5E61FAEA0FFB6F /* EclipseSyncPlayerAdapter.swift in Sources */,
+				4E2B7483F9EF51C735C52177 /* EclipseSyncCoordinator.swift in Sources */,
+				BBB6770DD8F4730966C2A28B /* EclipseSyncTransport.swift in Sources */,
+				5DC053F5F802C29B6A381A18 /* EclipseSyncProtocol.swift in Sources */,
 				1324E7BE2E940BD70036B5F5 /* SampleBufferDisplayView.swift in Sources */,
 				13E1EDD32ED9E65F00087629 /* mangaModel.xcdatamodeld in Sources */,
 				13F0729B2E4B2D9200EF90EB /* ServicesEntity.swift in Sources */,
@@ -2039,6 +2150,7 @@
 				1324E7BC2E940BD70036B5F5 /* MPVNativeRenderer.swift in Sources */,
 				SHDRLIBIOSBUILD000000001 /* MPVUserShaderLibrary.swift in Sources */,
 				SCLRPOLIOSBUILD000000001 /* MPVScalerPolicy.swift in Sources */,
+				LCRPOLIOSBUILD0000000001 /* PlaybackLifecycleRecoveryPolicy.swift in Sources */,
 				13E1EDE12ED9E66000087629 /* readerManagerView.swift in Sources */,
 				1324E7BF2E940BD70036B5F5 /* MusicProgressSlider.swift in Sources */,
 				13E1EDD92ED9E65F00087629 /* pageData.swift in Sources */,
