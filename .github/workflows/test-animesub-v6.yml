@@ -1,6 +1,7 @@
 name: Test AnimeSub v6 subtitles
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - stremio-playback-fix-v6-animesub-subtitles
@@ -59,7 +60,7 @@ jobs:
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
             -skipPackagePluginValidation \
             -skipMacroValidation
-      - name: Run AnimeSub subtitle regression tests
+      - name: Run subtitle and Eclipse Sync regression tests
         run: |
           set -euo pipefail
           SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next(d["udid"] for group in devices.values() for d in group if d["name"].startswith("iPhone")))')"
@@ -69,6 +70,14 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -only-testing:Tests/StremioAnimeSubtitleLookupTests \
+            -only-testing:Tests/SubtitleDocumentTests \
+            -only-testing:Tests/SubtitleProviderTests \
+            -only-testing:Tests/SubtitleMetadataResolverTests \
+            -only-testing:Tests/WatchTogetherProtocolTests \
+            -only-testing:Tests/PlaybackLifecycleRecoveryPolicyTests \
+            -only-testing:Tests/EclipseSyncProtocolTests \
+            -only-testing:Tests/EclipseSyncCoordinatorTests \
+            -only-testing:Tests/EclipseSyncTransportTests \
             -parallel-testing-enabled NO \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
             -disableAutomaticPackageResolution \
