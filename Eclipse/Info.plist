@@ -18,6 +18,8 @@
 	<string>$(ECLIPSE_SOURCE_REVISION)</string>
 	<key>EclipseMPVKitSourceRevision</key>
 	<string>$(ECLIPSE_MPVKIT_SOURCE_REVISION)</string>
+	<key>ECLIPSE_SYNC_SERVER_URL</key>
+	<string>$(ECLIPSE_SYNC_SERVER_URL)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

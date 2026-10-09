@@ -704,6 +704,10 @@
 		A5D100032FE1000000A5D003 /* ReaderDownloadsSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ReaderDownloadsSettingsView.swift; sourceTree = "<group>"; };
 		84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncProtocol.swift; sourceTree = "<group>"; };
 		7B8EBD72B5CB62585C6EF866 /* EclipseSyncProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncProtocolTests.swift; sourceTree = "<group>"; };
+		20AA4EFD8D045968D646D8E1 /* EclipseSyncTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncTransport.swift; sourceTree = "<group>"; };
+		131AC13F28386AAF9239D957 /* EclipseSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncCoordinator.swift; sourceTree = "<group>"; };
+		51A292931C2CB626A85E3B03 /* EclipseSyncCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncCoordinatorTests.swift; sourceTree = "<group>"; };
+		8D3A732C76B624DCD96EE244 /* EclipseSyncTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseSyncTransportTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -776,6 +780,8 @@
 				A11E5760000000000PRET1 /* KanzenCatalogPresetTests.swift */,
 				SRPTESTFR000000000000001 /* StreamReachabilityVerdictTests.swift */,
 				WTSYNCTESTFR000000000001 /* WatchTogetherProtocolTests.swift */,
+				8D3A732C76B624DCD96EE244 /* EclipseSyncTransportTests.swift */,
+				51A292931C2CB626A85E3B03 /* EclipseSyncCoordinatorTests.swift */,
 				7B8EBD72B5CB62585C6EF866 /* EclipseSyncProtocolTests.swift */,
 				SCLRPTSTFR00000000000001 /* MPVScalerPolicyTests.swift */,
 				LCRPTSTFR000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift */,
@@ -854,6 +860,8 @@
 				13F315AF2EAD03F70025BD7A /* SubtitleLoader.swift */,
 				1324E7B52E940BD70036B5F5 /* PlayerViewController.swift */,
 				6BCFA99B6F2344E8850E02AD /* WatchTogetherCoordinator.swift */,
+				131AC13F28386AAF9239D957 /* EclipseSyncCoordinator.swift */,
+				20AA4EFD8D045968D646D8E1 /* EclipseSyncTransport.swift */,
 				84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */,
 				1324E7B42E940BD70036B5F5 /* MPVNativeRenderer.swift */,
 				SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */,
@@ -1801,6 +1809,8 @@
 				A11E5761000000000PRET2 /* KanzenCatalogPresetTests.swift in Sources */,
 				SRPTESTBF000000000000001 /* StreamReachabilityVerdictTests.swift in Sources */,
 				WTSYNCTESTBF000000000001 /* WatchTogetherProtocolTests.swift in Sources */,
+				F0CEA364CB4801B4400DB865 /* EclipseSyncTransportTests.swift in Sources */,
+				50AA687D1EEF631F3E5E7A68 /* EclipseSyncCoordinatorTests.swift in Sources */,
 				801A99DC1C4282F38491E1AE /* EclipseSyncProtocolTests.swift in Sources */,
 				SCLRPTSTBF00000000000001 /* MPVScalerPolicyTests.swift in Sources */,
 				LCRPTSTBF000000000000001 /* PlaybackLifecycleRecoveryPolicyTests.swift in Sources */,
@@ -2100,6 +2110,8 @@
 				13F072AB2E4B2D9200EF90EB /* Movie-Details.swift in Sources */,
 				1324E7BD2E940BD70036B5F5 /* PlayerViewController.swift in Sources */,
 				7BC72B40F59C41D6B2D8EB9B /* WatchTogetherCoordinator.swift in Sources */,
+				4E2B7483F9EF51C735C52177 /* EclipseSyncCoordinator.swift in Sources */,
+				BBB6770DD8F4730966C2A28B /* EclipseSyncTransport.swift in Sources */,
 				5DC053F5F802C29B6A381A18 /* EclipseSyncProtocol.swift in Sources */,
 				1324E7BE2E940BD70036B5F5 /* SampleBufferDisplayView.swift in Sources */,
 				13E1EDD32ED9E65F00087629 /* mangaModel.xcdatamodeld in Sources */,
