@@ -83,7 +83,7 @@ explicit messages and a new media revision; v1 does not silently change media or
 
 `sequence` increases for every host publication, including heartbeats; valid range is
 1...9007199254740991 (exact JavaScript integer range). Reject duplicate/out-of-order states.
-Reconnect permits one equal-sequence snapshot of the same room incarnation, never a lower
+Reconnect or an explicitly requested refresh permits one equal-sequence snapshot of the same room incarnation, never a lower
 sequence. `position` is finite seconds in 0...604800; `rate` is finite in 0.25...3. `reason` is
 `heartbeat`, `play`, `pause`, `seek`, or `rate`. Explicit seeks force correction even within
 the drift tolerance. Publish controls immediately and a snapshot about every two seconds.

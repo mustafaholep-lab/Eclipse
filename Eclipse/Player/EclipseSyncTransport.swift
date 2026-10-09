@@ -62,6 +62,7 @@ final class EclipseSyncWebSocketTransport: NSObject, EclipseSyncTransport, URLSe
         disconnect()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 15
@@ -96,7 +97,7 @@ final class EclipseSyncWebSocketTransport: NSObject, EclipseSyncTransport, URLSe
         continuation.yield(.closed(reason))
     }
 
-    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol negotiatedProtocol: String?) {
         Task { @MainActor [weak self] in
             guard let self, self.socket === webSocketTask else { return }
             self.continuation.yield(.opened)

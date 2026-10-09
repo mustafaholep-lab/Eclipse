@@ -192,9 +192,8 @@ final class EclipseSyncCoordinator {
         case .joined(let room, let session, let state):
             guard role == .client, self.room == room else { return }
             guard sessionID == nil || sessionID == session else { terminate(.closed(.hostDisconnected)); return }
-            let resync = !membershipConfirmed
+            let resync = !membershipConfirmed || snapshotRequested
             sessionID = session; membershipConfirmed = true; joinedAt = now()
-            snapshotRequested = false
             connectionState = .waitingForState
             if let state { accept(state, reconnectSnapshot: resync) }
         case .state(let state): accept(state, reconnectSnapshot: false)

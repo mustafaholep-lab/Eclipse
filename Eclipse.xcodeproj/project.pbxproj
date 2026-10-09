@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5DC053F5F802C29B6A381A18 /* EclipseSyncProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */; };
+		801A99DC1C4282F38491E1AE /* EclipseSyncProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8EBD72B5CB62585C6EF866 /* EclipseSyncProtocolTests.swift */; };
+		BBB6770DD8F4730966C2A28B /* EclipseSyncTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20AA4EFD8D045968D646D8E1 /* EclipseSyncTransport.swift */; };
+		4E2B7483F9EF51C735C52177 /* EclipseSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131AC13F28386AAF9239D957 /* EclipseSyncCoordinator.swift */; };
+		50AA687D1EEF631F3E5E7A68 /* EclipseSyncCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51A292931C2CB626A85E3B03 /* EclipseSyncCoordinatorTests.swift */; };
+		F0CEA364CB4801B4400DB865 /* EclipseSyncTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D3A732C76B624DCD96EE244 /* EclipseSyncTransportTests.swift */; };
 		9C50A0010000000000000001 = {isa = PBXBuildFile; fileRef = 9C50A0010000000000000005; };
 		9C50A0010000000000000002 = {isa = PBXBuildFile; fileRef = 9C50A0010000000000000005; };
 		9C50A0010000000000000003 = {isa = PBXBuildFile; fileRef = 9C50A0010000000000000006; };

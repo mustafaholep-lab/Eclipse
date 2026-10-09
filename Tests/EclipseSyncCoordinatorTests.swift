@@ -208,6 +208,19 @@ final class EclipseSyncCoordinatorTests: XCTestCase {
         await coordinator.leave()
     }
 
+    func testExpiredSnapshotReplyReconnectsInsteadOfApplyingStalePlayback() async throws {
+        let probe = SyncPlaybackProbe(); let (coordinator, transport) = make(probe)
+        try await join(coordinator, transport, initial: state())
+        let count = probe.commands.count
+        transport.receive(.message(.state(state(sequence: 2, sentAt: 900))))
+        try await waitUntil { transport.sent.filter { if case .joinRoom = $0 { return true }; return false }.count == 2 }
+        transport.receive(.message(.joined(room: "482731", sessionID: session, state: state(sentAt: 900))))
+        try await waitUntil { coordinator.connectionState == .reconnecting(attempt: 1) }
+        XCTAssertEqual(probe.commands.count, count)
+        XCTAssertFalse(transport.isConnected)
+        await coordinator.leave()
+    }
+
     func testHostDisconnectClosesWithoutHostElectionAndLeaveCancelsTimers() async throws {
         let probe = SyncPlaybackProbe(); let (host, transport) = make(probe)
         try host.createRoom(); transport.receive(.opened); await drain()
