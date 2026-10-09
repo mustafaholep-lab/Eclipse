@@ -25,16 +25,6 @@ enum SubtitleFileError: LocalizedError {
         }
     }
 
-    var aiStatus: String {
-        switch self {
-        case .empty: return "Altyazı dosyası boş"
-        case .tooLarge: return "Altyazı 12 MB sınırını aşıyor"
-        case .unsupportedFormat: return "Altyazı biçimi tanınamadı"
-        case .unreadableArchive, .noMatchingSubtitle: return "Altyazı arşivi okunamadı"
-        case .invalidEncoding: return "Altyazı metni okunamadı"
-        case .missingTimedCues: return "Altyazıda zaman kodu bulunamadı"
-        }
-    }
 }
 
 struct PreparedSubtitleFile: Sendable {
@@ -47,7 +37,7 @@ enum SubtitleFileHandling {
     static let maximumBytes = 12 * 1_024 * 1_024
     private static let formats: Set<String> = ["srt", "vtt", "ass", "ssa"]
 
-    /// For online AI sources, the response body is authoritative; URL and addon formats are hints.
+    /// For online subtitle sources, the response body is authoritative; URL and addon formats are hints.
     static func prepareDetected(_ data: Data, hintedFileName: String? = nil,
                                 hintedFormat: String? = nil, query: SubtitleQuery? = nil) throws -> PreparedSubtitleFile {
         guard !data.isEmpty else { throw SubtitleFileError.empty }

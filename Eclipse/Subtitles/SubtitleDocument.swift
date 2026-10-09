@@ -1,6 +1,6 @@
 import Foundation
 
-/// Translation-only view of a subtitle file. Playback continues to use its existing loaders.
+/// Timed cue parsing for subtitle validation and dialogue previews.
 enum SubtitleDocumentFormat: String {
     case srt, vtt, ass, ssa
 }
@@ -9,60 +9,37 @@ enum SubtitleSkipReason: Equatable {
     case empty, drawing, karaoke, sign, effect, openingOrEnding, nonDialogue
 }
 
-struct SubtitleTranslationUnit {
+struct SubtitleCue {
     let id: String
     let start: TimeInterval
     let end: TimeInterval
     let originalText: String
-    /// Text without formatting commands. Use translationTemplate when asking for a translation.
+    /// Plain text for previews; the original formatted text remains unchanged.
     let plainText: String
-    /// Contains opaque markers for protected formatting and ASS line breaks.
-    let translationTemplate: String
     let format: SubtitleDocumentFormat
     let skipReason: SubtitleSkipReason?
     let duplicateOf: String?
 
-    var isEligible: Bool { skipReason == nil }
+    var isDialogue: Bool { skipReason == nil }
 }
 
 enum SubtitleDocumentError: LocalizedError {
     case invalidFormat
-    case unknownUnit
-    case skippedUnit
-    case damagedPlaceholders
 
     var errorDescription: String? {
         switch self {
         case .invalidFormat: return "The subtitle document does not match its format."
-        case .unknownUnit: return "The subtitle cue was not found."
-        case .skippedUnit: return "This subtitle event is not eligible for translation."
-        case .damagedPlaceholders: return "The translation changed protected subtitle formatting."
         }
     }
 }
 
 struct SubtitleDocument {
     let format: SubtitleDocumentFormat
-    let units: [SubtitleTranslationUnit]
+    let units: [SubtitleCue]
 
-    /// Duplicate ASS layers appear once here, while all source events remain in `units`.
-    var translatableUnits: [SubtitleTranslationUnit] {
-        units.filter { $0.isEligible && $0.duplicateOf == nil }
-    }
-
-    private let source: String
-    private let records: [Record]
-    private var replacements: [String: String] = [:]
-
-    private struct Record {
-        let unit: SubtitleTranslationUnit
-        let textRange: NSRange
-        let protected: [ProtectedPart]
-    }
-
-    private struct ProtectedPart {
-        let marker: String
-        let original: String
+    /// Dialogue previews omit duplicate ASS layers, signs, drawings, and karaoke.
+    var dialogueUnits: [SubtitleCue] {
+        units.filter { $0.isDialogue && $0.duplicateOf == nil }
     }
 
     private struct Line {
@@ -72,7 +49,7 @@ struct SubtitleDocument {
 
     static func parse(_ source: String, format: SubtitleDocumentFormat) throws -> SubtitleDocument {
         let lines = lineRanges(source)
-        var records: [Record] = []
+        var records: [SubtitleCue] = []
         switch format {
         case .srt, .vtt:
             if format == .vtt {
@@ -87,42 +64,13 @@ struct SubtitleDocument {
             }
             parseASS(source, lines: lines, format: format, into: &records)
         }
-        return SubtitleDocument(format: format, units: records.map(\.unit), source: source, records: records)
+        return SubtitleDocument(format: format, units: records)
     }
 
     /// The input should already have been decoded by SubtitleFileHandling.prepare.
     static func parse(_ utf8: Data, format: SubtitleDocumentFormat) throws -> SubtitleDocument {
         guard let source = String(data: utf8, encoding: .utf8) else { throw SubtitleDocumentError.invalidFormat }
         return try parse(source, format: format)
-    }
-
-    mutating func applyTranslation(id: String, text: String) throws {
-        guard let record = records.first(where: { $0.unit.id == id }) else { throw SubtitleDocumentError.unknownUnit }
-        guard record.unit.isEligible else { throw SubtitleDocumentError.skippedUnit }
-        // A duplicate belongs to the same group as its representative.
-        let representative = record.unit.duplicateOf ?? id
-        guard let primary = records.first(where: { $0.unit.id == representative }) else {
-            throw SubtitleDocumentError.unknownUnit
-        }
-        guard Self.restored(text, parts: primary.protected) != nil else {
-            throw SubtitleDocumentError.damagedPlaceholders
-        }
-        replacements[representative] = text
-    }
-
-    func serialize() throws -> String {
-        guard !replacements.isEmpty else { return source }
-        let result = NSMutableString(string: source)
-        for record in records.reversed() {
-            let representative = record.unit.duplicateOf ?? record.unit.id
-            guard let translated = replacements[representative] else { continue }
-            let protected = records.first(where: { $0.unit.id == representative })?.protected ?? record.protected
-            guard let restored = Self.restored(translated, parts: protected) else {
-                throw SubtitleDocumentError.damagedPlaceholders
-            }
-            result.replaceCharacters(in: record.textRange, with: restored)
-        }
-        return result as String
     }
 
     private static func lineRanges(_ source: String) -> [Line] {
@@ -146,7 +94,7 @@ struct SubtitleDocument {
     }
 
     private static func parseTimedBlocks(_ source: String, lines: [Line], format: SubtitleDocumentFormat,
-                                         into records: inout [Record]) {
+                                         into records: inout [SubtitleCue]) {
         let ns = source as NSString
         var position = 0
         while position < lines.count {
@@ -175,13 +123,13 @@ struct SubtitleDocument {
             let textRange = NSRange(location: firstText, length: lastText - firstText)
             let raw = ns.substring(with: textRange)
             let id = "\(format.rawValue):\(records.count)"
-            let protected = protect(raw, format: format, id: id, source: source)
-            let reason: SubtitleSkipReason? = protected.plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .empty : nil
-            let unit = SubtitleTranslationUnit(id: id, start: times.0, end: times.1,
-                originalText: raw, plainText: protected.plain,
-                translationTemplate: protected.template, format: format,
+            let plain = plainText(raw, format: format)
+            let reason: SubtitleSkipReason? = plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .empty : nil
+            let unit = SubtitleCue(id: id, start: times.0, end: times.1,
+                originalText: raw, plainText: plain,
+                format: format,
                 skipReason: reason, duplicateOf: nil)
-            records.append(Record(unit: unit, textRange: textRange, protected: protected.parts))
+            records.append(unit)
         }
     }
 
@@ -208,7 +156,7 @@ struct SubtitleDocument {
     }
 
     private static func parseASS(_ source: String, lines: [Line], format: SubtitleDocumentFormat,
-                                 into records: inout [Record]) {
+                                 into records: inout [SubtitleCue]) {
         let ns = source as NSString
         var section = ""
         var fields: [String] = []
@@ -243,18 +191,18 @@ struct SubtitleDocument {
                                     length: textColumn.range.length)
             let raw = ns.substring(with: textRange)
             let id = "\(format.rawValue):\(records.count)"
-            let protected = protect(raw, format: format, id: id, source: source)
+            let plain = plainText(raw, format: format)
             let style = fields.firstIndex(of: "style").map { columns[$0].value.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
             let effect = fields.firstIndex(of: "effect").map { columns[$0].value.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
-            let reason = assSkipReason(raw: raw, plain: protected.plain, style: style, effect: effect)
+            let reason = assSkipReason(raw: raw, plain: plain, style: style, effect: effect)
             let key = "\(start)|\(end)|\(raw)"
             let duplicate = reason == nil ? duplicateIDs[key] : nil
             if reason == nil && duplicate == nil { duplicateIDs[key] = id }
-            let unit = SubtitleTranslationUnit(id: id, start: start, end: end,
-                originalText: raw, plainText: protected.plain,
-                translationTemplate: protected.template, format: format,
+            let unit = SubtitleCue(id: id, start: start, end: end,
+                originalText: raw, plainText: plain,
+                format: format,
                 skipReason: reason, duplicateOf: duplicate)
-            records.append(Record(unit: unit, textRange: textRange, protected: protected.parts))
+            records.append(unit)
         }
     }
 
@@ -306,8 +254,7 @@ struct SubtitleDocument {
         return nil
     }
 
-    private static func protect(_ raw: String, format: SubtitleDocumentFormat, id: String, source: String)
-        -> (plain: String, template: String, parts: [ProtectedPart]) {
+    private static func plainText(_ raw: String, format: SubtitleDocumentFormat) -> String {
         let pattern: String
         switch format {
         case .ass, .ssa: pattern = #"\{\\[^}]*\}|\\[Nnh]"#
@@ -315,55 +262,23 @@ struct SubtitleDocument {
         }
         let regex = try! NSRegularExpression(pattern: pattern)
         let ns = raw as NSString
-        let matches = regex.matches(in: raw, range: NSRange(location: 0, length: ns.length))
-        var salt = 0
-        var prefix: String
-        repeat {
-            prefix = "\u{E000}B1_\(id)_\(salt)_"
-            salt += 1
-        } while source.contains(prefix)
-        var template = ""
-        var plain = ""
-        var parts: [ProtectedPart] = []
-        var cursor = 0
-        for (index, match) in matches.enumerated() {
-            let before = ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
-            template += before
-            plain += before
+        let result = NSMutableString(string: raw)
+        for match in regex.matches(in: raw, range: NSRange(location: 0, length: ns.length)).reversed() {
             let original = ns.substring(with: match.range)
-            let marker = "\(prefix)\(index)\u{E001}"
-            template += marker
-            if original == "\\N" || original == "\\n" { plain += "\n" }
-            else if original == "\\h" { plain += " " }
-            parts.append(ProtectedPart(marker: marker, original: original))
-            cursor = match.range.location + match.range.length
+            let replacement = original == "\\N" || original == "\\n" ? "\n" : (original == "\\h" ? " " : "")
+            result.replaceCharacters(in: match.range, with: replacement)
         }
-        let tail = ns.substring(from: cursor)
-        return (plain + tail, template + tail, parts)
+        return result as String
     }
 
-    private static func restored(_ translated: String, parts: [ProtectedPart]) -> String? {
-        var previous = 0
-        let ns = translated as NSString
-        for part in parts {
-            let range = ns.range(of: part.marker)
-            guard range.location != NSNotFound, range.location >= previous,
-                  ns.range(of: part.marker, options: [], range: NSRange(location: range.location + range.length,
-                      length: ns.length - range.location - range.length)).location == NSNotFound else { return nil }
-            previous = range.location + range.length
-        }
-        var result = translated
-        for part in parts { result = result.replacingOccurrences(of: part.marker, with: part.original) }
-        return result
-    }
 }
 
-/// Uses B1's dialogue classification; never includes ASS script/style/sign events.
+/// Bounded dialogue previews omit ASS script/style/sign events.
 enum SubtitlePreview {
     static func dialogueLines(_ data: Data, format: SubtitleDocumentFormat,
                               limit: Int = 4) throws -> [String] {
         let document = try SubtitleDocument.parse(data, format: format)
-        return Array(document.translatableUnits.lazy
+        return Array(document.dialogueUnits.lazy
             .map { $0.plainText.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .prefix(max(0, min(limit, 6)))

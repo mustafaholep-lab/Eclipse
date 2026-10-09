@@ -96,8 +96,10 @@ enum SubtitleProviderCredentialStore {
         }
     }
 
-    static func delete(_ account: String) {
-        SecItemDelete(baseQuery(account) as CFDictionary)
+    @discardableResult
+    static func delete(_ account: String) -> Bool {
+        let status = SecItemDelete(baseQuery(account) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private static func baseQuery(_ account: String) -> [String: Any] {
@@ -120,41 +122,34 @@ enum SubtitleProviderCredentialStore {
     }
 }
 
-enum SubtitleTranslationMode: String, CaseIterable {
-    case off, ask, automatic
-
-    var title: String {
-        switch self {
-        case .off: return String(localized: "Kapalı")
-        case .ask: return String(localized: "Sor")
-        case .automatic: return String(localized: "Otomatik")
+/// Removes only data owned by the retired subtitle feature. Provider credentials stay intact.
+enum RetiredSubtitleDataCleanup {
+    static func runIfNeeded() {
+        let defaults = UserDefaults.standard
+        let marker = "retiredSubtitleDataRemovedV1"
+        guard !defaults.bool(forKey: marker) else { return }
+        // Keep the exact old account solely so existing installations can discard it.
+        guard SubtitleProviderCredentialStore.delete("ai-translation.key") else { return }
+        let files = FileManager.default
+        do {
+            if let support = files.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+                let cache = support.appendingPathComponent("SubtitleAITranslations", isDirectory: true)
+                // removeItem removes a symlink itself, without traversing its destination.
+                if files.fileExists(atPath: cache.path) || (try? files.destinationOfSymbolicLink(atPath: cache.path)) != nil {
+                    try files.removeItem(at: cache)
+                }
+            }
+            for file in try files.contentsOfDirectory(at: files.temporaryDirectory,
+                                                      includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                where file.lastPathComponent.hasPrefix("subtitle-ai-") {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true || values.isSymbolicLink == true else { continue }
+                try files.removeItem(at: file)
+            }
+            defaults.set(true, forKey: marker)
+        } catch {
+            // Retry on a later launch; avoid logging paths or credential information.
+            Logger.shared.log("Retired subtitle data cleanup deferred", type: "Player")
         }
     }
-}
-
-enum SubtitleTranslationSettings {
-    static let keyAccount = "ai-translation.key"
-    static let promptVersion = "subtitle-tr-v1"
-
-    static var mode: SubtitleTranslationMode {
-        get { SubtitleTranslationMode(rawValue: ProfileSettingsStore.active.string(forKey: "subtitleAI.mode") ?? "off") ?? .off }
-        set { ProfileSettingsStore.active.set(newValue.rawValue, forKey: "subtitleAI.mode") }
-    }
-
-    static var baseURL: String {
-        get { ProfileSettingsStore.active.string(forKey: "subtitleAI.baseURL") ?? "https://api.openai.com/v1" }
-        set { ProfileSettingsStore.active.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "subtitleAI.baseURL") }
-    }
-
-    static var model: String {
-        get { ProfileSettingsStore.active.string(forKey: "subtitleAI.model") ?? "" }
-        set { ProfileSettingsStore.active.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "subtitleAI.model") }
-    }
-
-    static var preservesHonorifics: Bool {
-        get { ProfileSettingsStore.active.object(forKey: "subtitleAI.honorifics") as? Bool ?? true }
-        set { ProfileSettingsStore.active.set(newValue, forKey: "subtitleAI.honorifics") }
-    }
-
-    static var hasKey: Bool { SubtitleProviderCredentialStore.value(keyAccount) != nil }
 }

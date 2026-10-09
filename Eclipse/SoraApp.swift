@@ -133,6 +133,7 @@ struct SoraApp: App {
 #endif
 
         DispatchQueue.global(qos: .background).async {
+            RetiredSubtitleDataCleanup.runIfNeeded()
             CacheManager.shared.checkAndAutoClearIfNeeded()
         }
         _ = DownloadManager.shared

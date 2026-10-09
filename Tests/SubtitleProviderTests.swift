@@ -340,7 +340,7 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertEqual(try SubtitleFileHandling.prepare(ass, fileName: "episode.ass").format, "ass")
     }
 
-    func testStremioAIFormatDetectionUsesContentOverMissingOrMisleadingExtension() throws {
+    func testSubtitleContentDetectionUsesContentOverMissingOrMisleadingExtension() throws {
         let srt = Data("1\n00:00:01,000 --> 00:00:02,000\nHello\n".utf8)
         let vtt = Data("WEBVTT\n\n00:01.000 --> 00:02.000\nHello\n".utf8)
         let ass = Data("[Script Info]\nTitle: Example\n[Events]\nFormat: Start, End, Text\nDialogue: 0:00:01.00,0:00:02.00,Hello\n".utf8)
@@ -355,19 +355,19 @@ final class SubtitleProviderTests: XCTestCase {
         XCTAssertEqual(try SubtitleFileHandling.prepareDetected(ass, hintedFileName: "subtitle.srt").format, "ass")
     }
 
-    func testStremioAIFormatDetectionRejectsMalformedBodyAndPreservesLimit() {
+    func testSubtitleContentDetectionRejectsMalformedBodyAndPreservesLimit() {
         XCTAssertThrowsError(try SubtitleFileHandling.prepareDetected(Data("garbage".utf8),
             hintedFileName: "subtitle.bin")) { error in
-            XCTAssertEqual((error as? SubtitleFileError)?.aiStatus, "Altyazı biçimi tanınamadı")
+            XCTAssertEqual((error as? SubtitleFileError)?.errorDescription, SubtitleFileError.unsupportedFormat.errorDescription)
         }
         XCTAssertThrowsError(try SubtitleFileHandling.prepareDetected(Data("wrong --> timestamps".utf8),
             hintedFileName: "subtitle.srt")) { error in
-            XCTAssertEqual((error as? SubtitleFileError)?.aiStatus, "Altyazıda zaman kodu bulunamadı")
+            XCTAssertEqual((error as? SubtitleFileError)?.errorDescription, SubtitleFileError.missingTimedCues.errorDescription)
         }
         XCTAssertThrowsError(try SubtitleFileHandling.prepareDetected(
             Data(repeating: 0x41, count: SubtitleFileHandling.maximumBytes + 1), hintedFileName: "subtitle.srt")) {
             error in
-            XCTAssertEqual((error as? SubtitleFileError)?.aiStatus, "Altyazı 12 MB sınırını aşıyor")
+            XCTAssertEqual((error as? SubtitleFileError)?.errorDescription, SubtitleFileError.tooLarge.errorDescription)
         }
     }
 

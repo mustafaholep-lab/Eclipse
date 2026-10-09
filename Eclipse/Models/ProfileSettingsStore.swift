@@ -68,9 +68,14 @@ final class ProfileSettingsStore {
     }
 
     private static func makeStore(for id: UUID) -> UserDefaults {
-
-        guard id != ProfileManager.defaultProfileID else { return .standard }
-        return UserDefaults(suiteName: suiteName(for: id)) ?? .standard
+        let store = id == ProfileManager.defaultProfileID
+            ? UserDefaults.standard
+            : (UserDefaults(suiteName: suiteName(for: id)) ?? .standard)
+        // Discard obsolete settings as each profile is opened, including profiles restored later.
+        for key in ["subtitleAI.mode", "subtitleAI.baseURL", "subtitleAI.model", "subtitleAI.honorifics"] {
+            store.removeObject(forKey: key)
+        }
+        return store
     }
 
     static func suiteName(for id: UUID) -> String {
