@@ -3,8 +3,8 @@
 Eclipse Sync is a host-authoritative playback-control protocol over WSS, independent of
 GroupActivities, Apple provisioning, FaceTime, and SharePlay. Each participant selects and
 plays its own local stream. The v1 room has one host and at most one client. The iOS MPV
-player offers Apple SharePlay and Eclipse Sync through Watch Together. A relay implementation
-is deferred; this document specifies the relay contract.
+player offers Apple SharePlay and Eclipse Sync through Watch Together. The Node relay lives in
+`tools/eclipse-sync-server/`; its README covers local operation, limits and TLS deployment.
 
 ## Privacy and validation
 
@@ -52,8 +52,12 @@ Room codes are exactly six ASCII digits, including leading zeroes. `sessionID` d
 a room incarnation from later reuse of its code. The server binds role/membership to the
 connection; callers cannot claim host authority in a payload. On `join_room`, reject a media
 mismatch before membership/state application. Rejoining the same room replaces a departed
-client connection and returns the latest authoritative snapshot. `joined` without state waits
-for the host's first state. An existing room incarnation must match when reconnecting.
+client connection and returns the latest authoritative snapshot. It does not evict a still-active
+client merely because another connection knows the code. Rejoining on the same connection is
+idempotent; the relay also notifies the host with `participant_joined` to request a fresh heartbeat.
+`joined` without state waits for the host's first fresh state. Cached state outside the client's
+−1...20-second age window is withheld until refreshed. An existing room incarnation must match
+when reconnecting.
 
 Error codes: `room_not_found`, `room_full`, `media_mismatch`, `host_only`, `invalid_message`,
 `rate_limited`. Close reasons: `host_left`, `host_disconnected`, `expired`. Unknown types are
@@ -83,7 +87,9 @@ explicit messages and a new media revision; v1 does not silently change media or
 ```
 
 `sequence` increases for every host publication, including heartbeats; valid range is
-1...9007199254740991 (exact JavaScript integer range). Reject duplicate/out-of-order states.
+1...9007199254740991 (exact JavaScript integer range). Reject duplicate/out-of-order states:
+the relay drops these without changing the canonical snapshot, rewriting the sequence, or
+extending room lifetime. Host timestamps are validated against the same −1...20-second window.
 Reconnect or an explicitly requested refresh permits one equal-sequence snapshot of the same room incarnation, never a lower
 sequence. `position` is finite seconds in 0...604800; `rate` is finite in 0.25...3. `reason` is
 `heartbeat`, `play`, `pause`, `seek`, or `rate`. Explicit seeks force correction even within
@@ -108,7 +114,9 @@ control attempt is reverted to authoritative state and never becomes host state.
 ## Room lifecycle and reconnect
 
 Keep rooms and their latest state in memory. Host leave/disconnect closes and deletes the
-room; delete empty rooms and expire idle rooms after 120 seconds without a host heartbeat.
+room; delete empty rooms and expire idle rooms after 120 seconds without an accepted newer host state.
+Pings do not extend room lifetime. Full room capacity returns `room_full`; relay-wide room
+capacity or bounded code-collision exhaustion returns `rate_limited`.
 Client departure does not stop the host. A client reconnects with bounded exponential
 backoff (1, 2, 4, 8, 16 seconds), rejoins, requests the current snapshot, and resyncs once.
 Show failure after five attempts; no silent host election. All queued sends and stale socket
@@ -138,15 +146,16 @@ No protocol episode transition is implemented; leave the room before selecting a
 
 `ECLIPSE_SYNC_SERVER_URL` is a build setting, exposed as an Info.plist value and read only by
 `EclipseSyncConfiguration`. Set it in ignored `Build.local.xcconfig`, for example
-`ECLIPSE_SYNC_SERVER_URL = wss:/$()/sync.example.com/ws`. WSS is required except loopback WS
+`ECLIPSE_SYNC_SERVER_URL = wss:/$()/YOUR_TLS_HOST`. The relay's WebSocket path is `/`, with
+`GET /health` for HTTP liveness; no `/ws` or `/sync` path is required. WSS is required except loopback WS
 in debug builds. No endpoint is supplied by default; no connection is opened at app startup.
 
 Run `EclipseSyncProtocolTests`, `EclipseSyncCoordinatorTests`, `EclipseSyncTransportTests`, and
 `EclipseSyncPlayerIntegrationTests`
 with the existing `Eclipse` scheme / `Tests` target on an iOS simulator. Also run existing
 subtitle, AnimeSub/Stremio, lifecycle recovery, and SharePlay protocol regression tests.
-Two-iPhone and real-relay testing remain prerequisites after a compatible relay is available.
+Two-iPhone testing remains a prerequisite after a reachable, trusted TLS endpoint is configured.
 On both phones select the same movie/episode, resolve local streams, then have the host create
 a room and the client join its six-digit code. Check host play/pause/seek/rate, client control
 rejection, pause during client buffering, network reconnect, mismatch, and host leave. Devices
-may use different streams and subtitles. No server or deployment instructions are provided yet.
+may use different streams and subtitles. See the relay README for run/deployment instructions.
