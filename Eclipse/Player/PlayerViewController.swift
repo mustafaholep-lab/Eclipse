@@ -1956,6 +1956,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         return min(safePosition, cachedDuration)
     }
 
+    private var userSeekPosition: Double {
+#if os(iOS)
+        if eclipseSyncAdapter?.role == .host, let position = eclipseSyncAdapter?.controlPosition { return position }
+#endif
+        return cachedPosition
+    }
+
     private func rendererSeek(by seconds: Double) {
         guard seconds.isFinite else {
             Logger.shared.log("PlayerViewController: ignored relative seek with invalid delta=\(secondsText(seconds))", type: "Player")
@@ -1976,6 +1983,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func rendererSetSpeed(_ speed: Double, notifyWatchTogether: Bool = true) {
+#if os(iOS)
+        if notifyWatchTogether, !permitsWatchTogetherLocalControl(.rate) { return }
+#endif
         let previousSpeed = rendererGetSpeed()
         if vlcRenderer != nil {
             logVLCUI("rendererSetSpeed \(String(format: "%.2f", speed))", type: "Player")
@@ -1987,7 +1997,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         sendPlaybackSpeedTraktScrobbleIfNeeded(previousSpeed: previousSpeed, newSpeed: rendererGetSpeed())
 #if os(iOS)
         if notifyWatchTogether {
-            WatchTogetherCoordinator.shared.sendUserPlaybackRate(speed, from: self)
+            publishWatchTogetherRate(speed)
         }
 #endif
     }
@@ -4130,6 +4140,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #endif
     private var playerNoticeDismissWorkItem: DispatchWorkItem?
 #if os(iOS)
+    private var eclipseSyncAdapter: EclipseSyncPlayerAdapter?
     private var watchTogetherConnectionState: WatchTogetherConnectionState = .ready
     private var watchTogetherMediaIdentifier: String?
     private var pendingWatchTogetherPlaybackState: (state: WatchTogetherSharedState, shouldSeek: Bool)?
@@ -4476,6 +4487,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         outputVolumeObservation = nil
 #endif
         MainActor.assumeIsolated {
+#if os(iOS)
+            eclipseSyncAdapter?.cancel()
+#endif
             renderer.setPictureInPictureStopRequestHandler(nil)
             if let mpv = mpvRenderer {
                 mpv.delegate = nil
@@ -6705,6 +6719,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     @objc private func leftSideDoubleTapped(_ gesture: UITapGestureRecognizer) {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
         guard isDoubleTapSeekEnabled else { return }
         let location = gesture.location(in: videoContainer)
         let isLeftSide = location.x < videoContainer.bounds.width / 2
@@ -6713,12 +6730,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         logSharedPlayerControl("left double-tap seek by -\(String(format: "%.1f", playerSeekSeconds))")
         rendererSeek(by: -playerSeekSeconds)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: max(0, cachedPosition - playerSeekSeconds), from: self)
+        publishWatchTogetherSeek(to: max(0, userSeekPosition - playerSeekSeconds))
 #endif
         animateButtonTap(skipBackwardButton)
     }
 
     @objc private func rightSideDoubleTapped(_ gesture: UITapGestureRecognizer) {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
         guard isDoubleTapSeekEnabled else { return }
         let location = gesture.location(in: videoContainer)
         let isRightSide = location.x >= videoContainer.bounds.width / 2
@@ -6727,7 +6747,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         logSharedPlayerControl("right double-tap seek by \(String(format: "%.1f", playerSeekSeconds))")
         rendererSeek(by: playerSeekSeconds)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: watchTogetherClampedPosition(cachedPosition + playerSeekSeconds), from: self)
+        publishWatchTogetherSeek(to: watchTogetherClampedPosition(userSeekPosition + playerSeekSeconds))
 #endif
         animateButtonTap(skipForwardButton)
     }
@@ -7050,18 +7070,21 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     @objc private func playPauseTapped() {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.play) else { return }
+#endif
         if rendererIsPausedState() {
             markBackgroundRecoveryForegrounded(source: "play-button")
             rendererPlay()
             updatePlayPauseButton(isPaused: false)
 #if os(iOS)
-            WatchTogetherCoordinator.shared.sendUserPlay(from: self)
+            publishWatchTogetherPlay()
 #endif
         } else {
             rendererPausePlayback()
             updatePlayPauseButton(isPaused: true)
 #if os(iOS)
-            WatchTogetherCoordinator.shared.sendUserPause(from: self)
+            publishWatchTogetherPause()
 #endif
         }
     }
@@ -7072,22 +7095,28 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     @objc private func skipBackwardTapped() {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
         let seconds = playerSeekSeconds
         logSharedPlayerControl("skip backward button tapped seek=\(String(format: "%.1f", seconds))")
         rendererSeek(by: -seconds)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: max(0, cachedPosition - seconds), from: self)
+        publishWatchTogetherSeek(to: max(0, userSeekPosition - seconds))
 #endif
         animateButtonTap(skipBackwardButton)
         showControlsTemporarily()
     }
 
     @objc private func skipForwardTapped() {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
         let seconds = playerSeekSeconds
         logSharedPlayerControl("skip forward button tapped seek=\(String(format: "%.1f", seconds))")
         rendererSeek(by: seconds)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: watchTogetherClampedPosition(cachedPosition + seconds), from: self)
+        publishWatchTogetherSeek(to: watchTogetherClampedPosition(userSeekPosition + seconds))
 #endif
         animateButtonTap(skipForwardButton)
         showControlsTemporarily()
@@ -7542,6 +7571,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func beginEpisodeBrowserSelection(_ item: PlayerEpisodeBrowserItem) {
+#if os(iOS)
+        guard eclipseSyncAdapter?.isActive != true else {
+            showPlayerNotice("Leave Eclipse Sync before changing episodes.")
+            return
+        }
+#endif
         guard !item.isCurrent else { return }
 #if os(iOS)
         if case .active = watchTogetherConnectionState {
@@ -8823,6 +8858,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #if os(iOS)
             let autoSkipSuppressedByWatchTogether =
                 WatchTogetherCoordinator.shared.sessionRole(for: self) == .follower
+                || eclipseSyncAdapter?.isClient == true
 #else
             let autoSkipSuppressedByWatchTogether = false
 #endif
@@ -8834,7 +8870,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 let target = clampedPlaybackPosition(seg.endTime + 1.0)
                 rendererSeek(to: target)
 #if os(iOS)
-                WatchTogetherCoordinator.shared.sendUserSeek(to: target, from: self)
+                publishWatchTogetherSeek(to: target)
 #endif
                 return
             }
@@ -9379,6 +9415,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     @objc private func skipButtonTapped() {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
         guard let seg = currentActiveSkipSegment else { return }
         guard seg.endTime.isFinite else {
             Logger.shared.log("SkipData: Ignored skip tap for \(seg.type.rawValue); invalid end=\(secondsText(seg.endTime))", type: "Skip")
@@ -9391,13 +9430,19 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let target = clampedPlaybackPosition(seg.endTime + 1.0)
         rendererSeek(to: target)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: target, from: self)
+        publishWatchTogetherSeek(to: target)
 #endif
         currentActiveSkipSegment = nil
         hideSkipButton()
     }
 
     @objc private func nextEpisodeButtonTapped() {
+#if os(iOS)
+        guard eclipseSyncAdapter?.isActive != true else {
+            showPlayerNotice("Leave Eclipse Sync before changing episodes.")
+            return
+        }
+#endif
         guard case .episode(let showID, let seasonNumber, let episodeNumber, _, _, _) = mediaInfo else { return }
         guard pendingNextEpisodeRequest == nil,
               pendingWatchTogetherNextEpisodeTarget == nil else { return }
@@ -9603,12 +9648,15 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     @objc private func skip85sButtonTapped() {
-        let currentPosition = cachedPosition
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
+        let currentPosition = userSeekPosition
         let targetPosition = clampedPlaybackPosition(currentPosition + 85.0)
         Logger.shared.log("Skip85s: User tapped skip 85s at \(secondsText(currentPosition))s -> seeking to \(secondsText(targetPosition))s", type: "Skip")
         rendererSeek(to: targetPosition)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: targetPosition, from: self)
+        publishWatchTogetherSeek(to: targetPosition)
 #endif
     }
 
@@ -15044,10 +15092,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self.isSeeking = editing
                 self.controlsHideWorkItem?.cancel()
                 if !editing {
+#if os(iOS)
+                    guard self.permitsWatchTogetherLocalControl(.seek) else { return }
+#endif
                     let target = max(0, self.progressModel.position)
                     self.rendererSeek(to: target)
 #if os(iOS)
-                    WatchTogetherCoordinator.shared.sendUserSeek(to: target, from: self)
+                    self.publishWatchTogetherSeek(to: target)
 #endif
                     self.showControlsTemporarily()
                 }
@@ -15280,6 +15331,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func togglePlaybackFromVideoGesture(source: String) {
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.play) else { return }
+#endif
         pendingContainerTapWorkItem?.cancel()
         suppressNextPlayPauseControlReveal = true
         playPauseRevealSuppressionToken += 1
@@ -15295,13 +15349,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             rendererPlay()
             updatePlayPauseButton(isPaused: false, shouldShowControls: false)
 #if os(iOS)
-            WatchTogetherCoordinator.shared.sendUserPlay(from: self)
+            publishWatchTogetherPlay()
 #endif
         } else {
             rendererPausePlayback()
             updatePlayPauseButton(isPaused: true, shouldShowControls: false)
 #if os(iOS)
-            WatchTogetherCoordinator.shared.sendUserPause(from: self)
+            publishWatchTogetherPause()
 #endif
         }
     }
@@ -15606,6 +15660,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #endif
         if isClosing { return }
         isClosing = true
+#if os(iOS)
+        eclipseSyncAdapter?.cancel()
+        eclipseSyncAdapter = nil
+#endif
         directSubtitlePreviewTask?.cancel()
         directSubtitlePreviewTask = nil
         directSubtitlePreviewCache = nil
@@ -15746,6 +15804,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func postPlayerDidCloseNotification() {
         guard !hasFinalizedMediaStatePlayback else { return }
         hasFinalizedMediaStatePlayback = true
+#if os(iOS)
+        eclipseSyncAdapter?.cancel()
+        eclipseSyncAdapter = nil
+#endif
         var userInfo: [String: Any] = [:]
         if let mediaInfo {
             syncTraktProgressOnPlaybackCloseIfNeeded(for: mediaInfo, reason: "close")
@@ -15851,6 +15913,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         isClosing = true
+#if os(iOS)
+        eclipseSyncAdapter?.cancel()
+        eclipseSyncAdapter = nil
+#endif
         releaseEphemeralProxyOwnership()
         rendererPausePlayback()
         rendererStop()
@@ -17987,25 +18053,22 @@ private extension PlayerViewController {
     }
 
     func configureWatchTogetherForCurrentMedia() {
-        guard isWatchTogetherAvailable else {
-            watchTogetherMediaIdentifier = nil
-            watchTogetherButton.alpha = 0.0
-            watchTogetherButton.isHidden = true
-            WatchTogetherCoordinator.shared.detach(self)
-            return
-        }
-        guard let context = watchTogetherMediaContext() else {
+        guard isMetalMPVRenderer, let context = watchTogetherMediaContext() else {
             watchTogetherMediaIdentifier = nil
             watchTogetherButton.isHidden = true
             WatchTogetherCoordinator.shared.detach(self)
+            eclipseSyncAdapter?.cancel()
             return
         }
-
-        let identifier = WatchTogetherCoordinator.mediaIdentifier(forStableKey: context.stableKey)
-        watchTogetherMediaIdentifier = identifier
+        watchTogetherMediaIdentifier = WatchTogetherCoordinator.mediaIdentifier(forStableKey: context.stableKey)
         watchTogetherButton.isHidden = false
         watchTogetherButton.alpha = controlsVisible ? 1.0 : 0.0
-        WatchTogetherCoordinator.shared.attach(self, mediaIdentifier: identifier, title: context.title)
+        if isWatchTogetherAvailable, eclipseSyncAdapter?.isActive != true {
+            WatchTogetherCoordinator.shared.attach(self, mediaIdentifier: watchTogetherMediaIdentifier, title: context.title)
+        } else {
+            WatchTogetherCoordinator.shared.detach(self)
+        }
+        updateWatchTogetherButton(for: watchTogetherConnectionState)
     }
 
     func watchTogetherMediaContext() -> (stableKey: String, title: String)? {
@@ -18026,27 +18089,37 @@ private extension PlayerViewController {
     }
 
     @objc func watchTogetherTapped() {
-        guard isWatchTogetherAvailable else {
-            watchTogetherButton.alpha = 0.0
-            watchTogetherButton.isHidden = true
-            WatchTogetherCoordinator.shared.detach(self)
+        guard isMetalMPVRenderer, watchTogetherMediaIdentifier != nil else { return }
+        let alert = UIAlertController(title: "Watch Together", message: nil, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Apple SharePlay", style: .default) { [weak self] _ in
+            self?.dismissWatchTogetherMenuThen { [weak self] in self?.presentAppleSharePlayMode() }
+        })
+        alert.addAction(UIAlertAction(title: "Eclipse Sync", style: .default) { [weak self] _ in
+            self?.dismissWatchTogetherMenuThen { [weak self] in self?.presentEclipseSyncMenu() }
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        presentWatchTogetherMenu(alert)
+    }
+
+    func presentAppleSharePlayMode() {
+        guard eclipseSyncAdapter?.isActive != true else {
+            showPlayerNotice("Leave Eclipse Sync before starting Apple SharePlay.")
             return
         }
         switch watchTogetherConnectionState {
-        case .ready:
-            beginWatchTogetherActivity()
-        case .activating:
-            showPlayerNotice("SharePlay is starting...")
-        case .active(let participantCount, let mediaMatches, let sharedTitle):
-            if mediaMatches {
-                presentWatchTogetherSessionMenu(participantCount: participantCount)
-            } else {
-                presentWatchTogetherMismatchMenu(sharedTitle: sharedTitle)
-            }
+        case .ready: beginWatchTogetherActivity()
+        case .activating: showPlayerNotice("SharePlay is starting...")
+        case .active(let count, let matches, let title):
+            if matches { presentWatchTogetherSessionMenu(participantCount: count) }
+            else { presentWatchTogetherMismatchMenu(sharedTitle: title) }
         }
     }
 
     func beginWatchTogetherActivity() {
+        guard eclipseSyncAdapter?.isActive != true else {
+            showPlayerNotice("Leave Eclipse Sync before starting Apple SharePlay.")
+            return
+        }
         guard isWatchTogetherAvailable else {
             showPlayerNotice("Watch Together requires MPV with the MoltenVK renderer and must be enabled in Settings.")
             return
@@ -18058,6 +18131,7 @@ private extension PlayerViewController {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await WatchTogetherCoordinator.shared.beginActivity()
+            guard !self.isClosing, self.eclipseSyncAdapter?.isActive != true else { return }
             switch result {
             case .started:
                 self.showPlayerNotice("Starting secure Watch Together with SharePlay...")
@@ -18167,6 +18241,10 @@ private extension PlayerViewController {
 
     func updateWatchTogetherButton(for state: WatchTogetherConnectionState) {
         watchTogetherConnectionState = state
+        if eclipseSyncAdapter?.isActive == true {
+            updateEclipseSyncButton()
+            return
+        }
         let configuration = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
         let symbolName: String
         switch state {
@@ -18295,7 +18373,7 @@ extension PlayerViewController: WatchTogetherPlaybackDelegate {
     }
 
     func watchTogetherApply(state: WatchTogetherSharedState, shouldSeek: Bool) {
-        guard !isClosing, isWatchTogetherAvailable else { return }
+        guard !isClosing, isWatchTogetherAvailable, eclipseSyncAdapter?.isActive != true else { return }
         watchTogetherAdopt(media: state.media)
         lastWatchTogetherSharedState = state
         let synchronizedPosition = watchTogetherTargetPosition(for: state)
@@ -18397,7 +18475,7 @@ extension PlayerViewController: WatchTogetherPlaybackDelegate {
     }
 
     private func drainPendingWatchTogetherStateIfReady() {
-        guard watchTogetherRendererReady,
+        guard eclipseSyncAdapter?.isActive != true, watchTogetherRendererReady,
               !isRendererLoading else { return }
         if let pending = pendingWatchTogetherPlaybackState {
             pendingWatchTogetherPlaybackState = nil
@@ -18463,11 +18541,11 @@ extension PlayerViewController: WatchTogetherPlaybackDelegate {
 
     func watchTogetherConnectionDidChange(_ state: WatchTogetherConnectionState) {
         guard isWatchTogetherAvailable else {
-            watchTogetherButton.alpha = 0.0
-            watchTogetherButton.isHidden = true
+            watchTogetherConnectionState = .ready
             WatchTogetherCoordinator.shared.detach(self)
             pendingWatchTogetherPlaybackState = nil
             restoreWatchTogetherNudgedRateIfNeeded()
+            configureWatchTogetherForCurrentMedia()
             return
         }
         let wasActive: Bool
@@ -18602,6 +18680,9 @@ extension PlayerViewController: MPVNativeRendererDelegate {
         pipController?.updatePlaybackState()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+#if os(iOS)
+            self.eclipseSyncAdapter?.readinessChanged()
+#endif
             if isLoading {
                 self.centerPlayPauseButton.isHidden = true
                 self.setPlayerLoadingIndicatorVisible(true)
@@ -18650,6 +18731,7 @@ extension PlayerViewController: MPVNativeRendererDelegate {
             self.applyDefaultPlaybackSpeed()
 #if os(iOS)
             self.watchTogetherRendererReady = true
+            self.eclipseSyncAdapter?.readinessChanged()
             self.drainPendingWatchTogetherStateIfReady()
 #endif
             self.applyAudioComfortFilterIfNeeded(reason: "ready")
@@ -19033,9 +19115,12 @@ extension PlayerViewController: PiPControllerDelegate {
             from: controller,
             source: "play"
         ) else { return }
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.play) else { return }
+#endif
         rendererPlay()
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserPlay(from: self)
+        publishWatchTogetherPlay()
 #endif
     }
     func pipControllerPause(_ controller: PiPController) {
@@ -19043,9 +19128,12 @@ extension PlayerViewController: PiPControllerDelegate {
             from: controller,
             source: "pause"
         ) else { return }
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.pause) else { return }
+#endif
         rendererPausePlayback()
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserPause(from: self)
+        publishWatchTogetherPause()
 #endif
     }
     func pipController(_ controller: PiPController, setPlaying playing: Bool, completion: @escaping () -> Void) {
@@ -19105,18 +19193,21 @@ extension PlayerViewController: PiPControllerDelegate {
             completion()
             return
         }
+#if os(iOS)
+        guard permitsWatchTogetherLocalControl(.seek) else { completion(); return }
+#endif
         let requestedSeconds = CMTimeGetSeconds(interval)
         let direction = requestedSeconds < 0 ? -1.0 : 1.0
         let seconds = direction * playerSeekSeconds
         let canClampToDuration = cachedDuration.isFinite && cachedDuration > 5 && cachedDuration > cachedPosition + 1
         let targetLimit = canClampToDuration ? cachedDuration : .greatestFiniteMagnitude
-        let target = max(0, min(targetLimit, cachedPosition + seconds))
+        let target = max(0, min(targetLimit, userSeekPosition + seconds))
         logPictureInPicture("skip requested=\(String(format: "%.1f", requestedSeconds)) applying=\(String(format: "%.1f", seconds)) cached=\(secondsText(cachedPosition))/\(secondsText(cachedDuration)) optimistic=\(secondsText(target))")
         cachedPosition = target
         progressModel.position = target
         rendererSeek(to: target)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendUserSeek(to: target, from: self)
+        publishWatchTogetherSeek(to: target)
 #endif
         let callbackLoadGeneration = controller.playbackLoadGeneration
         let callbackAttemptID = controller.transitionAttemptID
@@ -19197,7 +19288,16 @@ extension PlayerViewController: PiPControllerDelegate {
             return false
         }
 
+#if os(iOS)
+        if eclipseSyncAdapter?.isClient == true {
+            eclipseSyncAdapter?.readinessChanged()
+            return true
+        }
+#endif
         rendererPlay(recordingPlaybackIntent: false)
+#if os(iOS)
+        if eclipseSyncAdapter?.isActive == true { eclipseSyncAdapter?.localChange(.play) }
+#endif
         logPictureInPicture(
             "background fallback pause resumed for PiP source=\(source) lifecycle=\(mpvBackgroundLifecycleGeneration) intent=\(rendererPlaybackIntentGeneration)"
         )
@@ -19938,7 +20038,11 @@ extension PlayerViewController: PiPControllerDelegate {
         )
         rendererPausePlayback(preservingBackgroundFallbackOwnership: true)
 #if os(iOS)
-        WatchTogetherCoordinator.shared.sendLifecyclePause(from: self)
+        if eclipseSyncAdapter?.isActive == true {
+            if eclipseSyncAdapter?.role == .host { eclipseSyncAdapter?.localChange(.pause) }
+        } else {
+            WatchTogetherCoordinator.shared.sendLifecyclePause(from: self)
+        }
 #endif
     }
 
@@ -20053,3 +20157,212 @@ extension PlayerViewController: PiPControllerDelegate {
         }
     }
 }
+
+#if os(iOS)
+private extension PlayerViewController {
+    func presentWatchTogetherMenu(_ menu: UIAlertController) {
+        guard !isClosing, presentedViewController == nil else { return }
+        menu.popoverPresentationController?.sourceView = watchTogetherButton
+        menu.popoverPresentationController?.sourceRect = watchTogetherButton.bounds
+        present(menu, animated: true)
+    }
+
+    func dismissWatchTogetherMenuThen(_ action: @escaping () -> Void) {
+        if let alert = presentedViewController as? UIAlertController {
+            if alert.isBeingDismissed, let transition = alert.transitionCoordinator {
+                transition.animate(alongsideTransition: nil) { _ in action() }
+            } else { dismiss(animated: true, completion: action) }
+        } else { action() }
+    }
+
+    func presentEclipseSyncMenu() {
+        guard !isClosing else { return }
+        let adapter = eclipseSyncAdapter
+        let menu = UIAlertController(title: "Eclipse Sync", message: adapter?.statusText, preferredStyle: .actionSheet)
+        if adapter?.isActive == true {
+            if let room = adapter?.room {
+                menu.addAction(UIAlertAction(title: "Copy Room Code", style: .default) { [weak self] _ in
+                    UIPasteboard.general.string = room
+                    self?.showPlayerNotice("Room code copied.")
+                })
+            }
+            menu.addAction(UIAlertAction(title: "Leave Room", style: .destructive) { [weak self, weak adapter] _ in
+                guard let adapter else { return }
+                Task { @MainActor in
+                    await adapter.leave()
+                    guard let self, self.eclipseSyncAdapter === adapter, !self.isClosing else { return }
+                    self.configureWatchTogetherForCurrentMedia()
+                    self.showPlayerNotice("Left Eclipse Sync.")
+                }
+            })
+        } else {
+            menu.addAction(UIAlertAction(title: "Create Room", style: .default) { [weak self] _ in
+                self?.dismissWatchTogetherMenuThen { [weak self] in self?.startEclipseSync() }
+            })
+            menu.addAction(UIAlertAction(title: "Join Room", style: .default) { [weak self] _ in
+                self?.dismissWatchTogetherMenuThen { [weak self] in self?.presentEclipseSyncJoinPrompt() }
+            })
+        }
+        menu.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        presentWatchTogetherMenu(menu)
+    }
+
+    func presentEclipseSyncJoinPrompt() {
+        guard !isClosing, presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Join Eclipse Sync", message: "Enter the host's six-digit room code.", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "Room code"
+            field.keyboardType = .numberPad
+            field.textContentType = .oneTimeCode
+            field.clearButtonMode = .whileEditing
+        }
+        alert.addAction(UIAlertAction(title: "Join Room", style: .default) { [weak self, weak alert] _ in
+            let room = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            self?.dismissWatchTogetherMenuThen { [weak self] in
+                guard EclipseSyncMessage.validRoom(room) else {
+                    self?.presentWatchTogetherAlert(title: "Invalid Room Code", message: "Enter exactly six digits.")
+                    return
+                }
+                self?.startEclipseSync(room: room)
+            }
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    func startEclipseSync(room: String? = nil) {
+        guard !isClosing, isMetalMPVRenderer, eclipseSyncAdapter?.isActive != true else { return }
+        guard EclipseSyncPlayerAdapter.active == nil else {
+            showPlayerNotice("Leave Eclipse Sync in the other player first.")
+            return
+        }
+        do {
+            let endpoint = try EclipseSyncConfiguration.serverURL()
+            let transport = try EclipseSyncWebSocketTransport(endpoint: endpoint)
+            let adapter = EclipseSyncPlayerAdapter(player: self, transport: transport)
+            adapter.onAcquirePlayback = { [weak self] in
+                guard let self else { return }
+                WatchTogetherCoordinator.shared.leaveSession()
+                WatchTogetherCoordinator.shared.declinePendingDisabledSession()
+                WatchTogetherCoordinator.shared.detach(self)
+                self.pendingWatchTogetherPlaybackState = nil
+                self.restoreWatchTogetherNudgedRateIfNeeded()
+                self.lastWatchTogetherSharedState = nil
+            }
+            eclipseSyncAdapter?.cancel()
+            eclipseSyncAdapter = adapter
+            try adapter.start(room: room)
+        } catch {
+            let message = error as? EclipseSyncProtocolError == .invalidEndpoint
+                ? "Eclipse Sync is not configured with a valid server."
+                : "Eclipse Sync could not start. This video needs a valid movie or episode identity."
+            presentWatchTogetherAlert(title: "Eclipse Sync Unavailable", message: message)
+        }
+    }
+
+    func updateEclipseSyncButton() {
+        guard let adapter = eclipseSyncAdapter else { return }
+        let symbol: String
+        switch adapter.state {
+        case .active: symbol = "person.2.fill"; watchTogetherButton.tintColor = .systemGreen
+        case .connecting, .waitingForState, .reconnecting:
+            symbol = "person.2.fill"; watchTogetherButton.tintColor = .systemYellow
+        case .mismatch, .closed, .failed, .rejected:
+            symbol = "exclamationmark.triangle.fill"; watchTogetherButton.tintColor = .systemOrange
+        case .idle: symbol = "person.2.fill"; watchTogetherButton.tintColor = .white
+        }
+        watchTogetherButton.isEnabled = true
+        watchTogetherButton.accessibilityValue = adapter.statusText
+        let configuration = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        watchTogetherButton.setImage(UIImage(systemName: symbol, withConfiguration: configuration), for: .normal)
+    }
+
+    func permitsWatchTogetherLocalControl(_ reason: EclipseSyncStateReason) -> Bool {
+        guard let adapter = eclipseSyncAdapter, adapter.isActive else { return true }
+        guard adapter.permitsLocalControl(reason) else {
+            progressModel.position = cachedPosition
+            updatePlayPauseButton(isPaused: rendererIsPausedState(), shouldShowControls: false)
+            updateSpeedMenu()
+            showPlayerNotice("The Eclipse Sync host controls playback.")
+            return false
+        }
+        return true
+    }
+
+    func publishWatchTogetherPlay() {
+        if eclipseSyncAdapter?.isActive == true { eclipseSyncAdapter?.localChange(.play) }
+        else { WatchTogetherCoordinator.shared.sendUserPlay(from: self) }
+    }
+
+    func publishWatchTogetherPause() {
+        if eclipseSyncAdapter?.isActive == true { eclipseSyncAdapter?.localChange(.pause) }
+        else { WatchTogetherCoordinator.shared.sendUserPause(from: self) }
+    }
+
+    func publishWatchTogetherSeek(to position: Double) {
+        if eclipseSyncAdapter?.isActive == true { eclipseSyncAdapter?.localChange(.seek, position: position) }
+        else { WatchTogetherCoordinator.shared.sendUserSeek(to: position, from: self) }
+    }
+
+    func publishWatchTogetherRate(_ rate: Double) {
+        if eclipseSyncAdapter?.isActive == true { eclipseSyncAdapter?.localChange(.rate, rate: rate) }
+        else { WatchTogetherCoordinator.shared.sendUserPlaybackRate(rate, from: self) }
+    }
+}
+
+extension PlayerViewController: EclipseSyncPlayer {
+    var eclipseSyncPlayerSnapshot: EclipseSyncPlaybackSnapshot? {
+        guard !isClosing, isMetalMPVRenderer, let media = watchTogetherMediaDescriptor else { return nil }
+        return EclipseSyncPlaybackSnapshot(media: media, position: watchTogetherPosition,
+            duration: cachedDuration > 0 ? cachedDuration : nil, playing: !playbackPausedIntent,
+            rate: watchTogetherPlaybackRate, ready: watchTogetherIsReady,
+            buffering: isRendererLoading || mpvBackgroundFallbackAutoPaused)
+    }
+
+    func eclipseSyncSeek(to position: Double, origin: EclipseSyncCommandOrigin) {
+        guard !isClosing else { return }
+        pendingSeekTime = nil
+        pendingInitialResumeTarget = nil
+        pendingInitialResumeDeadline = nil
+        pendingInitialResumeRetryCount = 0
+        pendingInitialResumeLastRetryAt = nil
+        cachedPosition = watchTogetherClampedPosition(position)
+        progressModel.position = cachedPosition
+        rendererSeek(to: cachedPosition)
+        persistWatchTogetherProgress(at: cachedPosition)
+    }
+
+    func eclipseSyncSetRate(_ rate: Double, origin: EclipseSyncCommandOrigin) {
+        rendererSetSpeed(rate, notifyWatchTogether: false)
+        updateSpeedMenu()
+    }
+
+    func eclipseSyncSetPlaying(_ playing: Bool, origin: EclipseSyncCommandOrigin) {
+        guard !isClosing else { return }
+        if playing {
+            if playbackPausedIntent || rendererIsPausedState() {
+                markBackgroundRecoveryForegrounded(source: "eclipse-sync")
+                rendererPlay()
+            }
+        } else if !playbackPausedIntent || !rendererIsPausedState() {
+            rendererPausePlayback()
+        }
+        updatePlayPauseButton(isPaused: !playing, shouldShowControls: false)
+    }
+
+    func eclipseSyncUpdateStatus(_ state: EclipseSyncConnectionState) {
+        guard !isClosing else { return }
+        configureWatchTogetherForCurrentMedia()
+        if eclipseSyncAdapter?.isActive == true { updateEclipseSyncButton() }
+        switch state {
+        case .active(let role, _):
+            showPlayerNotice(eclipseSyncAdapter?.statusText ?? "Eclipse Sync connected.")
+            if role == .host, presentedViewController == nil { presentEclipseSyncMenu() }
+        case .mismatch, .closed, .failed, .rejected:
+            updateEclipseSyncButton()
+            showPlayerNotice(eclipseSyncAdapter?.statusText ?? "Eclipse Sync disconnected.")
+        default: break
+        }
+    }
+}
+#endif

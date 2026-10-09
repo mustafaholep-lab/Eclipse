@@ -9,6 +9,11 @@ on:
       - "Eclipse/JSLoader/Services/StremioClient.swift"
       - "Eclipse/JSLoader/Services/StremioAddonManager.swift"
       - "Tests/AnimeStructurePolicyTests.swift"
+      - "Eclipse/Player/EclipseSync*.swift"
+      - "Eclipse/Player/PlayerViewController.swift"
+      - "Eclipse/Player/WatchTogetherCoordinator.swift"
+      - "Tests/EclipseSync*.swift"
+      - "Eclipse.xcodeproj/project.pbxproj"
       - ".github/workflows/test-animesub-v6.yml"
 
 permissions:
@@ -78,6 +83,7 @@ jobs:
             -only-testing:Tests/EclipseSyncProtocolTests \
             -only-testing:Tests/EclipseSyncCoordinatorTests \
             -only-testing:Tests/EclipseSyncTransportTests \
+            -only-testing:Tests/EclipseSyncPlayerIntegrationTests \
             -parallel-testing-enabled NO \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
             -disableAutomaticPackageResolution \

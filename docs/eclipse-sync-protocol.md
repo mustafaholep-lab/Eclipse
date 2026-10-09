@@ -2,8 +2,9 @@
 
 Eclipse Sync is a host-authoritative playback-control protocol over WSS, independent of
 GroupActivities, Apple provisioning, FaceTime, and SharePlay. Each participant selects and
-plays its own local stream. The v1 room has one host and at most one client. Player/UI
-integration and a relay implementation are deferred; this document specifies the relay contract.
+plays its own local stream. The v1 room has one host and at most one client. The iOS MPV
+player offers Apple SharePlay and Eclipse Sync through Watch Together. A relay implementation
+is deferred; this document specifies the relay contract.
 
 ## Privacy and validation
 
@@ -112,7 +113,26 @@ Client departure does not stop the host. A client reconnects with bounded expone
 backoff (1, 2, 4, 8, 16 seconds), rejoins, requests the current snapshot, and resyncs once.
 Show failure after five attempts; no silent host election. All queued sends and stale socket
 callbacks are discarded when membership ends. Leave, room expiration, and protocol failure
-stop timers and restore ordinary local playback ownership through the future player adapter.
+stop timers and restore ordinary local playback ownership through the player adapter.
+
+## Player integration
+
+The existing Watch Together button offers Apple SharePlay and Eclipse Sync. Sync provides
+Create Room, Join Room, Copy Room Code, and Leave Room, with host/client, reconnect, mismatch,
+and server error status. It is available on the same MPV/MoltenVK path independently of Apple's
+reviewed-distribution SharePlay gate. SharePlay retains its existing settings and eligibility.
+
+`EclipseSyncPlayerAdapter` accesses only the existing canonical media descriptor, position,
+duration, playback intent/rate, readiness and buffering. It applies remote seek/rate/play/pause
+through the existing renderer helpers without outbound publication. Explicit local controls
+(including PiP and progress scrubbing) reject client changes, including during reconnect.
+Host seek/rate messages carry the explicit requested target before renderer callbacks arrive.
+Rapid host seeks and following pause/rate changes retain/project the pending seek position
+until the renderer acknowledges it, with a two-second expiry before returning to live state.
+Observation callbacks never publish user commands. Starting Sync leaves/detaches SharePlay;
+incoming SharePlay sessions are declined until Sync releases playback. Player close, account
+and profile boundaries synchronously cancel Sync. Leave sends `leave_room` then disconnects.
+No protocol episode transition is implemented; leave the room before selecting another episode.
 
 ## Configuration and validation
 
@@ -121,7 +141,12 @@ stop timers and restore ordinary local playback ownership through the future pla
 `ECLIPSE_SYNC_SERVER_URL = wss:/$()/sync.example.com/ws`. WSS is required except loopback WS
 in debug builds. No endpoint is supplied by default; no connection is opened at app startup.
 
-Run `EclipseSyncProtocolTests`, `EclipseSyncCoordinatorTests`, and `EclipseSyncTransportTests`
+Run `EclipseSyncProtocolTests`, `EclipseSyncCoordinatorTests`, `EclipseSyncTransportTests`, and
+`EclipseSyncPlayerIntegrationTests`
 with the existing `Eclipse` scheme / `Tests` target on an iOS simulator. Also run existing
 subtitle, AnimeSub/Stremio, lifecycle recovery, and SharePlay protocol regression tests.
-Two-iPhone and real-relay testing remain prerequisites after player integration is approved.
+Two-iPhone and real-relay testing remain prerequisites after a compatible relay is available.
+On both phones select the same movie/episode, resolve local streams, then have the host create
+a room and the client join its six-digit code. Check host play/pause/seek/rate, client control
+rejection, pause during client buffering, network reconnect, mismatch, and host leave. Devices
+may use different streams and subtitles. No server or deployment instructions are provided yet.
