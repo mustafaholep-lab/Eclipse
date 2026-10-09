@@ -20314,7 +20314,7 @@ extension PlayerViewController: EclipseSyncPlayer {
     var eclipseSyncPlayerSnapshot: EclipseSyncPlaybackSnapshot? {
         guard !isClosing, isMetalMPVRenderer, let media = watchTogetherMediaDescriptor else { return nil }
         return EclipseSyncPlaybackSnapshot(media: media, position: watchTogetherPosition,
-            duration: cachedDuration > 0 ? cachedDuration : nil, playing: !playbackPausedIntent,
+            duration: cachedDuration > 0 ? cachedDuration : nil, playing: !(playbackPausedIntent ?? rendererIsPausedState()),
             rate: watchTogetherPlaybackRate, ready: watchTogetherIsReady,
             buffering: isRendererLoading || mpvBackgroundFallbackAutoPaused)
     }
@@ -20340,11 +20340,11 @@ extension PlayerViewController: EclipseSyncPlayer {
     func eclipseSyncSetPlaying(_ playing: Bool, origin: EclipseSyncCommandOrigin) {
         guard !isClosing else { return }
         if playing {
-            if playbackPausedIntent || rendererIsPausedState() {
+            if (playbackPausedIntent ?? rendererIsPausedState()) || rendererIsPausedState() {
                 markBackgroundRecoveryForegrounded(source: "eclipse-sync")
                 rendererPlay()
             }
-        } else if !playbackPausedIntent || !rendererIsPausedState() {
+        } else if !(playbackPausedIntent ?? rendererIsPausedState()) || !rendererIsPausedState() {
             rendererPausePlayback()
         }
         updatePlayPauseButton(isPaused: !playing, shouldShowControls: false)
