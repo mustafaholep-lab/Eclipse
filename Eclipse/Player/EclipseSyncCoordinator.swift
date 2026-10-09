@@ -26,13 +26,14 @@ enum EclipseSyncConnectionState: Equatable {
     case reconnecting(attempt: Int)
     case mismatch
     case closed(EclipseSyncCloseReason)
+    case rejected(EclipseSyncErrorCode)
     case failed
 }
 
-/// The future player adapter supplies only playback state/control, never a PlaybackRequest.
+/// The player adapter supplies only playback state/control, never a PlaybackRequest.
 @MainActor
 protocol EclipseSyncPlaybackDelegate: AnyObject {
-    var eclipseSyncSnapshot: EclipseSyncPlaybackSnapshot { get }
+    var eclipseSyncSnapshot: EclipseSyncPlaybackSnapshot? { get }
     func eclipseSyncApply(_ command: EclipseSyncPlaybackCommand)
     func eclipseSyncConnectionChanged(_ state: EclipseSyncConnectionState)
 }
@@ -128,14 +129,18 @@ final class EclipseSyncCoordinator {
     }
 
     /// Controls publish immediately. Remote origins also suppress delayed renderer callbacks.
-    func publishLocalChange(_ reason: EclipseSyncStateReason, origin: EclipseSyncCommandOrigin = .local) {
+    func publishLocalChange(_ reason: EclipseSyncStateReason, origin: EclipseSyncCommandOrigin = .local,
+                            snapshot: EclipseSyncPlaybackSnapshot? = nil) {
         guard origin == .local, !isApplyingRemoteState, membershipConfirmed else { return }
         if role == .client {
             applyLatest(force: true)
             return
         }
-        publishHostState(reason)
+        publishHostState(reason, snapshot: snapshot)
     }
+
+    /// Synchronous teardown for player dismissal/profile boundaries. Socket closure ends membership.
+    func cancel() { reset(); connectionState = .idle }
 
     func playbackReadinessChanged() {
         guard membershipConfirmed else { return }
@@ -208,7 +213,7 @@ final class EclipseSyncCoordinator {
             guard matches(room, session) else { return }
             terminate(.closed(reason))
         case .error(let code):
-            terminate(code == .mediaMismatch ? .mismatch : .failed)
+            terminate(code == .mediaMismatch ? .mismatch : .rejected(code))
         default:
             // A relay cannot send client/host commands back as authority.
             terminate(.failed)
@@ -243,7 +248,7 @@ final class EclipseSyncCoordinator {
     private func applyLatest(force: Bool) {
         guard role == .client, membershipConfirmed, let state = latestState,
               let offset = clock.offset, let playback else { return }
-        let snapshot = playback.eclipseSyncSnapshot
+        guard let snapshot = playback.eclipseSyncSnapshot else { terminate(.mismatch); return }
         guard snapshot.media.isSameLogicalMedia(as: state.media) else { terminate(.mismatch); return }
         guard snapshot.ready, !snapshot.buffering else { forceCatchUp = true; return }
         guard (-1...20).contains(now() + offset - state.sentAt) else { requestSnapshot(); return }
@@ -259,9 +264,9 @@ final class EclipseSyncCoordinator {
         if seek { log(String(format: "drift correction %.2fs", abs(snapshot.position - target))) }
     }
 
-    private func publishHostState(_ reason: EclipseSyncStateReason) {
+    private func publishHostState(_ reason: EclipseSyncStateReason, snapshot suppliedSnapshot: EclipseSyncPlaybackSnapshot? = nil) {
         guard role == .host, membershipConfirmed, let room, let sessionID, let offset = clock.offset,
-              let media, let snapshot = playback?.eclipseSyncSnapshot else { return }
+              let media, let snapshot = suppliedSnapshot ?? playback?.eclipseSyncSnapshot else { return }
         guard media.isSameLogicalMedia(as: snapshot.media) else { terminate(.mismatch); return }
         guard let identifier = EclipseSyncState.identifier(for: media), snapshot.position.isFinite,
               (0...604_800).contains(snapshot.position), snapshot.rate.isFinite, (0.25...3).contains(snapshot.rate),

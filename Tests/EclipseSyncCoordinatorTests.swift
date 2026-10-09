@@ -13,7 +13,7 @@ private final class SyncPlaybackProbe: EclipseSyncPlaybackDelegate {
     var commands: [EclipseSyncPlaybackCommand] = []
     var states: [EclipseSyncConnectionState] = []
     var onApply: ((EclipseSyncPlaybackCommand) -> Void)?
-    var eclipseSyncSnapshot: EclipseSyncPlaybackSnapshot {
+    var eclipseSyncSnapshot: EclipseSyncPlaybackSnapshot? {
         EclipseSyncPlaybackSnapshot(media: media, position: position, duration: 2_000,
                                    playing: playing, rate: rate, ready: ready, buffering: buffering)
     }

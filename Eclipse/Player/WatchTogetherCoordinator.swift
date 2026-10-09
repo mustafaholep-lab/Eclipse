@@ -361,6 +361,7 @@ final class WatchTogetherCoordinator {
         mediaIdentifier: String?,
         title: String
     ) {
+        guard EclipseSyncPlayerAdapter.active == nil else { detach(delegate); return }
         guard WatchTogetherSettings.isEnabled() else {
             detach(delegate)
             delegate.watchTogetherConnectionDidChange(.ready)
@@ -428,6 +429,9 @@ final class WatchTogetherCoordinator {
     }
 
     func beginActivity() async -> WatchTogetherActivationResult {
+        guard EclipseSyncPlayerAdapter.active == nil else {
+            return .unavailable("Leave Eclipse Sync before starting Apple SharePlay.")
+        }
         guard WatchTogetherSettings.isEnabled() else {
             return .unavailable("Watch Together is disabled in Settings.")
         }
@@ -445,6 +449,7 @@ final class WatchTogetherCoordinator {
 
         switch await activity.prepareForActivation() {
         case .activationPreferred:
+            guard EclipseSyncPlayerAdapter.active == nil else { return .cancelled }
             do {
                 let activatedLocally = try await activity.activate()
                 if activatedLocally {
@@ -847,6 +852,10 @@ final class WatchTogetherCoordinator {
     }
 
     private func configure(_ newSession: GroupSession<EclipseWatchTogetherActivity>) {
+        guard EclipseSyncPlayerAdapter.active == nil else {
+            newSession.leave()
+            return
+        }
         guard WatchTogetherSettings.isEnabled() else {
             guard WatchTogetherSettings.isAvailableInCurrentBuild else {
                 Logger.shared.log(
