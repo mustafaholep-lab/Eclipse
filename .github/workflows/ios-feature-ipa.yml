@@ -191,6 +191,7 @@ jobs:
           import tempfile
           import urllib.request
           import zipfile
+          import subprocess
           root = pathlib.Path('MPVKit/dist').resolve()
           # Libplacebo's upstream build step restores native link inputs only.
           # Stage the exact binary target pinned by the reviewed package manifest.
@@ -205,7 +206,7 @@ jobs:
               with zipfile.ZipFile(archive) as bundle:
                   for member in bundle.namelist():
                       assert (destination / member).resolve().is_relative_to(destination)
-                  bundle.extractall(destination)
+              subprocess.run(['ditto', '-x', '-k', str(archive), str(destination)], check=True)
           required = ['Libmpv', 'MoltenVK', 'Libplacebo', 'Libavcodec', 'Libavdevice',
                       'Libavfilter', 'Libavformat', 'Libavutil', 'Libswresample', 'Libswscale']
           matrix = [('ios', None, {'arm64'}), ('ios', 'simulator', {'arm64', 'x86_64'}),
@@ -279,7 +280,7 @@ jobs:
 
           rm -rf "$ARCHIVE_PATH" "$DERIVED_DATA_PATH"
 
-          xcodebuild archive -jobs 2 \
+          xcodebuild archive -jobs 1 \
             -project Eclipse.xcodeproj \
             -scheme Eclipse \
             -configuration Release \
@@ -298,6 +299,8 @@ jobs:
             ECLIPSE_SOURCE_REVISION="$GITHUB_SHA" \
             ECLIPSE_MPVKIT_SOURCE_REVISION="$MPVKIT_SOURCE_REVISION" \
             'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ECLIPSE_UNSIGNED_BUILD' \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
             ENABLE_USER_SCRIPT_SANDBOXING=NO
 
