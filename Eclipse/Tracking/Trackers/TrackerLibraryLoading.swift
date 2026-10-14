@@ -334,10 +334,11 @@ final class TrackerLibraryCache {
     }
 
     private static func cost(_ entry: TrackerLibraryEntry) -> Int {
-        256 + entry.title.utf8.count + entry.alternateTitles.reduce(0) { $0 + $1.utf8.count }
-            + (entry.coverLarge?.utf8.count ?? 0) + (entry.coverMedium?.utf8.count ?? 0)
-            + entry.genres.reduce(0) { $0 + $1.utf8.count }
-            + entry.customLists.reduce(0) { $0 + $1.utf8.count }
+        let alternateTitleBytes: Int = entry.alternateTitles.reduce(0) { $0 + $1.utf8.count }
+        let genreBytes: Int = entry.genres.reduce(0) { $0 + $1.utf8.count }
+        let customListBytes: Int = entry.customLists.reduce(0) { $0 + $1.utf8.count }
+        let coverBytes: Int = (entry.coverLarge?.utf8.count ?? 0) + (entry.coverMedium?.utf8.count ?? 0)
+        return 256 + entry.title.utf8.count + alternateTitleBytes + coverBytes + genreBytes + customListBytes
     }
 
     func store(_ snapshot: TrackerLibrarySnapshot, key: TrackerLibraryCacheKey, token: UUID, estimatedBytes: Int? = nil) {
