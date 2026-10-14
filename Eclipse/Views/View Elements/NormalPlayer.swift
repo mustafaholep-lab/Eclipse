@@ -62,6 +62,8 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
     private let systemPlayerViewController = AVPlayerViewController()
 #if os(iOS)
     private let playerSurfaceView = IOSAVPlayerSurfaceView()
+    private var pinchZoomedToFill = false
+    private var pinchGesture: UIPinchGestureRecognizer?
     private var pictureInPictureController: AVPictureInPictureController?
     private var pictureInPicturePossibleObservation: NSKeyValueObservation?
 #endif
@@ -346,6 +348,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
             embeddedSubtitlesAllowed = mediaSelectionIntent.subtitlesEnabled
         }
         setupHoldGesture()
+        setupPinchGesture()
         setupDoubleTapGesture()
         setupPictureInPictureHandling()
         setupMediaControls()
@@ -727,6 +730,53 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         }
     }
 
+    private func setupPinchGesture() {
+        let gesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        gesture.delegate = self
+        view.addGestureRecognizer(gesture)
+        pinchGesture = gesture
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        guard !PlayerPlaybackLockSettings.isLocked(), gesture.state == .changed || gesture.state == .ended else { return }
+        let fill: Bool
+        if gesture.scale > 1.08 { fill = true }
+        else if gesture.scale < 0.92 { fill = false }
+        else { return }
+        guard fill != pinchZoomedToFill else { return }
+        pinchZoomedToFill = fill
+        let transition = CATransition()
+        transition.type = .fade
+        transition.duration = 0.24
+        playerSurfaceView.playerLayer.add(transition, forKey: "video.fillTransition")
+        playerSurfaceView.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+        updatePinchSubtitleLayout()
+    }
+
+    private func updatePinchSubtitleLayout() {
+        guard let item = player?.currentItem else { return }
+        let appearance = PlayerSubtitleAppearance()
+        guard pinchZoomedToFill else { item.textStyleRules = appearance.avTextStyleRules; return }
+        let size = item.presentationSize
+        let viewport = playerSurfaceView.bounds.size
+        guard size.width > 0, size.height > 0, viewport.width > 0, viewport.height > 0 else { return }
+        let scale = max(viewport.width / size.width, viewport.height / size.height)
+        let rendered = CGSize(width: size.width * scale, height: size.height * scale)
+        let insets = view.safeAreaInsets
+        let lineInset = insets.bottom + max(50, appearance.fontSize * 2)
+        let bottom = (rendered.height - viewport.height) / 2 + viewport.height - lineInset
+        var attributes = appearance.avTextStyleRules.first?.textMarkupAttributes ?? [:]
+        attributes[kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String] = max(0, min(100, bottom / rendered.height * 100))
+        attributes[kCMTextMarkupAttribute_TextPositionPercentageRelativeToWritingDirection as String] = 50
+        attributes[kCMTextMarkupAttribute_WritingDirectionSizePercentage as String] = max(1, min(100, (viewport.width - insets.left - insets.right - 32) / rendered.width * 100))
+        item.textStyleRules = AVTextStyleRule(textMarkupAttributes: attributes).map { [$0] } ?? appearance.avTextStyleRules
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if pinchZoomedToFill { updatePinchSubtitleLayout() }
+    }
+
     private func setupDoubleTapGesture() {
         let gesture = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
         gesture.numberOfTapsRequired = 2
@@ -734,6 +784,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         gesture.delegate = self
         view.addGestureRecognizer(gesture)
         doubleTapGesture = gesture
+        if let pinchGesture { gesture.require(toFail: pinchGesture) }
     }
 
     private func setupMediaControlsVisibilityGesture() {
@@ -760,6 +811,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         }
         view.addGestureRecognizer(gesture)
         mediaControlsTapGesture = gesture
+        if let pinchGesture { gesture.require(toFail: pinchGesture) }
     }
 
     @objc private func handleMediaControlsTouchDown(_ gesture: UILongPressGestureRecognizer) {
@@ -815,7 +867,10 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
-        true
+#if os(iOS)
+        if gestureRecognizer is UIPinchGestureRecognizer || otherGestureRecognizer is UIPinchGestureRecognizer { return false }
+#endif
+        return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
