@@ -1941,6 +1941,7 @@ final class DownloadManager: NSObject, ObservableObject {
         let config = URLSessionConfiguration.background(withIdentifier: "app.eclipse.soupy.downloads")
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
+        config.waitsForConnectivity = true
         #endif
         config.allowsCellularAccess = true
         config.httpMaximumConnectionsPerHost = 4
@@ -1956,6 +1957,11 @@ final class DownloadManager: NSObject, ObservableObject {
 #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
         persistenceLoadedDownloadIDs = Set(downloads.map(\.id))
         migrateLegacyStremioDownloadsIfNeeded(permitsOneLiveAttempt: false)
+#endif
+#if os(iOS)
+        HLSBackgroundTransport.shared.reconcile(downloadIDs: Set(downloads.filter {
+            $0.isHLS && !$0.claimsProtectedProviderTransport && ($0.status == .queued || $0.status == .downloading)
+        }.map(\.id)))
 #endif
         ensureDownloadPathReservations()
         migrateTrackedDownloadsToPublicLayout()
@@ -5834,7 +5840,8 @@ final class DownloadManager: NSObject, ObservableObject {
                 return candidate
             },
             minimumRequestStartInterval: streamURLOverride == nil ? nil : 0,
-            enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS
+            enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS,
+            allowsBackgroundTransport: !item.claimsProtectedProviderTransport
         )
 
         downloader.onVariantResolved = { [weak self] variantURL, totalSegments in
@@ -6797,7 +6804,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func hlsStartDelayReason(for item: DownloadItem) -> String? {
         #if canImport(UIKit)
-        if !backgroundHLSPipelineEnabled && UIApplication.shared.applicationState != .active {
+        if item.claimsProtectedProviderTransport && UIApplication.shared.applicationState != .active {
             return "Waiting for app to reopen"
         }
 
@@ -9512,8 +9519,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
                 if let resumeData { self.storeResumeData(resumeData, id: downloadId) }
                 self.activeTasks.removeValue(forKey: downloadId)
-                if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled,
-                   resumeData != nil {
+                if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled {
                     self.activeTasks.removeValue(forKey: downloadId)
 #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
                     if let item = self.downloads.first(where: { $0.id == downloadId }),
@@ -9544,8 +9550,12 @@ extension DownloadManager: URLSessionDownloadDelegate {
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         DispatchQueue.main.async {
-            self.backgroundCompletionHandler?()
-            self.backgroundCompletionHandler = nil
+            self.accessQueue.async(flags: .barrier) {
+                DispatchQueue.main.async {
+                    self.backgroundCompletionHandler?()
+                    self.backgroundCompletionHandler = nil
+                }
+            }
         }
     }
 

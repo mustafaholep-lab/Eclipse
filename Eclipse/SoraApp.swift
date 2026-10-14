@@ -57,8 +57,16 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
+        #if os(iOS)
+        if identifier == HLSBackgroundTransport.identifier {
+            HLSBackgroundTransport.shared.handleBackgroundEvents(completion: completionHandler)
+            return
+        }
+#endif
         if identifier == "app.eclipse.soupy.downloads" {
             DownloadManager.shared.backgroundCompletionHandler = completionHandler
+        } else {
+            completionHandler()
         }
     }
 }
