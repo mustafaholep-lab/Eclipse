@@ -175,6 +175,42 @@ jobs:
             printf '%s\n' 'MAL_REDIRECT_URI = luna:/$()/mal-callback'
           } > Build.local.xcconfig
 
+      - name: Stage the complete native runtime
+        run: |
+          set -euo pipefail
+          # The upstream builder uses this pinned MoltenVK archive for linking,
+          # but does not copy its XCFramework into the local SwiftPM runtime.
+          ditto MPVKit/dist/vulkan-1.4.1/lib/MoltenVK.xcframework \
+            MPVKit/dist/release/xcframework/MoltenVK.xcframework
+          python3 - <<'PY'
+          import pathlib
+          import plistlib
+          import shutil
+          root = pathlib.Path('MPVKit/dist').resolve()
+          required = ['Libmpv', 'MoltenVK', 'Libplacebo', 'Libavcodec', 'Libavdevice',
+                      'Libavfilter', 'Libavformat', 'Libavutil', 'Libswresample', 'Libswscale']
+          matrix = [('ios', None, {'arm64'}), ('ios', 'simulator', {'arm64', 'x86_64'}),
+                    ('tvos', None, {'arm64'}), ('tvos', 'simulator', {'arm64', 'x86_64'}),
+                    ('macos', None, {'arm64', 'x86_64'})]
+          for name in required:
+              artifact = root / 'release/xcframework' / (name + '.xcframework')
+              libraries = plistlib.loads((artifact / 'Info.plist').read_bytes())['AvailableLibraries']
+              for platform, variant, architectures in matrix:
+                  assert any(item['SupportedPlatform'] == platform
+                             and item.get('SupportedPlatformVariant') == variant
+                             and architectures.issubset(set(item['SupportedArchitectures']))
+                             for item in libraries), f'Missing slice: {name}, {platform}, {variant}'
+              print(f'{name}: complete runtime matrix')
+          # Keep verified runtime bundles and the source used by the patch audit.
+          # Discard native compiler scratch files before the app archive needs space.
+          for child in root.iterdir():
+              if child.name not in {'release', 'libmpv-v0.41.0'}:
+                  if child.is_symlink() or child.is_file():
+                      child.unlink()
+                  elif child.is_dir():
+                      shutil.rmtree(child)
+          PY
+
       - name: Resolve Swift packages
         run: |
           set -euo pipefail
@@ -189,7 +225,7 @@ jobs:
             -skipMacroValidation
 
           LIBMPV_BINARY="$MPVKIT_LOCAL_ARTIFACTS_DIR/xcframework/Libmpv.xcframework/ios-arm64/Libmpv.framework/Libmpv"
-          if [[ -z "$LIBMPV_BINARY" ]]; then
+          if [[ ! -f "$LIBMPV_BINARY" ]]; then
             echo "::error::The resolved MPVKit runtime does not contain the iOS Libmpv device slice."
             exit 1
           fi
