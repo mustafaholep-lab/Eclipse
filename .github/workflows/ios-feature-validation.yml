@@ -1,0 +1,44 @@
+name: iOS feature source validation
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [feat/ios-playback-background-turkish]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check translations and property list
+        run: python3 scripts/verify_ios_feature_resources.py
+  swift-syntax:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+      - name: Parse changed Swift sources with the iOS SDK
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          python3 - "$sdk" <<'PY'
+          import subprocess
+          import sys
+          files = subprocess.check_output(
+              ['git', 'diff', '--name-only', '-z', 'origin/main...HEAD']
+          ).decode().split('\0')
+          for path in files:
+              if path.endswith('.swift'):
+                  subprocess.run([
+                      'xcrun', 'swiftc', '-frontend', '-parse',
+                      '-target', 'arm64-apple-ios15.0-simulator', '-sdk', sys.argv[1],
+                      '-D', 'ECLIPSE_MPVKIT_MOLTENVK_INLINE_RENDERER',
+                      '-D', 'ECLIPSE_MPVKIT_SAMPLE_BUFFER_PIP_BRIDGE', path
+                  ], check=True)
+          PY
+          plutil -lint Eclipse.xcodeproj/project.pbxproj
