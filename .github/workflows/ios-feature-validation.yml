@@ -42,3 +42,16 @@ jobs:
                   ], check=True)
           PY
           plutil -lint Eclipse.xcodeproj/project.pbxproj
+      - name: Type-check display preference and background transport
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          xcrun swiftc -typecheck -swift-version 5 \
+            -target arm64-apple-ios15.0-simulator -sdk "$sdk" \
+            Eclipse/Extensions/DisplayRefreshSettings.swift
+          # This standalone check substitutes only the existing downloader's
+          # constant, keeping the real Foundation/URLSession delegate APIs.
+          printf '%s\n' 'enum HLSDownloader { static let maximumMediaObjectBytes = 128 * 1024 * 1024 }' > "$RUNNER_TEMP/hls-limit-stub.swift"
+          xcrun swiftc -typecheck -swift-version 5 \
+            -target arm64-apple-ios15.0-simulator -sdk "$sdk" \
+            Eclipse/Models/HLSBackgroundTransport.swift "$RUNNER_TEMP/hls-limit-stub.swift"
