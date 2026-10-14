@@ -26619,6 +26619,842 @@
           }
         }
       }
+    },
+    "The subtitle server returned an invalid response.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı sunucusu geçersiz yanıt döndürdü."
+          }
+        }
+      }
+    },
+    "The subtitle server returned unsupported content.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı sunucusu desteklenmeyen içerik döndürdü."
+          }
+        }
+      }
+    },
+    "The subtitle exceeded Eclipse's 5 MB safety limit.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı Eclipse'in 5 MB güvenlik sınırını aştı."
+          }
+        }
+      }
+    },
+    "No verified resume checkpoint is available. Continuing restarts this download.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış devam noktası yok. Devam etmek indirmeyi yeniden başlatır."
+          }
+        }
+      }
+    },
+    "This source does not support verified resuming. Continuing restarts this download.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu kaynak doğrulanmış devamı desteklemiyor. Devam etmek indirmeyi yeniden başlatır."
+          }
+        }
+      }
+    },
+    "The downloaded file could not be verified for saving.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirilen dosya kaydetmek için doğrulanamadı."
+          }
+        }
+      }
+    },
+    "Finishing the downloaded file": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirilen dosya tamamlanıyor"
+          }
+        }
+      }
+    },
+    "The downloaded file is waiting for its storage location. Reconnect it and resume.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirilen dosya depolama konumunu bekliyor. Yeniden bağlayıp devam ettirin."
+          }
+        }
+      }
+    },
+    "Saving the downloaded file": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirilen dosya kaydediliyor"
+          }
+        }
+      }
+    },
+    "The saved file is waiting for its download index to be saved. Resume to retry.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı dosya, indirme dizininin kaydedilmesini bekliyor. Yeniden denemek için devam ettirin."
+          }
+        }
+      }
+    },
+    "Finishing Eclipse downloads": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eclipse indirmeleri tamamlanıyor"
+          }
+        }
+      }
+    },
+    "The source returned an invalid download URL.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaynak geçersiz indirme URL'si döndürdü."
+          }
+        }
+      }
+    },
+    "The provider download recovery reference is invalid.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sağlayıcının indirme kurtarma başvurusu geçersiz."
+          }
+        }
+      }
+    },
+    "The Nuvio download reference no longer matches this title.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio indirme başvurusu artık bu yapımla eşleşmiyor."
+          }
+        }
+      }
+    },
+    "The Stremio download reference is invalid.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stremio indirme başvurusu geçersiz."
+          }
+        }
+      }
+    },
+    "The Stremio addon could not refresh this download stream.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stremio eklentisi bu indirme yayınını yenileyemedi."
+          }
+        }
+      }
+    },
+    "This legacy Stremio download must be selected again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu eski Stremio indirmesi yeniden seçilmelidir."
+          }
+        }
+      }
+    },
+    "The protected provider download route is unavailable right now.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Korumalı sağlayıcının indirme yolu şu anda kullanılamıyor."
+          }
+        }
+      }
+    },
+    "Eclipse could not create a protected provider validation route.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eclipse korumalı sağlayıcı doğrulama yolu oluşturamadı."
+          }
+        }
+      }
+    },
+    "The SkyStream source did not include a valid recovery reference.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SkyStream kaynağı geçerli kurtarma başvurusu içermiyor."
+          }
+        }
+      }
+    },
+    "This verified direct source requires a proxy-aware download transport.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu doğrulanmış doğrudan kaynak, vekil sunucuya uygun indirme aktarımı gerektiriyor."
+          }
+        }
+      }
+    },
+    "Static DASH downloads need an MPD-aware segment packager and muxer; Eclipse cannot safely concatenate DASH representations.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Statik DASH indirmeleri MPD segment paketleyicisi ve çoklayıcı gerektirir; Eclipse DASH parçalarını güvenle birleştiremez."
+          }
+        }
+      }
+    },
+    "The SkyStream source did not provide a finite validated HLS route graph.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SkyStream kaynağı sonlu ve doğrulanmış HLS yol grafiği sağlamadı."
+          }
+        }
+      }
+    },
+    "Encrypted HLS downloads are not supported by the safe offline packager.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Güvenli çevrimdışı paketleyici şifreli HLS indirmelerini desteklemiyor."
+          }
+        }
+      }
+    },
+    "Fragmented-MP4 HLS downloads need a container-aware muxer.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parçalı MP4 HLS indirmeleri kapsayıcıya uygun çoklayıcı gerektiriyor."
+          }
+        }
+      }
+    },
+    "The HLS descriptor unexpectedly included a DASH resource.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HLS tanımlayıcısı beklenmedik şekilde DASH kaynağı içeriyor."
+          }
+        }
+      }
+    },
+    "Only explicit MPEG-TS HLS segments can be packaged safely for offline playback.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çevrimdışı oynatma için yalnızca açık MPEG-TS HLS segmentleri güvenle paketlenebilir."
+          }
+        }
+      }
+    },
+    "The validated HLS playlist could not be decoded safely.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış HLS listesi güvenle çözümlenemedi."
+          }
+        }
+      }
+    },
+    "The validated HLS playlist has an unsupported format.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış HLS listesinin biçimi desteklenmiyor."
+          }
+        }
+      }
+    },
+    "This HLS playlist uses features the offline MPEG-TS packager cannot preserve safely.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu HLS listesi çevrimdışı MPEG-TS paketleyicisinin güvenle koruyamadığı özellikler kullanıyor."
+          }
+        }
+      }
+    },
+    "The validated HLS playlist mixes or omits master and media entries.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış HLS listesinde ana ve medya girdileri karışık veya eksik."
+          }
+        }
+      }
+    },
+    "HLS downloads with separate audio or video rendition groups need a muxer.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ayrı ses veya video sürüm grupları içeren HLS indirmeleri çoklayıcı gerektiriyor."
+          }
+        }
+      }
+    },
+    "Only explicitly ended VOD HLS playlists can be downloaded.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yalnızca sonu açıkça belirtilmiş VOD HLS listeleri indirilebilir."
+          }
+        }
+      }
+    },
+    "Cloudflare verification required. Open the source once and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloudflare doğrulaması gerekiyor. Kaynağı bir kez açıp yeniden deneyin."
+          }
+        }
+      }
+    },
+    "The source returned an error document instead of media data.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaynak medya verisi yerine hata belgesi döndürdü."
+          }
+        }
+      }
+    },
+    "The provider download recovery reference is invalid. Please select the source again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sağlayıcının indirme kurtarma başvurusu geçersiz. Kaynağı yeniden seçin."
+          }
+        }
+      }
+    },
+    "The Stremio download reference is no longer valid.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stremio indirme başvurusu artık geçerli değil."
+          }
+        }
+      }
+    },
+    "This legacy Service download must be selected again to refresh access securely.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erişimi güvenle yenilemek için bu eski Hizmet indirmesi yeniden seçilmelidir."
+          }
+        }
+      }
+    },
+    "This legacy Stremio download must be selected again to refresh access securely.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erişimi güvenle yenilemek için bu eski Stremio indirmesi yeniden seçilmelidir."
+          }
+        }
+      }
+    },
+    "Invalid stream URL": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geçersiz yayın URL'si"
+          }
+        }
+      }
+    },
+    "Eclipse could not create a protected provider download route.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eclipse korumalı sağlayıcının indirme yolunu oluşturamadı."
+          }
+        }
+      }
+    },
+    "The saved download checkpoint is missing. Remove this download and select it again to restart.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı indirme devam noktası eksik. Yeniden başlatmak için indirmeyi kaldırıp tekrar seçin."
+          }
+        }
+      }
+    },
+    "This download source no longer resolves to an authorized address.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu indirme kaynağı artık yetkili bir adrese çözümlenmiyor."
+          }
+        }
+      }
+    },
+    "The download folder is unavailable. Reconnect it and resume the download.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirme klasörü kullanılamıyor. Yeniden bağlayıp indirmeye devam edin."
+          }
+        }
+      }
+    },
+    "The typed HLS recovery metadata is missing.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Türü belirtilmiş HLS kurtarma bilgileri eksik."
+          }
+        }
+      }
+    },
+    "The validated HLS loopback transport could not start.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış HLS yerel aktarımı başlatılamadı."
+          }
+        }
+      }
+    },
+    "Refreshing validated download access": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış indirme erişimi yenileniyor"
+          }
+        }
+      }
+    },
+    "The SkyStream provider could not restore validated download access.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SkyStream sağlayıcısı doğrulanmış indirme erişimini geri yükleyemedi."
+          }
+        }
+      }
+    },
+    "The provider could not refresh this download. Retry, or remove it and select the episode's source again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sağlayıcı bu indirmeyi yenileyemedi. Yeniden deneyin veya indirmeyi kaldırıp bölümün kaynağını tekrar seçin."
+          }
+        }
+      }
+    },
+    "This legacy provider download must be selected again to refresh access securely.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erişimi güvenle yenilemek için bu eski sağlayıcı indirmesi yeniden seçilmelidir."
+          }
+        }
+      }
+    },
+    "Paused for low battery": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Düşük pil nedeniyle duraklatıldı"
+          }
+        }
+      }
+    },
+    "Paused for thermal state": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yüksek sıcaklık nedeniyle duraklatıldı"
+          }
+        }
+      }
+    },
+    "Paused for low disk space": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yetersiz disk alanı nedeniyle duraklatıldı"
+          }
+        }
+      }
+    },
+    "The CDN kept rate limiting this download.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CDN bu indirmeye sürekli istek sınırı uyguladı."
+          }
+        }
+      }
+    },
+    "CDN rate limited this download. Retrying automatically...": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CDN bu indirmeye istek sınırı uyguladı. Otomatik yeniden deneniyor..."
+          }
+        }
+      }
+    },
+    "Refreshing expired media source": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Süresi dolan medya kaynağı yenileniyor"
+          }
+        }
+      }
+    },
+    "The source could not verify resuming the same file. Saved progress was kept; retry or remove the download to start again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaynak aynı dosyadan devamı doğrulayamadı. Kayıtlı ilerleme korundu; yeniden deneyin veya baştan başlamak için indirmeyi kaldırın."
+          }
+        }
+      }
+    },
+    "The validated direct download size changed before completion.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış doğrudan indirme boyutu tamamlanmadan değişti."
+          }
+        }
+      }
+    },
+    "The reserved destination became occupied before the download completed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirme tamamlanmadan ayrılmış hedef doldu."
+          }
+        }
+      }
+    },
+    "The source returned more data than the requested download range.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaynak istenen indirme aralığından fazla veri döndürdü."
+          }
+        }
+      }
+    },
+    "The validated direct download exceeded its verified size.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doğrulanmış doğrudan indirme, doğrulanmış boyutunu aştı."
+          }
+        }
+      }
+    },
+    "Download was interrupted; retrying": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirme kesildi; yeniden deneniyor"
+          }
+        }
+      }
+    },
+    "This HLS stream uses byte ranges that cannot be packaged for offline playback. Choose another stream.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu HLS yayını çevrimdışı paketlenemeyen bayt aralıkları kullanıyor. Başka yayın seçin."
+          }
+        }
+      }
+    },
+    "This HLS stream uses an initialization byte range that cannot be packaged for offline playback. Choose another stream.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu HLS yayını çevrimdışı paketlenemeyen başlangıç bayt aralığı kullanıyor. Başka yayın seçin."
+          }
+        }
+      }
+    },
+    "Finishing an Eclipse download": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eclipse indirmesi tamamlanıyor"
+          }
+        }
+      }
+    },
+    "Waiting for disk capacity check": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disk kapasitesi kontrolü bekleniyor"
+          }
+        }
+      }
+    },
+    "No video variants found in HLS playlist": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HLS listesinde video sürümü bulunamadı"
+          }
+        }
+      }
+    },
+    "No segments found in HLS media playlist": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HLS medya listesinde segment bulunamadı"
+          }
+        }
+      }
+    },
+    "The source could not verify resuming the same HLS playlist. Saved progress was kept; remove this download and select it again to restart.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaynak aynı HLS listesinden devamı doğrulayamadı. İlerleme korundu; yeniden başlatmak için indirmeyi kaldırıp tekrar seçin."
+          }
+        }
+      }
+    },
+    "The saved HLS checkpoint is missing or incomplete. Remove this download and select it again to restart.": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı HLS devam noktası eksik veya tamamlanmamış. Yeniden başlatmak için indirmeyi kaldırıp tekrar seçin."
+          }
+        }
+      }
+    },
+    "Could not read HLS playlist data": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HLS listesi verileri okunamadı"
+          }
+        }
+      }
+    },
+    "HLS source rate limited requests": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HLS kaynağı isteklere sınır uyguladı"
+          }
+        }
+      }
+    },
+    "Download was cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndirme iptal edildi"
+          }
+        }
+      }
+    },
+    "HLS download paused after iOS background time expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS arka plan süresi dolduğundan HLS indirmesi duraklatıldı"
+          }
+        }
+      }
+    },
+    "Could not create HLS output file": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HLS çıktı dosyası oluşturulamadı"
+          }
+        }
+      }
+    },
+    "An unknown error occurred": {
+      "extractionState": "manual",
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bilinmeyen bir hata oluştu"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
