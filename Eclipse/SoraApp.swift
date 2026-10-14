@@ -281,6 +281,7 @@ struct SoraApp: App {
             ))
 #if os(iOS)
             .modifier(EclipseWindowSceneScopeModifier())
+            .modifier(DisplayRefreshPresentation())
 #endif
             .environment(\.eclipseStartupOverlayVisible, showSplash && !hideSplashScreen)
 #if !os(tvOS)
