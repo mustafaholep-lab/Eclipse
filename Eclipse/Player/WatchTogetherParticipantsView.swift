@@ -1,12 +1,5 @@
 import SwiftUI
 
-struct WatchTogetherParticipantSnapshot: Identifiable, Equatable {
-    let id: UUID
-    let name: String
-    let isLocal: Bool
-    let isReconnecting: Bool
-}
-
 #if os(iOS)
 struct WatchTogetherParticipantsView: View {
     @ObservedObject private var coordinator = WatchTogetherCoordinator.shared

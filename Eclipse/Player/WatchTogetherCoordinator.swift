@@ -2,6 +2,14 @@ import Combine
 import CryptoKit
 import Foundation
 import GroupActivities
+
+struct WatchTogetherParticipantSnapshot: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+    let isLocal: Bool
+    let isReconnecting: Bool
+}
+
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
