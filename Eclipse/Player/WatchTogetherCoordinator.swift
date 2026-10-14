@@ -323,6 +323,9 @@ final class WatchTogetherCoordinator: ObservableObject {
     }
 
     func applicationDidEnterBackground() {
+#if os(iOS)
+        guard UIApplication.shared.applicationState == .background else { return }
+#endif
         // Keep the GroupSession and messenger owned by this app-wide coordinator.
         // AVAudioSession/PiP owns background execution while playback is running.
         foregroundSyncTask?.cancel()
@@ -992,7 +995,16 @@ final class WatchTogetherCoordinator: ObservableObject {
                 case .invalidated(let error):
                     Logger.shared.log("WatchTogether: session invalidated: \(error.localizedDescription)", type: "Player")
                     let mediaIdentifier = self.currentSharedState?.mediaIdentifier ?? newSession.activity.mediaIdentifier
+                    let recentParticipants = self.visibleParticipants
                     self.clearSession(leaveCurrent: false)
+                    self.visibleParticipants = recentParticipants.map {
+                        WatchTogetherParticipantSnapshot(id: $0.id, name: $0.name, isLocal: $0.isLocal, isReconnecting: true)
+                    }
+                    self.participantGraceTask = Task { [weak self] in
+                        do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                        guard let self, self.session == nil else { return }
+                        self.visibleParticipants.removeAll()
+                    }
                     self.interruptedMediaIdentifier = mediaIdentifier
                     self.playbackDelegate?.watchTogetherShowNotice(NSLocalizedString("SharePlay was interrupted. Playback will sync when SharePlay restores the session.", comment: "SharePlay recovery"))
                 @unknown default:

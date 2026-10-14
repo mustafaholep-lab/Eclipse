@@ -18,6 +18,7 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
         let task: URLSessionDownloadTask
         var continuation: CheckedContinuation<(Data, URLResponse), Error>?
         var limit: Int
+        var cancellation: CancellationFlag? = nil
     }
     private var flights: [String: Flight] = [:]
     private let directory: URL
@@ -87,12 +88,13 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
                             }
                             flight.continuation = continuation
                             flight.limit = limit
+                            flight.cancellation = cancellation
                             self.flights[key] = flight
                             flight.task.resume()
                         } else {
                             let task = self.session.downloadTask(with: request)
                             task.taskDescription = key
-                            self.flights[key] = Flight(task: task, continuation: continuation, limit: limit)
+                            self.flights[key] = Flight(task: task, continuation: continuation, limit: limit, cancellation: cancellation)
                             task.resume()
                         }
                         // A replacement transfer is now owned by the system. The previous
@@ -104,7 +106,14 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
             }
         } onCancel: {
             cancellation.cancel()
-            self.cancel(downloadID: downloadID)
+            self.queue.async {
+                // An old worker's cancellation must not cancel a newly resumed
+                // attempt that happens to request the same URL.
+                guard let flight = self.flights[key], flight.cancellation === cancellation else { return }
+                self.flights.removeValue(forKey: key)
+                flight.task.cancel()
+                flight.continuation?.resume(throwing: CancellationError())
+            }
         }
     }
 
