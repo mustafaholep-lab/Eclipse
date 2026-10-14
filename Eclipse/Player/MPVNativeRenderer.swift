@@ -64,6 +64,7 @@ protocol PlayerRenderer: AnyObject {
     var prefersPictureInPictureLayerActivationBeforeStart: Bool { get }
 
     func getRenderingView() -> UIView
+    func setVideoFill(_ amount: Double, safeAreaInsets: UIEdgeInsets)
     func renderingLayoutDidChange(containerSize: CGSize)
     func start() throws
     func stop()
@@ -126,6 +127,7 @@ protocol PlayerRenderer: AnyObject {
 }
 
 extension PlayerRenderer {
+    func setVideoFill(_ amount: Double, safeAreaInsets: UIEdgeInsets) {}
 
     func reloadCurrentExternalSubtitle() {}
 
@@ -1024,6 +1026,24 @@ final class MPVNativeRenderer: PlayerRenderer {
 
     deinit {
         stop()
+    }
+
+    func setVideoFill(_ amount: Double, safeAreaInsets: UIEdgeInsets) {
+        let fill = min(1, max(0, amount))
+        let size = glView.bounds.size
+        let marginY = max(34, (safeAreaInsets.bottom + 20) * 720 / max(1, size.height))
+        let marginX = max(25, (max(safeAreaInsets.left, safeAreaInsets.right) + 16) * 1280 / max(1, size.width))
+        var commands = [["set", "panscan", String(fill)]]
+        if fill > 0 {
+            commands += [["set", "sub-use-margins", "yes"], ["set", "sub-ass-force-margins", "yes"],
+                         ["set", "sub-ass-override", "strip"], ["set", "sub-pos", "100"],
+                         ["set", "sub-margin-y", String(Int(marginY))], ["set", "sub-margin-x", String(Int(marginX))]]
+        } else {
+            commands += [["set", "sub-margin-x", "25"]]
+        }
+        guard let handle = mpv else { return }
+        for args in commands { _ = command(handle, args) }
+        if fill == 0 { applySubtitleStyle(lastAppliedSubtitleStyle) }
     }
 
     func getRenderingView() -> UIView {
@@ -3074,6 +3094,23 @@ final class MPVGPUPlayerBridge: PlayerRenderer {
         }
 #endif
         return options
+    }
+
+    func setVideoFill(_ amount: Double, safeAreaInsets: UIEdgeInsets) {
+        let fill = min(1, max(0, amount))
+        let size = hostView.bounds.size
+        let marginY = max(34, (safeAreaInsets.bottom + 20) * 720 / max(1, size.height))
+        let marginX = max(25, (max(safeAreaInsets.left, safeAreaInsets.right) + 16) * 1280 / max(1, size.width))
+        var commands = [["set", "panscan", String(fill)]]
+        if fill > 0 {
+            commands += [["set", "sub-use-margins", "yes"], ["set", "sub-ass-force-margins", "yes"],
+                         ["set", "sub-ass-override", "strip"], ["set", "sub-pos", "100"],
+                         ["set", "sub-margin-y", String(Int(marginY))], ["set", "sub-margin-x", String(Int(marginX))]]
+        } else {
+            commands += [["set", "sub-margin-x", "25"]]
+        }
+        for args in commands { _ = gpuRenderer.command(args) }
+        if fill == 0 { applySubtitleStyle(lastAppliedSubtitleStyle) }
     }
 
     func getRenderingView() -> UIView {
@@ -5372,6 +5409,23 @@ final class MPVSampleBufferPiPBridge: PlayerRenderer {
         displayLayer.contentsScale = nativeScale
     }
 
+    func setVideoFill(_ amount: Double, safeAreaInsets: UIEdgeInsets) {
+        let fill = min(1, max(0, amount))
+        let size = placeholderView.bounds.size
+        let marginY = max(34, (safeAreaInsets.bottom + 20) * 720 / max(1, size.height))
+        let marginX = max(25, (max(safeAreaInsets.left, safeAreaInsets.right) + 16) * 1280 / max(1, size.width))
+        var commands = [["set", "panscan", String(fill)]]
+        if fill > 0 {
+            commands += [["set", "sub-use-margins", "yes"], ["set", "sub-ass-force-margins", "yes"],
+                         ["set", "sub-ass-override", "strip"], ["set", "sub-pos", "100"],
+                         ["set", "sub-margin-y", String(Int(marginY))], ["set", "sub-margin-x", String(Int(marginX))]]
+        } else {
+            commands += [["set", "sub-margin-x", "25"]]
+        }
+        for args in commands { _ = sampleRenderer.command(args) }
+        if fill == 0 { applySubtitleStyle(lastAppliedSubtitleStyle) }
+    }
+
     func getRenderingView() -> UIView {
 
         if displayLayer.superlayer !== placeholderView.layer {
@@ -6141,6 +6195,25 @@ final class MPVMoltenVKRenderer: PlayerRenderer, MPVNativeRendererDelegate {
 
     deinit {
         stop()
+    }
+
+    func setVideoFill(_ amount: Double, safeAreaInsets: UIEdgeInsets) {
+        let fill = min(1, max(0, amount))
+        let size = containerView.bounds.size
+        let marginY = max(34, (safeAreaInsets.bottom + 20) * 720 / max(1, size.height))
+        let marginX = max(25, (max(safeAreaInsets.left, safeAreaInsets.right) + 16) * 1280 / max(1, size.width))
+        var commands = [["set", "panscan", String(fill)]]
+        if fill > 0 {
+            commands += [["set", "sub-use-margins", "yes"], ["set", "sub-ass-force-margins", "yes"],
+                         ["set", "sub-ass-override", "strip"], ["set", "sub-pos", "100"],
+                         ["set", "sub-margin-y", String(Int(marginY))], ["set", "sub-margin-x", String(Int(marginX))]]
+        } else {
+            commands += [["set", "sub-margin-x", "25"]]
+        }
+        if let fallbackRenderer { fallbackRenderer.setVideoFill(amount, safeAreaInsets: safeAreaInsets); return }
+        guard let handle = mpv else { return }
+        for args in commands { _ = command(handle, args) }
+        if fill == 0 { applySubtitleStyle(lastAppliedSubtitleStyle) }
     }
 
     func getRenderingView() -> UIView {

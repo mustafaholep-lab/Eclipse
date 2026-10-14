@@ -2540,6 +2540,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             logMPV("rendererApplySubtitleStyle visible=\(style.isVisible) font=\(String(format: "%.1f", style.fontSize)) stroke=\(String(format: "%.1f", style.strokeWidth)) offset=\(String(format: "%.1f", style.verticalOffset)) ccBackground=\(style.closedCaptionBackground)")
         }
         renderer.applySubtitleStyle(style)
+#if os(iOS)
+        if videoFillAmount > 0 { renderer.setVideoFill(videoFillAmount, safeAreaInsets: videoContainer.safeAreaInsets) }
+#endif
     }
 
     private func currentSubtitleStyle(visible: Bool? = nil) -> SubtitleStyle {
@@ -4431,6 +4434,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         playerSkinDecorationLayer.frame = controlsOverlayView.bounds
 
         CATransaction.commit()
+#if os(iOS)
+        if videoFillAmount > 0 { renderer.setVideoFill(videoFillAmount, safeAreaInsets: videoContainer.safeAreaInsets) }
+#endif
 
         if deferredIPadGPUPlaybackLoad != nil {
             DispatchQueue.main.async { [weak self] in
@@ -6693,7 +6699,49 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
     }
 
+#if os(iOS)
+    private var videoFillAmount: Double = 0
+    private var videoFillTarget: Double = 0
+    private var videoFillAnimationStart: CFTimeInterval = 0
+    private var videoFillAnimationFrom: Double = 0
+    private var videoFillDisplayLink: CADisplayLink?
+
+    @objc private func handleVideoPinch(_ gesture: UIPinchGestureRecognizer) {
+        guard !isClosing, !PlayerPlaybackLockSettings.isLocked() else { return }
+        guard gesture.state == .changed || gesture.state == .ended else { return }
+        let target: Double
+        if gesture.scale > 1.08 { target = 1 }
+        else if gesture.scale < 0.92 { target = 0 }
+        else { return }
+        guard target != videoFillTarget else { return }
+        videoFillTarget = target
+        videoFillAnimationFrom = videoFillAmount
+        videoFillAnimationStart = CACurrentMediaTime()
+        videoFillDisplayLink?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(animateVideoFill(_:)))
+        link.preferredFramesPerSecond = DisplayRefreshSettings.requestedRate(maximum: view.window?.windowScene?.screen.maximumFramesPerSecond ?? 60)
+        videoFillDisplayLink = link
+        link.add(to: .main, forMode: .common)
+        showPlayerNotice(NSLocalizedString(target == 1 ? "Zoomed to Fill" : "Original Size", comment: "Video zoom"), duration: 1.2)
+    }
+
+    @objc private func animateVideoFill(_ link: CADisplayLink) {
+        let elapsed = min(1, max(0, (CACurrentMediaTime() - videoFillAnimationStart) / 0.24))
+        let eased = elapsed * elapsed * (3 - 2 * elapsed)
+        videoFillAmount = videoFillAnimationFrom + (videoFillTarget - videoFillAnimationFrom) * eased
+        renderer.setVideoFill(videoFillAmount, safeAreaInsets: videoContainer.safeAreaInsets)
+        if elapsed >= 1 { link.invalidate(); videoFillDisplayLink = nil }
+    }
+
+#endif
+
     private func setupDoubleTapSkipGestures() {
+#if os(iOS)
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleVideoPinch(_:)))
+        pinch.delegate = self
+        playerGestureSurfaceView.addGestureRecognizer(pinch)
+        containerTapGesture?.require(toFail: pinch)
+#endif
         let leftDoubleTap = UITapGestureRecognizer(target: self, action: #selector(leftSideDoubleTapped))
         leftDoubleTap.numberOfTapsRequired = 2
         leftDoubleTap.delegate = self
@@ -6711,6 +6759,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(twoFingerTapped))
             twoFingerTap.numberOfTouchesRequired = 2
             twoFingerTap.delegate = self
+#if os(iOS)
+            if let pinch = playerGestureSurfaceView.gestureRecognizers?.first(where: { $0 is UIPinchGestureRecognizer }) {
+                twoFingerTap.require(toFail: pinch)
+            }
+#endif
             playerGestureSurfaceView.addGestureRecognizer(twoFingerTap)
 
             containerTapGesture?.require(toFail: twoFingerTap)
@@ -15527,6 +15580,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if isEpisodeBrowserVisible {
             return false
         }
+#if os(iOS)
+        if gestureRecognizer is UIPinchGestureRecognizer && PlayerPlaybackLockSettings.isLocked() { return false }
+#endif
 
         if let touchedView = touch.view,
            isInteractivePlayerControl(touchedView) {
@@ -15603,6 +15659,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer is UIPinchGestureRecognizer || otherGestureRecognizer is UIPinchGestureRecognizer { return false }
 #if !os(tvOS)
         if gestureRecognizer === brightnessPanGesture || otherGestureRecognizer === brightnessPanGesture {
             return true
