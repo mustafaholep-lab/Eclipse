@@ -39,15 +39,15 @@ enum KidsHomeCatalog: String, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .familyMovies: return "Family Movies"
-        case .cartoonMovies: return "Cartoons"
-        case .kidsTV: return "Kids TV"
-        case .animatedSeries: return "Animated Series"
-        case .adventureMovies: return "Adventures"
-        case .funnyMovies: return "Funny Stuff"
-        case .fantasyMovies: return "Magic & Fantasy"
-        case .topRatedFamily: return "Best Family Films"
-        case .newForKids: return "New for Kids"
+        case .familyMovies: return eclipseLocalized("Family Movies")
+        case .cartoonMovies: return eclipseLocalized("Cartoons")
+        case .kidsTV: return eclipseLocalized("Kids TV")
+        case .animatedSeries: return eclipseLocalized("Animated Series")
+        case .adventureMovies: return eclipseLocalized("Adventures")
+        case .funnyMovies: return eclipseLocalized("Funny Stuff")
+        case .fantasyMovies: return eclipseLocalized("Magic & Fantasy")
+        case .topRatedFamily: return eclipseLocalized("Best Family Films")
+        case .newForKids: return eclipseLocalized("New for Kids")
         }
     }
 

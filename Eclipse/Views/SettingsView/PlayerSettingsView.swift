@@ -787,7 +787,7 @@ private struct MPVPlayerSkinSettingsView: View {
                     GlassSection(header: "Custom Colors") {
                         VStack(spacing: 0) {
 #if !os(tvOS)
-                            GlassDetailRow(title: "Primary Color", subtitle: "Icons, progress, and the main control glow.") {
+                            GlassDetailRow(title: eclipseLocalized("Primary Color"), subtitle: "Icons, progress, and the main control glow.") {
                                 ColorPicker("", selection: customColorBinding(
                                     data: $customPrimaryColorData,
                                     fallback: UIColor(red: 0.20, green: 0.86, blue: 1.00, alpha: 1.00)
@@ -795,7 +795,7 @@ private struct MPVPlayerSkinSettingsView: View {
                                 .labelsHidden()
                             }
                             GlassDivider(leadingInset: 16)
-                            GlassDetailRow(title: "Secondary Color", subtitle: "Overlay accents and supporting controls.") {
+                            GlassDetailRow(title: eclipseLocalized("Secondary Color"), subtitle: "Overlay accents and supporting controls.") {
                                 ColorPicker("", selection: customColorBinding(
                                     data: $customSecondaryColorData,
                                     fallback: UIColor(red: 0.72, green: 0.31, blue: 1.00, alpha: 1.00)
@@ -803,7 +803,7 @@ private struct MPVPlayerSkinSettingsView: View {
                                 .labelsHidden()
                             }
 #else
-                            GlassDetailRow(title: "Custom Colors", subtitle: "Custom color editing is available in Eclipse on iPhone and iPad.") {
+                            GlassDetailRow(title: eclipseLocalized("Custom Colors"), subtitle: "Custom color editing is available in Eclipse on iPhone and iPad.") {
                                 EmptyView()
                             }
 #endif
@@ -813,7 +813,7 @@ private struct MPVPlayerSkinSettingsView: View {
 
                 if selection != .defaultSkin {
                     GlassSection(header: "Coloring") {
-                        GlassDetailRow(title: "Tint Controls Only", subtitle: "Color the buttons and menus but keep the standard dark player background.") {
+                        GlassDetailRow(title: eclipseLocalized("Tint Controls Only"), subtitle: "Color the buttons and menus but keep the standard dark player background.") {
                             Toggle("", isOn: $tintControlsOnly)
                                 .labelsHidden()
                                 .tint(primaryColor(for: selection))
@@ -823,17 +823,17 @@ private struct MPVPlayerSkinSettingsView: View {
 
                 GlassSection(header: "Motion") {
                     VStack(spacing: 0) {
-                        GlassDetailRow(title: "Skin Animations", subtitle: "Use subtle glows and color movement in animated skins.") {
+                        GlassDetailRow(title: eclipseLocalized("Skin Animations"), subtitle: "Use subtle glows and color movement in animated skins.") {
                             Toggle("", isOn: $animationsEnabled)
                                 .labelsHidden()
                                 .tint(primaryColor(for: selection))
                         }
                         if animationsEnabled && selection != .defaultSkin {
                             GlassDivider(leadingInset: 16)
-                            GlassDetailRow(title: "Animation Style", subtitle: animationStyle.settingsDescription) {
+                            GlassDetailRow(title: eclipseLocalized("Animation Style"), subtitle: animationStyle.settingsDescription) {
                                 Picker("", selection: $animationStyle) {
                                     ForEach(MPVPlayerSkinAnimationStyle.allCases) { style in
-                                        Text(style.displayName).tag(style)
+                                        Text(LocalizedStringKey(style.displayName)).tag(style)
                                     }
                                 }
                                 .playerSettingsMenuStyle()
@@ -901,7 +901,7 @@ private struct MPVPlayerSkinSettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 playerPreview(for: skin, style: MPVPlayerSkinSettings.animationStyle(for: skin), large: false, animated: false)
                 HStack(spacing: 6) {
-                    Text(skin.displayName)
+                    Text(LocalizedStringKey(skin.displayName))
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
@@ -1186,7 +1186,7 @@ struct PlayerSettingsView: View {
                 VStack(spacing: 8) {
                     GlassSection(header: isTvOS ? "Playback Defaults" : "Default Player") {
                         VStack(spacing: 0) {
-                            GlassDetailRow(title: "Default Playback Speed", subtitle: "Speed used when a video starts.") {
+                            GlassDetailRow(title: eclipseLocalized("Default Playback Speed"), subtitle: "Speed used when a video starts.") {
                                 Picker("", selection: $store.defaultPlaybackSpeed) {
                                     ForEach(playbackSpeedOptions, id: \.self) { speed in
                                         Text(formatSpeed(speed)).tag(speed)
@@ -1207,7 +1207,7 @@ struct PlayerSettingsView: View {
 
                             #if os(iOS)
                             GlassDivider(leadingInset: 16)
-                            GlassDetailRow(title: "Force Landscape", subtitle: "Force landscape orientation in the video player.") {
+                            GlassDetailRow(title: eclipseLocalized("Force Landscape"), subtitle: "Force landscape orientation in the video player.") {
                                 Toggle("", isOn: $store.landscapeOnly)
                                     .labelsHidden()
                                     .tint(accent)
@@ -1227,7 +1227,7 @@ struct PlayerSettingsView: View {
                     GlassSection(header: "Media Player") {
                         VStack(spacing: 0) {
 #if os(macOS)
-                        GlassDetailRow(title: "Media Player", subtitle: "Use an installed Mac player for compatible streams. Requests that need Eclipse remain in the app.") {
+                        GlassDetailRow(title: eclipseLocalized("Media Player"), subtitle: "Use an installed Mac player for compatible streams. Requests that need Eclipse remain in the app.") {
                             Picker("", selection: $macExternalPlayer) {
                                 Text("Eclipse").tag("")
                                 ForEach(MacExternalPlayerRegistry.shared.installedApplications) { application in
@@ -1239,7 +1239,7 @@ struct PlayerSettingsView: View {
                         .id(PlayerSettingsSearchTarget.externalPlayer.anchorID)
                         GlassDivider(leadingInset: 16)
 #elseif !os(tvOS)
-                        GlassDetailRow(title: "Media Player", subtitle: "The app must be installed and accept the provided scheme.") {
+                        GlassDetailRow(title: eclipseLocalized("Media Player"), subtitle: "The app must be installed and accept the provided scheme.") {
                             Picker("", selection: $store.externalPlayer) {
                                 ForEach(ExternalPlayer.allCases) { player in
                                     Text(player.rawValue).tag(player)
@@ -1252,10 +1252,10 @@ struct PlayerSettingsView: View {
                         GlassDivider(leadingInset: 16)
 #endif
 
-                        GlassDetailRow(title: "Playback Engine", subtitle: store.playbackEngine.settingsDescription) {
+                        GlassDetailRow(title: eclipseLocalized("Playback Engine"), subtitle: store.playbackEngine.settingsDescription) {
                             Picker("", selection: $store.playbackEngine) {
                                 ForEach(PlaybackEngine.availableSelections(deviceFamily: .current)) { engine in
-                                    Text(engine.displayName).tag(engine)
+                                    Text(LocalizedStringKey(engine.displayName)).tag(engine)
                                 }
                             }
                             .playerSettingsMenuStyle()
@@ -1266,7 +1266,7 @@ struct PlayerSettingsView: View {
                         GlassDivider(leadingInset: 16)
 
                         GlassDetailRow(
-                            title: "Playback Lock Button",
+                            title: eclipseLocalized("Playback Lock Button"),
                             subtitle: "Show a lock on both in-app player overlays. It holds orientation and blocks closing until unlocked; Next Episode remains available."
                         ) {
                             Toggle("", isOn: $store.playerPlaybackLockEnabled)
@@ -1279,7 +1279,7 @@ struct PlayerSettingsView: View {
                         GlassDivider(leadingInset: 16)
 
                         GlassDetailRow(
-                            title: "Services Button",
+                            title: eclipseLocalized("Services Button"),
                             subtitle: "Show a button in both in-app players that opens manual source selection for the current movie or episode. Auto-Select Episodes still applies."
                         ) {
                             Toggle("", isOn: $store.showPlayerServicesButton)
@@ -1290,7 +1290,7 @@ struct PlayerSettingsView: View {
 
                         GlassDivider(leadingInset: 16)
 
-                        GlassDetailRow(title: "Prefer Downloaded Episodes", subtitle: "When a matching download exists, play it from detail pages instead of streaming.") {
+                        GlassDetailRow(title: eclipseLocalized("Prefer Downloaded Episodes"), subtitle: "When a matching download exists, play it from detail pages instead of streaming.") {
                             Toggle("", isOn: $store.preferDownloadedMedia)
                                 .labelsHidden()
                                 .tint(accent)
@@ -1315,7 +1315,7 @@ struct PlayerSettingsView: View {
                                 GlassDetailRow(
                                     icon: "play.rectangle.fill",
                                     iconColor: .indigo,
-                                    title: "MPV Player Settings",
+                                    title: eclipseLocalized("MPV Player Settings"),
                                     subtitle: mpvPlayerSettingsSummary
                                 ) {
                                     valueChevron("Open")
@@ -1343,7 +1343,7 @@ struct PlayerSettingsView: View {
                                 if PlatformCapabilities.current.supportsPictureInPicture {
                                     GlassDivider()
                                     settingsToggleRow(
-                                        title: "Picture in Picture",
+                                        title: eclipseLocalized("Picture in Picture"),
                                         detail: "Show Apple's manual Picture in Picture control when the selected stream supports it.",
                                         binding: $store.mpvPictureInPictureEnabled
                                     )
@@ -1367,7 +1367,7 @@ struct PlayerSettingsView: View {
                                 if PlatformCapabilities.current.supportsPictureInPicture {
                                     GlassDivider()
                                     settingsToggleRow(
-                                        title: "Picture in Picture",
+                                        title: eclipseLocalized("Picture in Picture"),
                                         detail: pictureInPictureSettingsDescription,
                                         binding: $store.mpvPictureInPictureEnabled
                                     )
@@ -1376,7 +1376,7 @@ struct PlayerSettingsView: View {
                                     if store.mpvPictureInPictureEnabled {
                                         GlassDivider(leadingInset: 16)
                                         settingsToggleRow(
-                                            title: "PiP When Leaving App",
+                                            title: eclipseLocalized("PiP When Leaving App"),
                                             detail: "Start Picture in Picture automatically when you leave Eclipse.",
                                             binding: $store.mpvAppExitPictureInPictureEnabled
                                         )
@@ -1444,7 +1444,7 @@ struct PlayerSettingsView: View {
 #else
             GlassDivider(leadingInset: 16)
             settingsToggleRow(
-                title: "Double-Tap Seek",
+                title: eclipseLocalized("Double-Tap Seek"),
                 detail: "Double-tap the left or right side of the video to seek without replacing Apple's controls.",
                 binding: $store.playerDoubleTapSeekEnabled
             )
@@ -1452,7 +1452,7 @@ struct PlayerSettingsView: View {
 #endif
             GlassDivider(leadingInset: 16)
             GlassDetailRow(
-                title: "Seek Amount",
+                title: eclipseLocalized("Seek Amount"),
                 subtitle: PlayerInputSettingsDescription.seekAmount(seconds: store.playerDoubleTapSeekSeconds)
             ) {
 #if os(tvOS)
@@ -1478,13 +1478,13 @@ struct PlayerSettingsView: View {
         if isExpanded("nextEp") {
             GlassDivider(leadingInset: 16)
             settingsToggleRow(
-                title: "Autoplay Next Episode",
+                title: eclipseLocalized("Autoplay Next Episode"),
                 detail: "Open the next verified episode when playback ends. Auto Mode or a remembered choice selects the stream; otherwise the source picker opens.",
                 binding: $store.autoplayNextEpisodeEnabled
             )
             GlassDivider(leadingInset: 16)
             settingsToggleRow(
-                title: "Show Next Episode Button",
+                title: eclipseLocalized("Show Next Episode Button"),
                 detail: "Show a verified next-episode button near the end.",
                 binding: $store.showNextEpisodeButton
             )
@@ -1492,7 +1492,7 @@ struct PlayerSettingsView: View {
             if store.showNextEpisodeButton {
                 GlassDivider(leadingInset: 16)
                 GlassDetailRow(
-                    title: "Appearance Threshold",
+                    title: eclipseLocalized("Appearance Threshold"),
                     subtitle: "How far into the episode before the button appears."
                 ) {
                     HStack(spacing: 8) {
@@ -1643,7 +1643,7 @@ private struct PlayerSubtitleDefaultsGroup: View {
         if isExpanded("subDefaults") {
             GlassDivider(leadingInset: 16)
             settingsToggleRow(
-                title: "Enable Subtitles by Default",
+                title: eclipseLocalized("Enable Subtitles by Default"),
                 detail: "Automatically load and display subtitles when available.",
                 binding: $enableSubtitlesByDefault
             )
@@ -1652,10 +1652,10 @@ private struct PlayerSubtitleDefaultsGroup: View {
             GlassDivider(leadingInset: 16)
 
             NavigationLink(destination: PlayerLanguageSelectionView(
-                title: "Default Subtitle Language",
+                title: eclipseLocalized("Default Subtitle Language"),
                 selectedLanguage: $defaultSubtitleLanguage
             )) {
-                GlassDetailRow(title: "Default Subtitle Language", subtitle: "Language preference for subtitles.") {
+                GlassDetailRow(title: eclipseLocalized("Default Subtitle Language"), subtitle: "Language preference for subtitles.") {
                     valueChevron(getLanguageName(defaultSubtitleLanguage))
                 }
             }
@@ -1665,7 +1665,7 @@ private struct PlayerSubtitleDefaultsGroup: View {
             if usesMPVSettings {
                 GlassDivider(leadingInset: 16)
 
-                GlassDetailRow(title: "Subtitle Delay", subtitle: "Adjust MPV subtitle timing. Positive values show subtitles later; negative values show them earlier.") {
+                GlassDetailRow(title: eclipseLocalized("Subtitle Delay"), subtitle: "Adjust MPV subtitle timing. Positive values show subtitles later; negative values show them earlier.") {
                     VStack(spacing: 10) {
                         Text(PlayerSubtitleTiming.label(subtitleDelaySeconds))
                             .monospacedDigit()
@@ -1693,10 +1693,10 @@ private struct PlayerSubtitleDefaultsGroup: View {
             GlassDivider(leadingInset: 16)
 
             NavigationLink(destination: PlayerLanguageSelectionView(
-                title: "Auto Audio Language",
+                title: eclipseLocalized("Auto Audio Language"),
                 selectedLanguage: $preferredAutoAudioLanguage
             )) {
-                GlassDetailRow(title: "Auto Audio Language", subtitle: "Preferred audio language for movies and non-anime shows.") {
+                GlassDetailRow(title: eclipseLocalized("Auto Audio Language"), subtitle: "Preferred audio language for movies and non-anime shows.") {
                     valueChevron(getLanguageName(preferredAutoAudioLanguage))
                 }
             }
@@ -1706,10 +1706,10 @@ private struct PlayerSubtitleDefaultsGroup: View {
             GlassDivider(leadingInset: 16)
 
             NavigationLink(destination: PlayerLanguageSelectionView(
-                title: "Preferred Anime Audio",
+                title: eclipseLocalized("Preferred Anime Audio"),
                 selectedLanguage: $preferredAnimeAudioLanguage
             )) {
-                GlassDetailRow(title: "Preferred Anime Audio", subtitle: "Audio language for anime content.") {
+                GlassDetailRow(title: eclipseLocalized("Preferred Anime Audio"), subtitle: "Audio language for anime content.") {
                     valueChevron(getLanguageName(preferredAnimeAudioLanguage))
                 }
             }
@@ -1790,7 +1790,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
             if usesMPVSettings {
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "Subtitle Edit Menu",
+                    title: eclipseLocalized("Subtitle Edit Menu"),
                     detail: "Show subtitle style controls in the player.",
                     binding: $store.playerSubtitleAppearanceEnabled
                 )
@@ -1799,7 +1799,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
 #endif
 
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Subtitle Text Color", subtitle: "Default color for in-app subtitle rendering.") {
+            GlassDetailRow(title: eclipseLocalized("Subtitle Text Color"), subtitle: "Default color for in-app subtitle rendering.") {
                 Picker("", selection: subtitleTextColorBinding) {
                     ForEach(subtitleTextColorOptions.map(\.name), id: \.self) { name in
                         Text(name).tag(name)
@@ -1810,7 +1810,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
             .id(PlayerSettingsSearchTarget.subtitleTextColor.anchorID)
 
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Subtitle Stroke Color", subtitle: "Outline color for text subtitles. AVPlayer embedded captions use a system outline.") {
+            GlassDetailRow(title: eclipseLocalized("Subtitle Stroke Color"), subtitle: "Outline color for text subtitles. AVPlayer embedded captions use a system outline.") {
                 Picker("", selection: subtitleStrokeColorBinding) {
                     ForEach(subtitleStrokeColorOptions.map(\.name), id: \.self) { name in
                         Text(name).tag(name)
@@ -1821,7 +1821,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
             .id(PlayerSettingsSearchTarget.subtitleStrokeColor.anchorID)
 
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Subtitle Stroke Width", subtitle: "Outline thickness for text subtitles. AVPlayer embedded captions support outline on or off.") {
+            GlassDetailRow(title: eclipseLocalized("Subtitle Stroke Width"), subtitle: "Outline thickness for text subtitles. AVPlayer embedded captions support outline on or off.") {
                 Picker("", selection: subtitleStrokeWidthBinding) {
                     Text("None").tag(0.0)
                     Text("Thin").tag(0.5)
@@ -1834,7 +1834,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
             .id(PlayerSettingsSearchTarget.subtitleStrokeWidth.anchorID)
 
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Subtitle Font Size", subtitle: "Named size presets for in-app subtitle rendering.") {
+            GlassDetailRow(title: eclipseLocalized("Subtitle Font Size"), subtitle: "Named size presets for in-app subtitle rendering.") {
                 Picker("", selection: subtitleFontSizePresetBinding) {
                     ForEach(subtitleFontSizeOptions.map(\.name), id: \.self) { name in
                         Text(name).tag(name)
@@ -1845,7 +1845,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
             .id(PlayerSettingsSearchTarget.subtitleFontSize.anchorID)
 
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Subtitle Vertical Position", subtitle: "Where subtitles sit on screen. Matches the in-player menu.") {
+            GlassDetailRow(title: eclipseLocalized("Subtitle Vertical Position"), subtitle: "Where subtitles sit on screen. Matches the in-player menu.") {
                 Picker("", selection: subtitleVerticalOffsetBinding) {
                     Text("Highest").tag(-24.0)
                     Text("Higher").tag(-16.0)
@@ -1859,7 +1859,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
 
             GlassDivider(leadingInset: 16)
             settingsToggleRow(
-                title: "Caption Background",
+                title: eclipseLocalized("Caption Background"),
                 detail: "Show a translucent box behind subtitles for better visibility, like YouTube captions.",
                 binding: subtitleClosedCaptionBackgroundBinding
             )
@@ -1867,7 +1867,7 @@ private struct PlayerSubtitleAppearanceGroup: View {
 
             GlassDivider(leadingInset: 16)
             Button(action: resetPlayerSubtitleStyleDefaults) {
-                GlassDetailRow(icon: "arrow.counterclockwise", iconColor: .orange, title: "Reset Subtitle Style", subtitle: "Restore default text color, outline, font size, position, and caption background.") {
+                GlassDetailRow(icon: "arrow.counterclockwise", iconColor: .orange, title: eclipseLocalized("Reset Subtitle Style"), subtitle: "Restore default text color, outline, font size, position, and caption background.") {
                     EmptyView()
                 }
             }
@@ -2080,7 +2080,7 @@ private struct PlayerRemoteControlsGroup: View {
         disclosureHeader("Remote Controls", icon: "appletvremote.gen4.fill", iconColor: .green, key: "remote")
         if isExpanded("remote") {
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Seek Amount", subtitle: "Seconds moved by remote skip commands and Picture in Picture controls.") {
+            GlassDetailRow(title: eclipseLocalized("Seek Amount"), subtitle: "Seconds moved by remote skip commands and Picture in Picture controls.") {
                 Picker("", selection: $store.playerDoubleTapSeekSeconds) {
                     ForEach(TVPlayerSettingsOptions.preservingSelection(doubleTapSeekOptions, selected: store.playerDoubleTapSeekSeconds), id: \.self) { seconds in
                         Text("\(Int(seconds))s").tag(seconds)
@@ -2089,7 +2089,7 @@ private struct PlayerRemoteControlsGroup: View {
                 .playerSettingsMenuStyle()
             }
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Match Content", subtitle: "Eclipse automatically requests the video's native frame rate. Apple TV display settings decide whether a mode switch is allowed.") {
+            GlassDetailRow(title: eclipseLocalized("Match Content"), subtitle: "Eclipse automatically requests the video's native frame rate. Apple TV display settings decide whether a mode switch is allowed.") {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
             }
@@ -2140,23 +2140,23 @@ private struct PlayerSkipSegmentsGroup: View {
             .id(PlayerSettingsSearchTarget.skipSegments.anchorID)
         if isExpanded("skip") {
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "AniSkip", detail: "Fetch skip segments from AniSkip for anime content.", binding: $store.aniSkipEnabled)
+            settingsToggleRow(title: eclipseLocalized("AniSkip"), detail: "Fetch skip segments from AniSkip for anime content.", binding: $store.aniSkipEnabled)
                 .id(PlayerSettingsSearchTarget.aniSkip.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "TheIntroDB", detail: "Fetch skip segments from TheIntroDB for all content.", binding: $store.introDBEnabled)
+            settingsToggleRow(title: eclipseLocalized("TheIntroDB"), detail: "Fetch skip segments from TheIntroDB for all content.", binding: $store.introDBEnabled)
                 .id(PlayerSettingsSearchTarget.theIntroDB.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "IntroDB", detail: "Fetch skip segments from introdb.app using IMDb IDs when other skip sources return nothing.", binding: $store.introDBAppEnabled)
+            settingsToggleRow(title: eclipseLocalized("IntroDB"), detail: "Fetch skip segments from introdb.app using IMDb IDs when other skip sources return nothing.", binding: $store.introDBAppEnabled)
                 .id(PlayerSettingsSearchTarget.introDB.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Auto Skip", detail: "Automatically skip intros, outros, recaps, and previews when detected. A skip button is always shown regardless of this setting.", binding: $store.aniSkipAutoSkip)
+            settingsToggleRow(title: eclipseLocalized("Auto Skip"), detail: "Automatically skip intros, outros, recaps, and previews when detected. A skip button is always shown regardless of this setting.", binding: $store.aniSkipAutoSkip)
                 .id(PlayerSettingsSearchTarget.autoSkip.anchorID)
 #if !os(tvOS)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Skip 85s Fallback", detail: "Show a skip 85 seconds button when no skip data is returned for the current episode.", binding: $store.skip85sEnabled)
+            settingsToggleRow(title: eclipseLocalized("Skip 85s Fallback"), detail: "Show a skip 85 seconds button when no skip data is returned for the current episode.", binding: $store.skip85sEnabled)
                 .id(PlayerSettingsSearchTarget.skip85sFallback.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Always Show Skip 85s", detail: "Keep the Skip 85s button visible even when skip segments are available.", binding: $store.skip85sAlwaysVisible)
+            settingsToggleRow(title: eclipseLocalized("Always Show Skip 85s"), detail: "Keep the Skip 85s button visible even when skip segments are available.", binding: $store.skip85sAlwaysVisible)
                 .id(PlayerSettingsSearchTarget.alwaysShowSkip85s.anchorID)
 #endif
         }
@@ -2206,29 +2206,29 @@ private struct PlayerNextEpisodeGroup: View {
         if isExpanded("nextEp") {
             GlassDivider(leadingInset: 16)
             settingsToggleRow(
-                title: "Autoplay Next Episode",
+                title: eclipseLocalized("Autoplay Next Episode"),
                 detail: "Open the next verified episode when playback ends. Auto Mode or a remembered choice selects the stream; otherwise the source picker opens.",
                 binding: $store.autoplayNextEpisodeEnabled
             )
 #if !os(tvOS)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Episode Browser Button", detail: "Show the episode drawer button over the player.", binding: $store.showEpisodeBrowserButton)
+            settingsToggleRow(title: eclipseLocalized("Episode Browser Button"), detail: "Show the episode drawer button over the player.", binding: $store.showEpisodeBrowserButton)
                 .id(PlayerSettingsSearchTarget.episodeBrowserButton.anchorID)
 #endif
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Show Next Episode Button", detail: "Display a button near the end of an episode to quickly open stream search for the next episode.", binding: $store.showNextEpisodeButton)
+            settingsToggleRow(title: eclipseLocalized("Show Next Episode Button"), detail: "Display a button near the end of an episode to quickly open stream search for the next episode.", binding: $store.showNextEpisodeButton)
                 .id(PlayerSettingsSearchTarget.showNextEpisodeButton.anchorID)
 
             if store.showNextEpisodeButton {
                 #if !os(tvOS)
                 GlassDivider(leadingInset: 16)
-                settingsToggleRow(title: "Use Episode Poster", detail: "Show the next episode image, number, and title when available.", binding: $store.showNextEpisodePosterButton)
+                settingsToggleRow(title: eclipseLocalized("Use Episode Poster"), detail: "Show the next episode image, number, and title when available.", binding: $store.showNextEpisodePosterButton)
                     .id(PlayerSettingsSearchTarget.useEpisodePoster.anchorID)
 
                 #if os(iOS) || os(macOS)
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "Skip Filler Episodes",
+                    title: eclipseLocalized("Skip Filler Episodes"),
                     detail: "For anime, Next Episode and pre-staging jump to the next episode not marked as filler. If filler data is unavailable, Eclipse uses the normal next episode.",
                     binding: $store.nextEpisodeSkipFillerEnabled
                 )
@@ -2237,7 +2237,7 @@ private struct PlayerNextEpisodeGroup: View {
                 #endif
 
                 GlassDivider(leadingInset: 16)
-                GlassDetailRow(title: "Appearance Threshold", subtitle: "How far into the episode (%) before the button appears. Default is 90%.") {
+                GlassDetailRow(title: eclipseLocalized("Appearance Threshold"), subtitle: "How far into the episode (%) before the button appears. Default is 90%.") {
                     HStack(spacing: 8) {
 #if !os(tvOS)
                         Text("\(Int(store.nextEpisodeThreshold * 100))%")
@@ -2324,7 +2324,7 @@ private struct MPVPlayerSettingsPage: View {
                                     GlassDetailRow(
                                         icon: "paintpalette.fill",
                                         iconColor: .pink,
-                                        title: "Player Skin",
+                                        title: eclipseLocalized("Player Skin"),
                                         subtitle: "Customize the MPV control overlay."
                                     ) {
                                         valueChevron(store.mpvPlayerSkin.displayName)
@@ -2417,10 +2417,10 @@ private struct MPVPlayerSettingsPage: View {
             if metalRenderingSettingsAvailable {
                 if PlatformCapabilities.current.intelMacCompatibility.supportsEnhancedMPVRendering {
                     #if !os(tvOS)
-                    GlassDetailRow(title: "MoltenVK Quality", subtitle: mpvQualityDescription) {
+                    GlassDetailRow(title: eclipseLocalized("MoltenVK Quality"), subtitle: mpvQualityDescription) {
                         Picker("", selection: $store.mpvMetalQualityProfile) {
                             ForEach(MPVMetalQualityProfile.allCases) { profile in
-                                Text(profile.displayName).tag(profile)
+                                Text(LocalizedStringKey(profile.displayName)).tag(profile)
                             }
                         }
                         .playerSettingsMenuStyle()
@@ -2430,10 +2430,10 @@ private struct MPVPlayerSettingsPage: View {
                     GlassDivider(leadingInset: 16)
                     #endif
                     #if !os(tvOS)
-                    GlassDetailRow(title: "Upscaling", subtitle: mpvUpscalingDescription + " Applies on the next playback with MoltenVK only. If you experience issues, disable upscaling.") {
+                    GlassDetailRow(title: eclipseLocalized("Upscaling"), subtitle: mpvUpscalingDescription + " Applies on the next playback with MoltenVK only. If you experience issues, disable upscaling.") {
                         Picker("", selection: $store.mpvUpscalingMode) {
                             ForEach(MPVUpscalingMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
+                                Text(LocalizedStringKey(mode.displayName)).tag(mode)
                             }
                         }
                         .playerSettingsMenuStyle()
@@ -2442,10 +2442,10 @@ private struct MPVPlayerSettingsPage: View {
 
                     if MPVUserShaderLibrary.isAvailable, store.mpvUpscalingMode != .off {
                         GlassDivider(leadingInset: 16)
-                        GlassDetailRow(title: "Enhanced Upscaling", subtitle: mpvNeuralUpscalerDescription + " Runs only when the video is enlarged past about 5 percent.") {
+                        GlassDetailRow(title: eclipseLocalized("Enhanced Upscaling"), subtitle: mpvNeuralUpscalerDescription + " Runs only when the video is enlarged past about 5 percent.") {
                             Picker("", selection: $store.mpvNeuralUpscaler) {
                                 ForEach(MPVUserShaderLibrary.pickerUpscalers(including: store.mpvNeuralUpscaler)) { upscaler in
-                                    Text(upscaler.displayName).tag(upscaler)
+                                    Text(LocalizedStringKey(upscaler.displayName)).tag(upscaler)
                                 }
                             }
                             .playerSettingsMenuStyle()
@@ -2456,10 +2456,10 @@ private struct MPVPlayerSettingsPage: View {
                 }
 
                 #if os(tvOS)
-                GlassDetailRow(title: "Upscaling Target", subtitle: "Limit MPV's render resolution to save processing power. The picture still fills the display. Applies on the next playback, up to the display resolution and a maximum of 4K; it also limits rendering when enhanced upscaling is off.") {
+                GlassDetailRow(title: eclipseLocalized("Upscaling Target"), subtitle: "Limit MPV's render resolution to save processing power. The picture still fills the display. Applies on the next playback, up to the display resolution and a maximum of 4K; it also limits rendering when enhanced upscaling is off.") {
                     Picker("Upscaling Target", selection: $store.mpvUpscalingTargetTV) {
                         ForEach(MPVTVUpscalingTarget.allCases) { target in
-                            Text(target.displayName).tag(target)
+                            Text(LocalizedStringKey(target.displayName)).tag(target)
                         }
                     }
                     .labelsHidden()
@@ -2470,10 +2470,10 @@ private struct MPVPlayerSettingsPage: View {
 
                 if MPVUserShaderLibrary.isAvailable {
                     GlassDivider(leadingInset: 16)
-                    GlassDetailRow(title: "Enhanced Upscaling", subtitle: mpvNeuralUpscalerTVDescription + " Applies on the next playback to video up to 1440p when enlarged by more than 5%. Enhanced shaders are skipped for 4K video. Separate from the iPhone and iPad setting.") {
+                    GlassDetailRow(title: eclipseLocalized("Enhanced Upscaling"), subtitle: mpvNeuralUpscalerTVDescription + " Applies on the next playback to video up to 1440p when enlarged by more than 5%. Enhanced shaders are skipped for 4K video. Separate from the iPhone and iPad setting.") {
                         Picker("Enhanced Upscaling", selection: $store.mpvNeuralUpscalerTV) {
                             ForEach(MPVUserShaderLibrary.pickerUpscalers(including: store.mpvNeuralUpscalerTV)) { upscaler in
-                                Text(upscaler.displayName).tag(upscaler)
+                                Text(LocalizedStringKey(upscaler.displayName)).tag(upscaler)
                             }
                         }
                         .labelsHidden()
@@ -2488,7 +2488,7 @@ private struct MPVPlayerSettingsPage: View {
                     GlassDivider(leadingInset: 16)
                 }
                 settingsToggleRow(
-                    title: "Performance Overlay",
+                    title: eclipseLocalized("Performance Overlay"),
                     detail: "Show resolution, frame rate, dropped frames, and decoder on screen. Applies on the next playback.",
                     binding: $store.mpvPerformanceOverlayEnabled
                 )
@@ -2496,10 +2496,10 @@ private struct MPVPlayerSettingsPage: View {
 
                 if PlatformCapabilities.current.intelMacCompatibility.supportsEnhancedMPVRendering {
                     GlassDivider(leadingInset: 16)
-                    GlassDetailRow(title: "HDR Output", subtitle: mpvHDRDescription) {
+                    GlassDetailRow(title: eclipseLocalized("HDR Output"), subtitle: mpvHDRDescription) {
                         Picker("", selection: $store.mpvHDRMode) {
                             ForEach(MPVHDRMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
+                                Text(LocalizedStringKey(mode.displayName)).tag(mode)
                             }
                         }
                         .playerSettingsMenuStyle()
@@ -2509,7 +2509,7 @@ private struct MPVPlayerSettingsPage: View {
 
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "Dolby Vision",
+                    title: eclipseLocalized("Dolby Vision"),
                     detail: PlatformCapabilities.current.intelMacCompatibility.isEnabled
                         ? "Use Dolby Vision metadata when converting video to SDR. Off may produce incorrect colors in Dolby Vision-only videos. Applies on next playback."
                         : "Use Dolby Vision metadata for MPV color processing. Off may produce incorrect colors in Dolby Vision-only videos. Output follows HDR Output; this does not force Dolby Vision TV output. Applies on next playback.",
@@ -2521,7 +2521,7 @@ private struct MPVPlayerSettingsPage: View {
             }
 
             settingsToggleRow(
-                title: "Surround Sound",
+                title: eclipseLocalized("Surround Sound"),
                 detail: surroundSoundSettingsDescription,
                 binding: $store.mpvSurroundSoundEnabled
             )
@@ -2530,7 +2530,7 @@ private struct MPVPlayerSettingsPage: View {
             if PlatformCapabilities.current.intelMacCompatibility.supportsAtmosPassthrough {
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "Dolby Atmos",
+                    title: eclipseLocalized("Dolby Atmos"),
                     detail: "Preserve Dolby Digital Plus Atmos on compatible audio routes. Requires Surround Sound, normal speed, and no audio processing. Off keeps ordinary surround sound. TrueHD Atmos is not supported. Applies on next MPV playback.",
                     binding: $store.mpvDolbyAtmosEnabled
                 )
@@ -2538,10 +2538,10 @@ private struct MPVPlayerSettingsPage: View {
             }
 
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Comfort Audio", subtitle: comfortAudioDescription + " Applies on the next playback.") {
+            GlassDetailRow(title: eclipseLocalized("Comfort Audio"), subtitle: comfortAudioDescription + " Applies on the next playback.") {
                 Picker("Comfort Audio", selection: $store.audioComfortMode) {
                     ForEach(AudioComfortMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                        Text(LocalizedStringKey(mode.displayName)).tag(mode)
                     }
                 }
                 .labelsHidden()
@@ -2552,7 +2552,7 @@ private struct MPVPlayerSettingsPage: View {
             if store.audioComfortMode != .original {
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "Apply to All",
+                    title: eclipseLocalized("Apply to All"),
                     detail: "Apply the audio mode to every kind of content. Turn off to choose specific types below.",
                     binding: Binding(
                         get: { store.audioComfortScopeCategories == Set(AudioComfortContentCategory.allCases) },
@@ -2586,7 +2586,7 @@ private struct MPVPlayerSettingsPage: View {
 
             #if os(iOS)
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Inline Frame Rate", subtitle: "Use 60 fps only for 60 fps video.") {
+            GlassDetailRow(title: eclipseLocalized("Inline Frame Rate"), subtitle: "Use 60 fps only for 60 fps video.") {
                 Picker("", selection: $store.mpvForegroundFPS) {
                     ForEach(mpvForegroundFPSOptions, id: \.self) { fps in
                         Text("\(fps) fps").tag(fps)
@@ -2601,7 +2601,7 @@ private struct MPVPlayerSettingsPage: View {
                PlatformCapabilities.current.intelMacCompatibility.supportsMPVPictureInPicture {
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "Picture in Picture",
+                    title: eclipseLocalized("Picture in Picture"),
                     detail: pictureInPictureSettingsDescription,
                     binding: $store.mpvPictureInPictureEnabled
                 )
@@ -2611,7 +2611,7 @@ private struct MPVPlayerSettingsPage: View {
             if store.mpvPictureInPictureEnabled {
                 GlassDivider(leadingInset: 16)
                 settingsToggleRow(
-                    title: "PiP When Leaving App",
+                    title: eclipseLocalized("PiP When Leaving App"),
                     detail: "Start Picture in Picture automatically when you leave Eclipse.",
                     binding: $store.mpvAppExitPictureInPictureEnabled
                 )
@@ -2630,23 +2630,23 @@ private struct MPVPlayerSettingsPage: View {
             GlassSectionFooter("Space plays or pauses. Left and right arrows seek while the player has focus. Double-click the video to toggle fullscreen.")
 #else
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Brightness Gesture", detail: "Use a left-side vertical drag for screen brightness.", binding: $store.playerBrightnessGestureEnabled)
+            settingsToggleRow(title: eclipseLocalized("Brightness Gesture"), detail: "Use a left-side vertical drag for screen brightness.", binding: $store.playerBrightnessGestureEnabled)
                 .id(PlayerSettingsSearchTarget.brightnessGesture.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Volume Gesture", detail: "Use a right-side vertical drag for system volume.", binding: $store.playerVolumeGestureEnabled)
+            settingsToggleRow(title: eclipseLocalized("Volume Gesture"), detail: "Use a right-side vertical drag for system volume.", binding: $store.playerVolumeGestureEnabled)
                 .id(PlayerSettingsSearchTarget.volumeGesture.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Two-Finger Play/Pause", detail: "Toggle play and pause with a two-finger tap.", binding: $store.playerTwoFingerTapPlayPauseEnabled)
+            settingsToggleRow(title: eclipseLocalized("Two-Finger Play/Pause"), detail: "Toggle play and pause with a two-finger tap.", binding: $store.playerTwoFingerTapPlayPauseEnabled)
                 .id(PlayerSettingsSearchTarget.twoFingerPlayPause.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Center-Tap Play/Pause", detail: "Tap the center of the video to play or pause without opening controls.", binding: $store.playerCenterTapPlayPauseEnabled)
+            settingsToggleRow(title: eclipseLocalized("Center-Tap Play/Pause"), detail: "Tap the center of the video to play or pause without opening controls.", binding: $store.playerCenterTapPlayPauseEnabled)
                 .id(PlayerSettingsSearchTarget.centerTapPlayPause.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Double-Tap Seek", detail: "Double-tap the left or right side of the video to seek.", binding: $store.playerDoubleTapSeekEnabled)
+            settingsToggleRow(title: eclipseLocalized("Double-Tap Seek"), detail: "Double-tap the left or right side of the video to seek.", binding: $store.playerDoubleTapSeekEnabled)
                 .id(PlayerSettingsSearchTarget.doubleTapSeek.anchorID)
 #endif
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Seek Amount", subtitle: PlayerInputSettingsDescription.seekAmount(seconds: store.playerDoubleTapSeekSeconds)) {
+            GlassDetailRow(title: eclipseLocalized("Seek Amount"), subtitle: PlayerInputSettingsDescription.seekAmount(seconds: store.playerDoubleTapSeekSeconds)) {
 #if os(tvOS)
                 Picker("", selection: $store.playerDoubleTapSeekSeconds) {
                     ForEach(TVPlayerSettingsOptions.preservingSelection(doubleTapSeekOptions, selected: store.playerDoubleTapSeekSeconds), id: \.self) { seconds in
@@ -2668,12 +2668,12 @@ private struct MPVPlayerSettingsPage: View {
         disclosureHeader("OpenSubtitles", icon: "globe", iconColor: .indigo, key: "openSubs")
         if isExpanded("openSubs") {
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "OpenSubtitles", detail: "Enable subtitle search through the Stremio OpenSubtitles v3 add-on.", binding: $store.playerOpenSubtitlesEnabled)
+            settingsToggleRow(title: eclipseLocalized("OpenSubtitles"), detail: "Enable subtitle search through the Stremio OpenSubtitles v3 add-on.", binding: $store.playerOpenSubtitlesEnabled)
                 .id(PlayerSettingsSearchTarget.openSubtitles.anchorID)
 
             if store.playerOpenSubtitlesEnabled {
                 GlassDivider(leadingInset: 16)
-                settingsToggleRow(title: "Use as Auto Fallback", detail: "When auto subtitles are on, search OpenSubtitles if the selected language is missing locally.", binding: $store.playerOpenSubtitlesAutoFallbackEnabled)
+                settingsToggleRow(title: eclipseLocalized("Use as Auto Fallback"), detail: "When auto subtitles are on, search OpenSubtitles if the selected language is missing locally.", binding: $store.playerOpenSubtitlesAutoFallbackEnabled)
                     .id(PlayerSettingsSearchTarget.openSubtitlesAutoFallback.anchorID)
             }
         }
@@ -2685,18 +2685,18 @@ private struct MPVPlayerSettingsPage: View {
         disclosureHeader("MPV Advanced", icon: "sparkles", iconColor: .purple, key: "experimental")
         if isExpanded("experimental") {
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Stream Warmup Cache", detail: "Keep a small amount of stream data for faster retries and reloads.", binding: $store.experimentalMPVPreloadEnabled)
+            settingsToggleRow(title: eclipseLocalized("Stream Warmup Cache"), detail: "Keep a small amount of stream data for faster retries and reloads.", binding: $store.experimentalMPVPreloadEnabled)
                 .id(PlayerSettingsSearchTarget.streamWarmupCache.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Next Episode Staging", detail: "Warm the next episode near the end of playback. Requires Auto Mode.", binding: $store.experimentalMPVSmoothTransitionEnabled)
+            settingsToggleRow(title: eclipseLocalized("Next Episode Staging"), detail: "Warm the next episode near the end of playback. Requires Auto Mode.", binding: $store.experimentalMPVSmoothTransitionEnabled)
                 .id(PlayerSettingsSearchTarget.nextEpisodeStaging.anchorID)
 #if os(iOS)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Allow Cellular Warmup", detail: "Allow small stream warmups on cellular data.", binding: $store.experimentalMPVPreloadCellularEnabled)
+            settingsToggleRow(title: eclipseLocalized("Allow Cellular Warmup"), detail: "Allow small stream warmups on cellular data.", binding: $store.experimentalMPVPreloadCellularEnabled)
                 .id(PlayerSettingsSearchTarget.allowCellularWarmup.anchorID)
 #endif
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Auto-Clear Warmup Cache", detail: "Remove warmup data when Eclipse launches. Recommended.", binding: $store.experimentalMPVPreloadAutoClearEnabled)
+            settingsToggleRow(title: eclipseLocalized("Auto-Clear Warmup Cache"), detail: "Remove warmup data when Eclipse launches. Recommended.", binding: $store.experimentalMPVPreloadAutoClearEnabled)
                 .id(PlayerSettingsSearchTarget.autoClearWarmupCache.anchorID)
             GlassDivider(leadingInset: 16)
             GlassDetailRow(title: PlayerInputSettingsDescription.warmupCacheTitle, subtitle: "\(store.experimentalMPVPreloadWifiLimitMB) MB for stream warmup.") {
@@ -2706,20 +2706,20 @@ private struct MPVPlayerSettingsPage: View {
             .id(PlayerSettingsSearchTarget.wifiCacheLimit.anchorID)
 #if os(iOS)
             GlassDivider(leadingInset: 16)
-            GlassDetailRow(title: "Cellular Cache Limit", subtitle: "\(store.experimentalMPVPreloadCellularLimitMB) MB for stream warmup.") {
+            GlassDetailRow(title: eclipseLocalized("Cellular Cache Limit"), subtitle: "\(store.experimentalMPVPreloadCellularLimitMB) MB for stream warmup.") {
                 Stepper("", value: $store.experimentalMPVPreloadCellularLimitMB, in: ExperimentalFeatureState.mpvPreloadCellularLimitRange, step: 8)
                     .labelsHidden()
             }
             .id(PlayerSettingsSearchTarget.cellularCacheLimit.anchorID)
 #endif
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Show Remaining Time", detail: "Show time left in player controls.", binding: $store.experimentalMPVShowRemainingTime)
+            settingsToggleRow(title: eclipseLocalized("Show Remaining Time"), detail: "Show time left in player controls.", binding: $store.experimentalMPVShowRemainingTime)
                 .id(PlayerSettingsSearchTarget.showRemainingTime.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Precise Progress Adjustment", detail: "Make progress slider adjustments finer.", binding: $store.experimentalMPVPreciseProgress)
+            settingsToggleRow(title: eclipseLocalized("Precise Progress Adjustment"), detail: "Make progress slider adjustments finer.", binding: $store.experimentalMPVPreciseProgress)
                 .id(PlayerSettingsSearchTarget.preciseProgressAdjustment.anchorID)
             GlassDivider(leadingInset: 16)
-            settingsToggleRow(title: "Ignore Special Subtitle Styles", detail: "Always use Eclipse's subtitle style instead of embedded effects. Custom appearance also overrides embedded styles. Applies on next playback.", binding: $store.experimentalMPVIgnoreSpecialSubtitleStyles)
+            settingsToggleRow(title: eclipseLocalized("Ignore Special Subtitle Styles"), detail: "Always use Eclipse's subtitle style instead of embedded effects. Custom appearance also overrides embedded styles. Applies on next playback.", binding: $store.experimentalMPVIgnoreSpecialSubtitleStyles)
                 .id(PlayerSettingsSearchTarget.ignoreSpecialSubtitleStyles.anchorID)
             GlassSectionFooter("Warmup and staging are optional speed-ups. They depend on the stream and never affect normal playback.")
         }

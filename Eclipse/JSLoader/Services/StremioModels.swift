@@ -1126,7 +1126,7 @@ struct StremioStream: Codable, Identifiable, Hashable {
         if let description = description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
             return description.components(separatedBy: .newlines).first ?? description
         }
-        return "Stream"
+        return eclipseLocalized("Stream")
     }
 
     var proxyHeaders: [String: String]? {

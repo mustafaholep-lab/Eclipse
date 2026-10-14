@@ -666,12 +666,12 @@ enum AutoModeDownloadEnqueueResult {
 enum DownloadByteCountFormatter {
     private static let unitNames = ["bytes", "KB", "MB", "GB", "TB", "PB"]
     private static let unitBase = 1_000.0
-    private static let displayLocale = Locale(identifier: "en_US_POSIX")
+    private static var displayLocale: Locale { LocalizationManager.selectedLocale }
 
     static func string(fromByteCount byteCount: Int64) -> String {
         let nonnegativeByteCount = max(byteCount, 0)
         guard nonnegativeByteCount >= 1_000 else {
-            let unit = nonnegativeByteCount == 1 ? "byte" : "bytes"
+            let unit = eclipseLocalized(nonnegativeByteCount == 1 ? "byte" : "bytes")
             return "\(nonnegativeByteCount) \(unit)"
         }
 

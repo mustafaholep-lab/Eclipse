@@ -11,11 +11,11 @@ enum AtmosphereStyle: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .gradient: return "Gradient"
-        case .multiGradient: return "Multi Gradient"
-        case .aurora: return "Aurora"
-        case .ember: return "Ember"
-        case .solid: return "Solid Color"
+        case .gradient: return eclipseLocalized("Gradient")
+        case .multiGradient: return eclipseLocalized("Multi Gradient")
+        case .aurora: return eclipseLocalized("Aurora")
+        case .ember: return eclipseLocalized("Ember")
+        case .solid: return eclipseLocalized("Solid Color")
         }
     }
 
@@ -37,8 +37,8 @@ enum AtmosphereSolidColorSource: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .dominant: return "Poster Dominant"
-        case .custom: return "Custom Color"
+        case .dominant: return eclipseLocalized("Poster Dominant")
+        case .custom: return eclipseLocalized("Custom Color")
         }
     }
 }
@@ -56,9 +56,9 @@ enum HeroBannerBehavior: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .static: return "Static"
-        case .carousel: return "Carousel"
-        case .launch: return "Change on App Launch"
+        case .static: return eclipseLocalized("Static")
+        case .carousel: return eclipseLocalized("Carousel")
+        case .launch: return eclipseLocalized("Change on App Launch")
         }
     }
 }

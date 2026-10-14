@@ -374,35 +374,35 @@ final class TVMPVPlayerViewController: UIViewController, UIGestureRecognizerDele
         timelineKnob.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
 
         timelineFocusButton.translatesAutoresizingMaskIntoConstraints = false
-        timelineFocusButton.setTitle("Timeline", for: .normal)
+        timelineFocusButton.setTitle(eclipseLocalized("Timeline"), for: .normal)
         timelineFocusButton.setTitleColor(.clear, for: .normal)
         timelineFocusButton.backgroundColor = .clear
-        timelineFocusButton.accessibilityLabel = "Playback timeline"
+        timelineFocusButton.accessibilityLabel = eclipseLocalized("Playback timeline")
         timelineFocusButton.accessibilityIdentifier = "tv.player.timeline"
-        timelineFocusButton.accessibilityHint = "Press left or right to seek"
+        timelineFocusButton.accessibilityHint = eclipseLocalized("Press left or right to seek")
         timelineFocusButton.addAction(UIAction { [weak self] _ in
             self?.showControls(animated: true, moveFocus: false)
         }, for: .primaryActionTriggered)
 
-        configureTransportButton(rewindButton, symbol: "gobackward.10", title: "Rewind") { [weak self] in
+        configureTransportButton(rewindButton, symbol: "gobackward.10", title: eclipseLocalized("Rewind")) { [weak self] in
             self?.seek(by: -(self?.seekInterval ?? 10))
         }
-        configureTransportButton(playPauseButton, symbol: "pause.fill", title: "Pause") { [weak self] in
+        configureTransportButton(playPauseButton, symbol: "pause.fill", title: eclipseLocalized("Pause")) { [weak self] in
             guard let self else { return }
             self.onPlaybackInteraction?()
             self.renderer.togglePlayback()
             self.schedulePictureInPicturePlaybackStateUpdate()
         }
-        configureTransportButton(forwardButton, symbol: "goforward.10", title: "Fast Forward") { [weak self] in
+        configureTransportButton(forwardButton, symbol: "goforward.10", title: eclipseLocalized("Fast Forward")) { [weak self] in
             self?.seek(by: self?.seekInterval ?? 10)
         }
-        configureTransportButton(audioButton, symbol: "speaker.wave.3.fill", title: "Audio") { [weak self] in
+        configureTransportButton(audioButton, symbol: "speaker.wave.3.fill", title: eclipseLocalized("Audio")) { [weak self] in
             self?.showAudioMenu()
         }
-        configureTransportButton(subtitleButton, symbol: "captions.bubble.fill", title: "Subtitles") { [weak self] in
+        configureTransportButton(subtitleButton, symbol: "captions.bubble.fill", title: eclipseLocalized("Subtitles")) { [weak self] in
             self?.showSubtitleMenu()
         }
-        configureTransportButton(pictureInPictureButton, symbol: "pip.enter", title: "Picture in Picture") { [weak self] in
+        configureTransportButton(pictureInPictureButton, symbol: "pip.enter", title: eclipseLocalized("Picture in Picture")) { [weak self] in
             self?.startPictureInPicture()
         }
         rewindButton.accessibilityIdentifier = "tv.player.rewind"
@@ -433,7 +433,7 @@ final class TVMPVPlayerViewController: UIViewController, UIGestureRecognizerDele
         errorLabel.isHidden = true
         view.addSubview(errorLabel)
 
-        configureTransportButton(retryButton, symbol: "play.rectangle.fill", title: "Retry with AVPlayer") { [weak self] in
+        configureTransportButton(retryButton, symbol: "play.rectangle.fill", title: eclipseLocalized("Retry with AVPlayer")) { [weak self] in
             guard let self else { return }
             self.onRetryWithAVPlayer?(self.latestErrorMessage)
         }
@@ -563,11 +563,11 @@ final class TVMPVPlayerViewController: UIViewController, UIGestureRecognizerDele
             loadingIndicator.startAnimating()
         case .playing:
             loadingIndicator.stopAnimating()
-            setButton(playPauseButton, symbol: "pause.fill", title: "Pause")
+            setButton(playPauseButton, symbol: "pause.fill", title: eclipseLocalized("Pause"))
             scheduleControlsAutoHide()
         case .paused:
             loadingIndicator.stopAnimating()
-            setButton(playPauseButton, symbol: "play.fill", title: "Play")
+            setButton(playPauseButton, symbol: "play.fill", title: eclipseLocalized("Play"))
             showControls(animated: true, moveFocus: false)
             autoHideWorkItem?.cancel()
         case .failed(let message):
@@ -787,7 +787,7 @@ final class TVMPVPlayerViewController: UIViewController, UIGestureRecognizerDele
     private func showAudioMenu() {
         let tracks = renderer.audioTracks()
         guard !tracks.isEmpty else { return }
-        let alert = UIAlertController(title: "Audio", message: nil, preferredStyle: .alert)
+        let alert = UIAlertController(title: eclipseLocalized("Audio"), message: nil, preferredStyle: .alert)
         tracks.forEach { track in
             let marker = track.selected ? "✓ " : ""
             let title = PlaybackAudioTrackLabel.title(
@@ -798,13 +798,13 @@ final class TVMPVPlayerViewController: UIViewController, UIGestureRecognizerDele
                 self?.renderer.setAudioTrack(track.id)
             })
         }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Cancel"), style: .cancel))
         presentTrackMenu(alert)
     }
 
     private func showSubtitleMenu() {
         let tracks = renderer.subtitleTracks()
-        let alert = UIAlertController(title: "Subtitles", message: "Delay: \(PlayerSubtitleTiming.label(Settings.shared.playerSubtitleDelaySeconds)). Positive values show subtitles later.", preferredStyle: .alert)
+        let alert = UIAlertController(title: eclipseLocalized("Subtitles"), message: "Delay: \(PlayerSubtitleTiming.label(Settings.shared.playerSubtitleDelaySeconds)). Positive values show subtitles later.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: renderer.subtitleTracks().contains(where: { $0.selected }) ? "Off" : "✓ Off", style: .default) { [weak self] _ in
             self?.renderer.disableSubtitles()
         })
@@ -815,10 +815,10 @@ final class TVMPVPlayerViewController: UIViewController, UIGestureRecognizerDele
                 self?.renderer.setSubtitleTrack(track.id)
             })
         }
-        alert.addAction(UIAlertAction(title: "Subtitle Delay…", style: .default) { [weak self, weak alert] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Subtitle Delay…"), style: .default) { [weak self, weak alert] _ in
             self?.showSubtitleTimingControls(afterDismissing: alert)
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Cancel"), style: .cancel))
         presentTrackMenu(alert)
     }
 
@@ -1503,31 +1503,31 @@ private final class TVSubtitleTimingViewController: UIViewController {
         view.addSubview(panel)
 
         let title = UILabel()
-        title.text = "Subtitle Delay"
+        title.text = eclipseLocalized("Subtitle Delay")
         title.font = .systemFont(ofSize: 34, weight: .semibold)
         title.textColor = .white
         title.textAlignment = .center
         valueLabel.font = .monospacedSystemFont(ofSize: 40, weight: .medium)
         valueLabel.textColor = .white
         valueLabel.textAlignment = .center
-        valueLabel.accessibilityLabel = "Subtitle delay"
+        valueLabel.accessibilityLabel = eclipseLocalized("Subtitle delay")
         valueLabel.accessibilityIdentifier = "tv-subtitle-timing-value"
         let detail = UILabel()
-        detail.text = "Adjust in 0.25-second steps. Positive values show subtitles later; negative values show them earlier."
+        detail.text = eclipseLocalized("Adjust in 0.25-second steps. Positive values show subtitles later; negative values show them earlier.")
         detail.font = .systemFont(ofSize: 23)
         detail.textColor = .lightGray
         detail.numberOfLines = 0
         detail.textAlignment = .center
 
-        configureButton(minusButton, title: "−", action: #selector(decreaseDelay))
-        minusButton.accessibilityLabel = "Decrease subtitle delay by 0.25 seconds"
+        configureButton(minusButton, title: eclipseLocalized("−"), action: #selector(decreaseDelay))
+        minusButton.accessibilityLabel = eclipseLocalized("Decrease subtitle delay by 0.25 seconds")
         minusButton.accessibilityIdentifier = "tv-subtitle-delay-minus"
-        configureButton(plusButton, title: "+", action: #selector(increaseDelay))
-        plusButton.accessibilityLabel = "Increase subtitle delay by 0.25 seconds"
+        configureButton(plusButton, title: eclipseLocalized("+"), action: #selector(increaseDelay))
+        plusButton.accessibilityLabel = eclipseLocalized("Increase subtitle delay by 0.25 seconds")
         plusButton.accessibilityIdentifier = "tv-subtitle-delay-plus"
-        configureButton(resetButton, title: "Reset", action: #selector(resetDelay))
+        configureButton(resetButton, title: eclipseLocalized("Reset"), action: #selector(resetDelay))
         resetButton.accessibilityIdentifier = "tv-subtitle-delay-reset"
-        configureButton(doneButton, title: "Done", action: #selector(closeTiming))
+        configureButton(doneButton, title: eclipseLocalized("Done"), action: #selector(closeTiming))
         doneButton.accessibilityIdentifier = "tv-subtitle-delay-done"
         let timing = UIStackView(arrangedSubviews: [minusButton, valueLabel, plusButton])
         timing.axis = .horizontal

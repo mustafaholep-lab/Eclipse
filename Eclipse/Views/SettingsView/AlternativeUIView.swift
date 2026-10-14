@@ -320,7 +320,7 @@ struct AlternativeUIView: View {
                 ) {
                     Picker("", selection: $theme.atmosphereSolidColorSource) {
                         ForEach(AtmosphereSolidColorSource.allCases) { source in
-                            Text(source.displayName).tag(source)
+                            Text(LocalizedStringKey(source.displayName)).tag(source)
                         }
                 }
                 .pickerStyle(.menu)
@@ -448,7 +448,7 @@ struct AlternativeUIView: View {
             ) {
                 Picker("", selection: $homeAnimatedBackgroundQuality) {
                     ForEach(HomeAnimatedBackgroundQuality.allCases) { quality in
-                        Text(quality.displayName).tag(quality.rawValue)
+                        Text(LocalizedStringKey(quality.displayName)).tag(quality.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
@@ -461,7 +461,7 @@ struct AlternativeUIView: View {
             ) {
                 Picker("", selection: $homeAnimatedBackgroundFrameRate) {
                     ForEach(HomeAnimatedBackgroundFrameRate.allCases) { frameRate in
-                        Text(frameRate.displayName).tag(frameRate.rawValue)
+                        Text(LocalizedStringKey(frameRate.displayName)).tag(frameRate.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
@@ -556,7 +556,7 @@ struct AlternativeUIView: View {
             ) {
                 Picker("", selection: $collectionLayoutRaw) {
                     ForEach(LibraryCollectionLayout.allCases) { layout in
-                        Text(layout.displayName).tag(layout.rawValue)
+                        Text(LocalizedStringKey(layout.displayName)).tag(layout.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
@@ -814,7 +814,7 @@ struct AlternativeUIView: View {
                     )
                     .scaleEffect(selected ? 1.05 : 1.0)
 
-                Text(id.displayName)
+                Text(LocalizedStringKey(id.displayName))
                     .font(.system(size: isTvOS ? 25 : 11, weight: selected ? .semibold : .regular))
                     .foregroundColor(isTvOS ? (selected ? Color.primary : Color.secondary) : (selected ? Color.white : Color.white.opacity(0.6)))
                     .lineLimit(1)
@@ -945,7 +945,7 @@ struct AlternativeUIView: View {
     private func mediaDetailElementRow(_ element: MediaDetailElement) -> some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(element.displayName)
+                Text(LocalizedStringKey(element.displayName))
                     .font(.subheadline)
                     .fontWeight(.medium)
                 Text(element.settingsDescription)

@@ -11,10 +11,10 @@ enum CatalogOrientationOverride: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .global: return "Global"
-        case .automatic: return "Automatic"
-        case .landscape: return "Landscape"
-        case .poster: return "Poster"
+        case .global: return eclipseLocalized("Global")
+        case .automatic: return eclipseLocalized("Automatic")
+        case .landscape: return eclipseLocalized("Landscape")
+        case .poster: return eclipseLocalized("Poster")
         }
     }
 

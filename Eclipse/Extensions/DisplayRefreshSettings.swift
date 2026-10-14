@@ -82,9 +82,9 @@ struct DisplayRefreshSettingsView: View {
                 }
                 .disabled(!supports120)
             } footer: {
-                Text(supports120
+                Text(LocalizedStringKey(supports120
                      ? "iOS may lower the refresh rate to save power or protect the device."
-                     : "This display does not support 120 Hz.")
+                     : "This display does not support 120 Hz."))
             }
         }
         .navigationTitle("Display Refresh Rate")

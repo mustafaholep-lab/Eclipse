@@ -1375,19 +1375,19 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
 
     private func showCoordinatorFallbackFailureAlert(_ report: PlaybackFailureReport) {
         let alert = UIAlertController(
-            title: "Playback Failed in Both Players",
+            title: eclipseLocalized("Playback Failed in Both Players"),
             message: "AVPlayer could not start this stream after Molten failed. \(report.message)",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Retry AVPlayer", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry AVPlayer"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
         if onPlaybackStartupFailure != nil {
-            alert.addAction(UIAlertAction(title: "Try Another Source", style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: eclipseLocalized("Try Another Source"), style: .default) { [weak self] _ in
                 self?.dismissAndReportPlaybackFailure(report)
             })
         }
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeAVPlayer()
         })
         presentPlaybackFailureAlert(alert)
@@ -1395,14 +1395,14 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
 
     private func showManualPlaybackFailureAlert(_ report: PlaybackFailureReport) {
         let alert = UIAlertController(
-            title: "Playback Failed",
+            title: eclipseLocalized("Playback Failed"),
             message: "\(report.context.sourceName) could not start playback. \(report.message)",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeAVPlayer()
         })
         presentPlaybackFailureAlert(alert)
@@ -1674,14 +1674,14 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
             return
         }
         let alert = UIAlertController(
-            title: "Playback Stopped",
+            title: eclipseLocalized("Playback Stopped"),
             message: message,
             preferredStyle: .alert
         )
         if let context = effectiveFailureContext(),
            let onAutomaticPlaybackFallback {
             let report = PlaybackFailureReport(context: context, message: message, isSourceFailure: false)
-            alert.addAction(UIAlertAction(title: "Try Other Player", style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: eclipseLocalized("Try Other Player"), style: .default) { [weak self] _ in
                 self?.persistCurrentProgressForAccountBoundary()
                 ProgressManager.shared.flushPendingSave()
                 self?.onAutomaticPlaybackFallback = nil
@@ -1689,10 +1689,10 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
                 onAutomaticPlaybackFallback(report)
             })
         }
-        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeAVPlayer()
         })
         if presentedViewController == nil {
@@ -2045,7 +2045,7 @@ private extension NormalPlayer {
         let button = UIButton(type: .system)
         button.configuration = IOSAVPlayerControlStyle.configuration(
             imageName: "forward.end.fill",
-            title: "Next Episode",
+            title: eclipseLocalized("Next Episode"),
             imagePadding: 8
         )
         IOSAVPlayerControlStyle.applyShadow(to: button)
@@ -2361,7 +2361,7 @@ private extension NormalPlayer {
         return PlayerResolvedPlaybackRequest(
             url: fileURL,
             preset: PlayerPreset.presets.first
-                ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: []),
+                ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: []),
             headers: [:],
             subtitles: DownloadManager.shared.localSubtitleURL(for: download).map { [$0.absoluteString] },
             subtitleNames: nil,
@@ -2673,7 +2673,7 @@ extension NormalPlayer: UIAdaptivePresentationControllerDelegate {
         return PlayerResolvedPlaybackRequest(
             url: fileURL,
             preset: PlayerPreset.presets.first
-                ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: []),
+                ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: []),
             headers: [:],
             subtitles: DownloadManager.shared.localSubtitleURL(for: downloadItem).map { [$0.absoluteString] },
             subtitleNames: nil,
@@ -3640,7 +3640,7 @@ private final class IOSAVPlayerMediaControlsController {
             self?.showTemporarily()
             self?.onServices?()
         }
-        servicesButton.accessibilityHint = "Opens Services for the current media"
+        servicesButton.accessibilityHint = eclipseLocalized("Opens Services for the current media")
         servicesButton.accessibilityIdentifier = "AVPlayer.Services"
 
         configureChromeButton(
@@ -3650,7 +3650,7 @@ private final class IOSAVPlayerMediaControlsController {
         ) { [weak self] in
             self?.onEpisodeBrowser?()
         }
-        episodeBrowserButton.accessibilityHint = "Opens the episode browser for this show"
+        episodeBrowserButton.accessibilityHint = eclipseLocalized("Opens the episode browser for this show")
         episodeBrowserButton.accessibilityIdentifier = "AVPlayer.EpisodeBrowser"
         setEpisodeBrowserAvailable(false)
 
@@ -3702,7 +3702,7 @@ private final class IOSAVPlayerMediaControlsController {
             timeLabel.textColor = UIColor.white.withAlphaComponent(0.82)
             timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
             timeLabel.textAlignment = .center
-            timeLabel.text = "00:00"
+            timeLabel.text = eclipseLocalized("00:00")
         }
         timelineSlider.minimumValue = 0
         timelineSlider.maximumValue = 1
@@ -3714,7 +3714,7 @@ private final class IOSAVPlayerMediaControlsController {
             ),
             for: .normal
         )
-        timelineSlider.accessibilityLabel = "Playback position"
+        timelineSlider.accessibilityLabel = eclipseLocalized("Playback position")
         timelineSlider.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             self.onPlaybackIntentChange?()
@@ -3914,8 +3914,8 @@ private final class IOSAVPlayerMediaControlsController {
         airPlayRoutePickerView.tintColor = .white
         airPlayRoutePickerView.activeTintColor = .white
         airPlayRoutePickerView.prioritizesVideoDevices = true
-        airPlayRoutePickerView.accessibilityLabel = "AirPlay"
-        airPlayRoutePickerView.accessibilityHint = "Choose an AirPlay device"
+        airPlayRoutePickerView.accessibilityLabel = eclipseLocalized("AirPlay")
+        airPlayRoutePickerView.accessibilityHint = eclipseLocalized("Choose an AirPlay device")
         airPlayRoutePickerView.accessibilityIdentifier = "AVPlayer.AirPlay"
         airPlayRoutePickerContainer.addSubview(airPlayRoutePickerView)
         NSLayoutConstraint.activate([
@@ -4068,7 +4068,7 @@ private final class IOSAVPlayerMediaControlsController {
                 }
             }
             children.append(UIMenu(
-                title: "In Stream",
+                title: eclipseLocalized("In Stream"),
                 image: UIImage(systemName: "play.rectangle"),
                 options: .displayInline,
                 children: embedded
@@ -4099,7 +4099,7 @@ private final class IOSAVPlayerMediaControlsController {
             children.append(UIAction(title: title, attributes: .disabled) { _ in })
         }
         subtitleButton.menu = UIMenu(
-            title: "Subtitles",
+            title: eclipseLocalized("Subtitles"),
             image: UIImage(systemName: "captions.bubble"),
             children: children
         )
@@ -4109,7 +4109,7 @@ private final class IOSAVPlayerMediaControlsController {
         guard let group = audioGroup, !group.options.isEmpty else {
             let title = isLoadingMediaOptions ? "Loading audio tracks…" : "No alternate audio tracks available"
             audioButton.menu = UIMenu(
-                title: "Audio",
+                title: eclipseLocalized("Audio"),
                 image: UIImage(systemName: "speaker.wave.2"),
                 children: [UIAction(title: title, attributes: .disabled) { _ in }]
             )
@@ -4129,7 +4129,7 @@ private final class IOSAVPlayerMediaControlsController {
             }
         }
         audioButton.menu = UIMenu(
-            title: "Audio",
+            title: eclipseLocalized("Audio"),
             image: UIImage(systemName: "speaker.wave.2"),
             children: tracks
         )

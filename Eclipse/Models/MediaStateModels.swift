@@ -1411,11 +1411,11 @@ enum MediaStateSyncPhase: Equatable, Sendable {
 
     var title: String {
         switch self {
-        case .idle: return "Not Started"
-        case .checkingAccount: return "Checking iCloud"
-        case .fetching: return "Restoring Media State"
-        case .ready: return "Synced with iCloud"
-        case .localOnly: return "Using Local State"
+        case .idle: return eclipseLocalized("Not Started")
+        case .checkingAccount: return eclipseLocalized("Checking iCloud")
+        case .fetching: return eclipseLocalized("Restoring Media State")
+        case .ready: return eclipseLocalized("Synced with iCloud")
+        case .localOnly: return eclipseLocalized("Using Local State")
         }
     }
 

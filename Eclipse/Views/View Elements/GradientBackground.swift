@@ -21,9 +21,9 @@ enum ExperimentalMediaDesignPreset: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .cinematic: return "Cinematic"
-        case .balanced: return "Balanced"
-        case .compact: return "Compact"
+        case .cinematic: return eclipseLocalized("Cinematic")
+        case .balanced: return eclipseLocalized("Balanced")
+        case .compact: return eclipseLocalized("Compact")
         }
     }
 
@@ -46,9 +46,9 @@ enum ExperimentalHeroBleedLevel: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .soft: return "Soft"
-        case .standard: return "Standard"
-        case .strong: return "Strong"
+        case .soft: return eclipseLocalized("Soft")
+        case .standard: return eclipseLocalized("Standard")
+        case .strong: return eclipseLocalized("Strong")
         }
     }
 
@@ -79,9 +79,9 @@ enum ExperimentalHomeCardShape: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .automatic: return "Automatic"
-        case .landscape: return "Landscape"
-        case .poster: return "Poster"
+        case .automatic: return eclipseLocalized("Automatic")
+        case .landscape: return eclipseLocalized("Landscape")
+        case .poster: return eclipseLocalized("Poster")
         }
     }
 
@@ -105,10 +105,10 @@ enum ExperimentalMultiGradientPalette: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .eclipse: return "Eclipse"
-        case .nocturne: return "Nocturne"
-        case .velvet: return "Velvet"
-        case .auroraMuted: return "Muted Aurora"
+        case .eclipse: return eclipseLocalized("Eclipse")
+        case .nocturne: return eclipseLocalized("Nocturne")
+        case .velvet: return eclipseLocalized("Velvet")
+        case .auroraMuted: return eclipseLocalized("Muted Aurora")
         }
     }
 
@@ -535,9 +535,9 @@ enum HomeAnimatedBackgroundQuality: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .low: return "Low"
-        case .medium: return "Medium"
-        case .high: return "High"
+        case .low: return eclipseLocalized("Low")
+        case .medium: return eclipseLocalized("Medium")
+        case .high: return eclipseLocalized("High")
         }
     }
 
@@ -2052,11 +2052,11 @@ enum AtmospherePaletteID: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .midnightPurple: return "Midnight Purple"
-        case .nocturne: return "Nocturne"
-        case .velvet: return "Velvet"
-        case .mutedAurora: return "Muted Aurora"
-        case .custom: return "Custom"
+        case .midnightPurple: return eclipseLocalized("Midnight Purple")
+        case .nocturne: return eclipseLocalized("Nocturne")
+        case .velvet: return eclipseLocalized("Velvet")
+        case .mutedAurora: return eclipseLocalized("Muted Aurora")
+        case .custom: return eclipseLocalized("Custom")
         }
     }
 

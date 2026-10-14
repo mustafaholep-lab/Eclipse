@@ -524,7 +524,7 @@ private final class PlaybackPreparationFailureViewController: UIViewController {
         label.numberOfLines = 0
         label.textAlignment = .center
         let close = UIButton(type: .system)
-        close.setTitle("Close", for: .normal)
+        close.setTitle(eclipseLocalized("Close"), for: .normal)
         close.addTarget(self, action: #selector(closePlayback), for: .primaryActionTriggered)
         let stack = UIStackView(arrangedSubviews: [label, close])
         stack.axis = .vertical
@@ -1104,7 +1104,7 @@ final class TVPlaybackViewController: UIViewController {
         nextEpisodeOverlay.addSubview(nextEpisodeCard)
 
         nextEpisodeTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        nextEpisodeTitleLabel.text = "Next Episode"
+        nextEpisodeTitleLabel.text = eclipseLocalized("Next Episode")
         nextEpisodeTitleLabel.textColor = .white
         nextEpisodeTitleLabel.font = .systemFont(ofSize: 46, weight: .bold)
         nextEpisodeTitleLabel.textAlignment = .center
@@ -1123,7 +1123,7 @@ final class TVPlaybackViewController: UIViewController {
         playConfiguration.cornerStyle = .large
         playNextEpisodeButton.configuration = playConfiguration
         playNextEpisodeButton.translatesAutoresizingMaskIntoConstraints = false
-        playNextEpisodeButton.accessibilityHint = "Closes this player, then opens the next episode."
+        playNextEpisodeButton.accessibilityHint = eclipseLocalized("Closes this player, then opens the next episode.")
         playNextEpisodeButton.addAction(UIAction { [weak self] _ in
             self?.applyNextEpisodeEvent(.playNext)
         }, for: .primaryActionTriggered)
@@ -1133,7 +1133,7 @@ final class TVPlaybackViewController: UIViewController {
         keepConfiguration.cornerStyle = .large
         keepWatchingButton.configuration = keepConfiguration
         keepWatchingButton.translatesAutoresizingMaskIntoConstraints = false
-        keepWatchingButton.accessibilityHint = "Returns to the current episode without opening the next one."
+        keepWatchingButton.accessibilityHint = eclipseLocalized("Returns to the current episode without opening the next one.")
         keepWatchingButton.addAction(UIAction { [weak self] _ in
             self?.applyNextEpisodeEvent(.keepWatching)
         }, for: .primaryActionTriggered)
@@ -1190,7 +1190,7 @@ final class TVPlaybackViewController: UIViewController {
         skipSegmentButton.translatesAutoresizingMaskIntoConstraints = false
         skipSegmentButton.isHidden = true
         skipSegmentButton.accessibilityIdentifier = "TVPlayer.SkipSegment"
-        skipSegmentButton.accessibilityHint = "Seeks to the end of this segment."
+        skipSegmentButton.accessibilityHint = eclipseLocalized("Seeks to the end of this segment.")
         skipSegmentButton.addAction(UIAction { [weak self] _ in
             self?.skipActiveSegment()
         }, for: .primaryActionTriggered)
@@ -1211,11 +1211,11 @@ final class TVPlaybackViewController: UIViewController {
     }
 
     private func showMPVFailure(_ message: String) {
-        let alert = UIAlertController(title: "MPV Playback Failed", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Retry with AVPlayer", style: .default) { [weak self] _ in
+        let alert = UIAlertController(title: eclipseLocalized("MPV Playback Failed"), message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry with AVPlayer"), style: .default) { [weak self] _ in
             self?.fallbackToAVPlayer(reason: message)
         })
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.dismissPlayback()
         })
         present(alert, animated: true)
@@ -1247,8 +1247,8 @@ final class TVPlaybackViewController: UIViewController {
             return
         }
         guard presentedViewController == nil else { return }
-        let alert = UIAlertController(title: "Playback Failed", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        let alert = UIAlertController(title: eclipseLocalized("Playback Failed"), message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.dismissPlayback()
         })
         present(alert, animated: true)
@@ -2162,7 +2162,7 @@ private final class TVAVPlayerExternalSubtitleController {
     private func rebuildMenu() {
         guard let playerViewController, !candidates.isEmpty else { return }
         let off = UIAction(
-            title: "Off",
+            title: eclipseLocalized("Off"),
             image: UIImage(systemName: "captions.bubble")
         ) { [weak self] _ in
             self?.disableExternalSubtitles()
@@ -2177,7 +2177,7 @@ private final class TVAVPlayerExternalSubtitleController {
             return action
         }
         let menu = UIMenu(
-            title: "External Subtitles",
+            title: eclipseLocalized("External Subtitles"),
             image: UIImage(systemName: "captions.bubble.fill"),
             children: [off] + actions
         )

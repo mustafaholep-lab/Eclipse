@@ -14,9 +14,9 @@ enum PlaybackEngine: String, CaseIterable, Codable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .automatic: return "Automatic"
-        case .mpv: return "MPV"
-        case .avPlayer: return "AVPlayer"
+        case .automatic: return eclipseLocalized("Automatic")
+        case .mpv: return eclipseLocalized("MPV")
+        case .avPlayer: return eclipseLocalized("AVPlayer")
         }
     }
 

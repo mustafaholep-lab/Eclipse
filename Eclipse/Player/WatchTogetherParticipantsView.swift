@@ -50,25 +50,32 @@ struct WatchTogetherParticipantsView: View {
                 .accessibilityLabel(Text("Participants"))
                 .accessibilityIdentifier("player.watchTogether.participants")
                 .sheet(isPresented: $showingList) {
-                    NavigationStack {
-                        List(coordinator.visibleParticipants) { person in
-                            HStack(spacing: 12) {
-                                avatar(person)
-                                Text(person.name)
-                                Spacer()
-                                if person.isLocal { Text("You").foregroundStyle(.secondary) }
-                                if person.isReconnecting { Text("Reconnecting…").foregroundStyle(.secondary) }
-                            }
-                        }
-                        .navigationTitle("Participants")
-                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingList = false } } }
+                    if #available(iOS 16.0, *) {
+                        NavigationStack { participantList }
+                            .environment(\.locale, localization.locale)
+                            .presentationDetents([.medium, .large])
+                    } else {
+                        NavigationView { participantList }
+                            .environment(\.locale, localization.locale)
                     }
-                    .environment(\.locale, localization.locale)
-                    .presentationDetents([.medium, .large])
                 }
             }
         }
         .environment(\.locale, localization.locale)
+    }
+
+    private var participantList: some View {
+        List(coordinator.visibleParticipants) { person in
+            HStack(spacing: 12) {
+                avatar(person)
+                Text(person.name)
+                Spacer()
+                if person.isLocal { Text("You").foregroundStyle(.secondary) }
+                if person.isReconnecting { Text("Reconnecting…").foregroundStyle(.secondary) }
+            }
+        }
+        .navigationTitle("Participants")
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingList = false } } }
     }
 }
 #endif

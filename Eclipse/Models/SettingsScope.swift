@@ -23,6 +23,8 @@ enum EclipseSettingsRegistry {
 
     static let deviceKeys: Set<String> = [
         "imageDataSaverEnabled",
+        "appLanguage",
+        "displayRefreshRate",
         "maximumConcurrentVideoDownloads",
         "maximumConcurrentHLSDownloads",
         "autoClearCacheEnabled",

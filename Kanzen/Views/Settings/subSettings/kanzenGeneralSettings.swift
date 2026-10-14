@@ -111,14 +111,14 @@ struct KanzenGeneralSettingsView: View {
 
                 Picker("Atmosphere", selection: atmosphereStyleBinding) {
                     ForEach(AtmosphereStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
+                        Text(LocalizedStringKey(style.displayName)).tag(style)
                     }
                 }
 
                 if atmosphereStyleBinding.wrappedValue == .solid {
                     Picker("Solid Color Source", selection: atmosphereSolidSourceBinding) {
                         ForEach(AtmosphereSolidColorSource.allCases) { source in
-                            Text(source.displayName).tag(source)
+                            Text(LocalizedStringKey(source.displayName)).tag(source)
                         }
                     }
 
@@ -382,7 +382,7 @@ struct KanzenGeneralSettingsView: View {
     private func readerDetailElementRow(_ element: ReaderDetailElement) -> some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(element.displayName)
+                Text(LocalizedStringKey(element.displayName))
                     .font(.subheadline)
                     .fontWeight(.medium)
 

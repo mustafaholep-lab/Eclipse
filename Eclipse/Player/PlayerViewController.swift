@@ -188,7 +188,7 @@ private final class NextEpisodePreviewButton: UIButton {
         upNextLabel.isHidden = false
         episodeTitleLabel.isHidden = false
         posterImageView.image = image
-        upNextLabel.text = "Up Next"
+        upNextLabel.text = eclipseLocalized("Up Next")
         episodeTitleLabel.text = episodeText
         contentHorizontalAlignment = .leading
         invalidateIntrinsicContentSize()
@@ -336,7 +336,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private let centerPlayPauseButton: UIButton = {
         let b = UIButton(type: .system)
-        b.accessibilityLabel = "Play"
+        b.accessibilityLabel = eclipseLocalized("Play")
         b.accessibilityIdentifier = "player.playPause"
         b.translatesAutoresizingMaskIntoConstraints = false
         let configuration = UIImage.SymbolConfiguration(pointSize: 32, weight: .semibold)
@@ -474,7 +474,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         let btn = UIButton(type: .system)
         btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.setTitle("View Logs", for: .normal)
+        btn.setTitle(eclipseLocalized("View Logs"), for: .normal)
         btn.setTitleColor(.white, for: .normal)
         btn.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
         btn.backgroundColor = UIColor(white: 1.0, alpha: 0.12)
@@ -536,7 +536,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private let closeButton: UIButton = {
         let b = UIButton(type: .system)
-        b.accessibilityLabel = "Close player"
+        b.accessibilityLabel = eclipseLocalized("Close player")
         b.accessibilityIdentifier = "player.close"
         b.translatesAutoresizingMaskIntoConstraints = false
         let cfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
@@ -567,8 +567,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         button.tintColor = .white
         button.alpha = 0.0
         button.isHidden = true
-        button.accessibilityLabel = "Lock player"
-        button.accessibilityHint = "Locks the current orientation and prevents closing the video"
+        button.accessibilityLabel = eclipseLocalized("Lock player")
+        button.accessibilityHint = eclipseLocalized("Locks the current orientation and prevents closing the video")
         return button
     }()
 
@@ -580,8 +580,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         button.tintColor = .white
         button.alpha = 0.0
         button.isHidden = true
-        button.accessibilityLabel = "Watch Together"
-        button.accessibilityHint = "Starts or manages secure synchronized playback with SharePlay"
+        button.accessibilityLabel = eclipseLocalized("Watch Together")
+        button.accessibilityHint = eclipseLocalized("Starts or manages secure synchronized playback with SharePlay")
         return button
     }()
 #endif
@@ -636,7 +636,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private let subtitleButton: PlayerSubtitleMenuButton = {
         let b = PlayerSubtitleMenuButton(type: .system)
-        b.accessibilityLabel = "Subtitles"
+        b.accessibilityLabel = eclipseLocalized("Subtitles")
         b.accessibilityIdentifier = "player.subtitles"
         b.translatesAutoresizingMaskIntoConstraints = false
         let cfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
@@ -670,8 +670,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         button.tintColor = .white
         button.alpha = 0.0
         button.isHidden = true
-        button.accessibilityLabel = "Choose another source"
-        button.accessibilityHint = "Opens Services for the current media"
+        button.accessibilityLabel = eclipseLocalized("Choose another source")
+        button.accessibilityHint = eclipseLocalized("Opens Services for the current media")
         button.accessibilityIdentifier = "Player.Services"
         return button
     }()
@@ -1038,7 +1038,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if isBadThermalState {
             if !hasShownThermalQualityNotice {
                 hasShownThermalQualityNotice = true
-                showPlayerNotice("Eclipse detected bad thermal state, protecting device")
+                showPlayerNotice(eclipseLocalized("Eclipse detected bad thermal state, protecting device"))
             }
         } else {
             hasShownThermalQualityNotice = false
@@ -4941,14 +4941,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func showManualPlaybackFailureAlert(_ report: PlaybackFailureReport) {
         let alert = UIAlertController(
-            title: "Playback Failed",
+            title: eclipseLocalized("Playback Failed"),
             message: "\(report.context.sourceName) could not start playback. \(report.message)",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeTapped()
         })
         presentPlaybackFailureAlert(alert)
@@ -4956,19 +4956,19 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func showCoordinatorFallbackFailureAlert(_ report: PlaybackFailureReport) {
         let alert = UIAlertController(
-            title: "Playback Failed in Both Players",
+            title: eclipseLocalized("Playback Failed in Both Players"),
             message: "Molten could not start this stream after AVPlayer failed. \(report.message)",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Retry Molten", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry Molten"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
         if onPlaybackStartupFailure != nil {
-            alert.addAction(UIAlertAction(title: "Try Another Source", style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: eclipseLocalized("Try Another Source"), style: .default) { [weak self] _ in
                 self?.dismissAfterPlaybackFailure(report)
             })
         }
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeTapped()
         })
         presentPlaybackFailureAlert(alert)
@@ -5524,7 +5524,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         videoContainer.addSubview(watchTogetherButton)
         let participants = UIHostingController(rootView: WatchTogetherParticipantsView())
         participants.view.backgroundColor = .clear
-        participants.sizingOptions = .intrinsicContentSize
+        if #available(iOS 16.0, *) { participants.sizingOptions = .intrinsicContentSize }
         addChild(participants)
         videoContainer.addSubview(participants.view)
         participants.view.translatesAutoresizingMaskIntoConstraints = false
@@ -6782,7 +6782,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         var trackActions: [UIAction] = []
 
         let disableAction = UIAction(
-            title: "Disable Subtitles",
+            title: eclipseLocalized("Disable Subtitles"),
             image: UIImage(systemName: "xmark"),
             state: subtitleModel.isVisible ? .off : .on
         ) { [weak self] _ in
@@ -6820,11 +6820,11 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             trackActions.append(action)
         }
 
-        let trackMenu = UIMenu(title: "Select Track", image: UIImage(systemName: "list.bullet"), children: trackActions)
+        let trackMenu = UIMenu(title: eclipseLocalized("Select Track"), image: UIImage(systemName: "list.bullet"), children: trackActions)
 
         let appearanceMenu = createAppearanceMenu()
 
-        let mainMenu = UIMenu(title: "Subtitles", children: [trackMenu, appearanceMenu])
+        let mainMenu = UIMenu(title: eclipseLocalized("Subtitles"), children: [trackMenu, appearanceMenu])
         nativeSubtitleMenuContentSignature = nil
         subtitleButton.menu = mainMenu
     }
@@ -6849,7 +6849,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let foregroundColorMenu = UIMenu(title: "Text Color", image: UIImage(systemName: "paintpalette"), children: foregroundColorActions)
+        let foregroundColorMenu = UIMenu(title: eclipseLocalized("Text Color"), image: UIImage(systemName: "paintpalette"), children: foregroundColorActions)
 
         let strokeColors: [(String, UIColor)] = [
             ("Black", .black),
@@ -6869,7 +6869,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let strokeColorMenu = UIMenu(title: "Stroke Color", image: UIImage(systemName: "pencil.tip"), children: strokeColorActions)
+        let strokeColorMenu = UIMenu(title: eclipseLocalized("Stroke Color"), image: UIImage(systemName: "pencil.tip"), children: strokeColorActions)
 
         let strokeWidths: [(String, CGFloat)] = [
             ("None", 0.0),
@@ -6890,7 +6890,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let strokeWidthMenu = UIMenu(title: "Stroke Width", image: UIImage(systemName: "lineweight"), children: strokeWidthActions)
+        let strokeWidthMenu = UIMenu(title: eclipseLocalized("Stroke Width"), image: UIImage(systemName: "lineweight"), children: strokeWidthActions)
 
         let fontSizes: [(String, CGFloat)] = [
             ("Very Small", 20.0),
@@ -6913,7 +6913,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let fontSizeMenu = UIMenu(title: "Font Size", image: UIImage(systemName: "textformat.size"), children: fontSizeActions)
+        let fontSizeMenu = UIMenu(title: eclipseLocalized("Font Size"), image: UIImage(systemName: "textformat.size"), children: fontSizeActions)
 
         let verticalOffsets: [(String, CGFloat)] = [
             ("Highest", -24.0),
@@ -6934,10 +6934,10 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let verticalOffsetMenu = UIMenu(title: "Vertical Position", image: UIImage(systemName: "arrow.up.and.down"), children: verticalOffsetActions)
+        let verticalOffsetMenu = UIMenu(title: eclipseLocalized("Vertical Position"), image: UIImage(systemName: "arrow.up.and.down"), children: verticalOffsetActions)
 
         let closedCaptionBackgroundAction = UIAction(
-            title: "Caption Background",
+            title: eclipseLocalized("Caption Background"),
             image: UIImage(systemName: "rectangle.fill"),
             state: subtitleModel.closedCaptionBackground ? .on : .off
         ) { [weak self] _ in
@@ -6947,7 +6947,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
         let closedCaptionBackgroundMenu = UIMenu(title: "", options: .displayInline, children: [closedCaptionBackgroundAction])
 
-        return UIMenu(title: "Appearance", image: UIImage(systemName: "paintbrush"), children: [
+        return UIMenu(title: eclipseLocalized("Appearance"), image: UIImage(systemName: "paintbrush"), children: [
             foregroundColorMenu,
             strokeColorMenu,
             strokeWidthMenu,
@@ -7233,7 +7233,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         if case .active = watchTogetherConnectionState {
             guard pendingWatchTogetherNextEpisodeTarget == nil else { return }
             if item.isAnime, item.playbackContext?.hasAnimeMediaId != true {
-                showPlayerNotice("Watch Together needs this episode's exact anime identity. Open it from the show page so everyone can move together.")
+                showPlayerNotice(eclipseLocalized("Watch Together needs this episode's exact anime identity. Open it from the show page so everyone can move together."))
                 return
             }
             let transitionID = UUID()
@@ -7292,7 +7292,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             return nil
         }
         let subtitleArray = DownloadManager.shared.localSubtitleURL(for: downloadItem).map { [$0.absoluteString] }
-        let preset = PlayerPreset.presets.first ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: [])
+        let preset = PlayerPreset.presets.first ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: [])
         return PlayerResolvedPlaybackRequest(
             url: fileURL,
             preset: preset,
@@ -7931,7 +7931,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 self.showControlsTemporarily()
             }
         }
-        showOverlayMenu(title: "Playback Speed", kind: "speed", sections: [PlayerOverlayMenuSection(title: nil, actions: actions)])
+        showOverlayMenu(title: eclipseLocalized("Playback Speed"), kind: "speed", sections: [PlayerOverlayMenuSection(title: nil, actions: actions)])
     }
 
     @objc private func audioButtonTapped() {
@@ -7944,7 +7944,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let currentAudioTrackId = menuCurrentAudioTrackId()
         let actions: [PlayerOverlayMenuAction]
         if detailedTracks.isEmpty {
-            actions = [makeOverlayAction(title: "No audio tracks available", isEnabled: false) {}]
+            actions = [makeOverlayAction(title: eclipseLocalized("No audio tracks available"), isEnabled: false) {}]
         } else {
             actions = detailedTracks.map { id, name, language in
                 makeOverlayAction(title: name, imageName: "speaker.wave.2", isSelected: id == currentAudioTrackId) { [weak self] in
@@ -7958,7 +7958,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 }
             }
         }
-        showOverlayMenu(title: "Audio Tracks", kind: "audio", sections: [PlayerOverlayMenuSection(title: nil, actions: actions)])
+        showOverlayMenu(title: eclipseLocalized("Audio Tracks"), kind: "audio", sections: [PlayerOverlayMenuSection(title: nil, actions: actions)])
     }
 
     private func updateSpeedMenu() {
@@ -8012,7 +8012,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let speedMenu = UIMenu(title: "Playback Speed", image: UIImage(systemName: "hare.fill"), children: speedActions)
+        let speedMenu = UIMenu(title: eclipseLocalized("Playback Speed"), image: UIImage(systemName: "hare.fill"), children: speedActions)
         speedButton.menu = speedMenu
         nativeSpeedMenuContentSignature = menuSignature
     }
@@ -8147,8 +8147,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         if tracks.isEmpty {
-            let noTracksAction = UIAction(title: "No audio tracks available", state: .off) { _ in }
-            let audioMenu = UIMenu(title: "Audio Tracks", image: UIImage(systemName: "speaker.wave.2"), children: [noTracksAction])
+            let noTracksAction = UIAction(title: eclipseLocalized("No audio tracks available"), state: .off) { _ in }
+            let audioMenu = UIMenu(title: eclipseLocalized("Audio Tracks"), image: UIImage(systemName: "speaker.wave.2"), children: [noTracksAction])
             audioButton.menu = audioMenu
             nativeAudioMenuContentSignature = menuSignature
             return
@@ -8173,7 +8173,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let audioMenu = UIMenu(title: "Audio Tracks", image: UIImage(systemName: "speaker.wave.2"), children: trackActions)
+        let audioMenu = UIMenu(title: eclipseLocalized("Audio Tracks"), image: UIImage(systemName: "speaker.wave.2"), children: trackActions)
         audioButton.menu = audioMenu
         nativeAudioMenuContentSignature = menuSignature
     }
@@ -9015,7 +9015,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 break
             case .activating, .active:
                 nextEpisodeButton.isEnabled = true
-                showPlayerNotice("Watch Together changed before the next episode was ready. Sync the session and try again.")
+                showPlayerNotice(eclipseLocalized("Watch Together changed before the next episode was ready. Sync the session and try again."))
                 return (false, false)
             }
         }
@@ -9289,7 +9289,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 seasonNumber: seasonNumber,
                 episodeNumber: episodeNumber
             )
-            showPlayerNotice("The next episode is still resolving. Try again in a moment so everyone moves together.")
+            showPlayerNotice(eclipseLocalized("The next episode is still resolving. Try again in a moment so everyone moves together."))
             return
         }
 #endif
@@ -9387,7 +9387,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                        playbackContext: nextPlaybackContext
                    ) == nil {
                     nextEpisodeButton.isEnabled = true
-                    showPlayerNotice("The next episode isn't downloaded yet.")
+                    showPlayerNotice(eclipseLocalized("The next episode isn't downloaded yet."))
                     return
                 }
 #endif
@@ -9640,7 +9640,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let key = nextEpisodeKey(seasonNumber: currentSeason, episodeNumber: currentEpisode)
         guard experimentalStagedNextEpisodeKey == key else { return }
         nextEpisodeStagingRetryAfterByKey[key] = nil
-        let preset = initialPreset ?? PlayerPreset.presets.first ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: [])
+        let preset = initialPreset ?? PlayerPreset.presets.first ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: [])
         let nextShowTitle = nextEpisodePreview?.seasonTitleOverride
             ?? nextEpisodePreview?.mediaTitle
             ?? showTitle
@@ -11851,7 +11851,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         var sections: [PlayerOverlayMenuSection] = []
         var trackActions: [PlayerOverlayMenuAction] = [
-            makeOverlayAction(title: "Disable Subtitles", imageName: "xmark", isSelected: !subtitleModel.isVisible) { [weak self] in
+            makeOverlayAction(title: eclipseLocalized("Disable Subtitles"), imageName: "xmark", isSelected: !subtitleModel.isVisible) { [weak self] in
                 guard let self else { return }
                 self.setSessionAwareSubtitleVisible(false)
                 self.userSelectedSubtitleTrack = true
@@ -11868,7 +11868,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         ]
 
         if externalTracks.isEmpty && embeddedTracks.isEmpty {
-            trackActions.append(makeOverlayAction(title: "No subtitles in stream", isEnabled: false) {})
+            trackActions.append(makeOverlayAction(title: eclipseLocalized("No subtitles in stream"), isEnabled: false) {})
         } else {
             trackActions.append(contentsOf: externalTracks.map { id, name in
                 let selected: Bool = {
@@ -11921,7 +11921,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
                 }
             })
         }
-        sections.append(PlayerOverlayMenuSection(title: "Select Track", actions: trackActions))
+        sections.append(PlayerOverlayMenuSection(title: eclipseLocalized("Select Track"), actions: trackActions))
         sections.append(PlayerOverlayMenuSection(title: nil, actions: [
             makeOverlayAction(title: "Subtitle Delay · \(PlayerSubtitleTiming.label(Settings.shared.playerSubtitleDelaySeconds))", imageName: "clock") { [weak self] in
                 self?.showSubtitleDelayControls()
@@ -11929,36 +11929,36 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         ]))
 
         if hasStremioSubtitleAddons {
-            sections.append(PlayerOverlayMenuSection(title: "Stremio Subtitles", actions: stremioSubtitleOverlayActions()))
+            sections.append(PlayerOverlayMenuSection(title: eclipseLocalized("Stremio Subtitles"), actions: stremioSubtitleOverlayActions()))
         }
 
         if isVLCOpenSubtitlesEnabled {
-            sections.append(PlayerOverlayMenuSection(title: "OpenSubtitles", actions: openSubtitlesOverlayActions()))
+            sections.append(PlayerOverlayMenuSection(title: eclipseLocalized("OpenSubtitles"), actions: openSubtitlesOverlayActions()))
         }
 
         if !isVLCPlayer && Settings.shared.playerSubtitleAppearanceEnabled {
             sections.append(contentsOf: subtitleAppearanceOverlaySections())
         }
 
-        showOverlayMenu(title: "Subtitles", kind: "subtitles", sections: sections)
+        showOverlayMenu(title: eclipseLocalized("Subtitles"), kind: "subtitles", sections: sections)
     }
 
     private func stremioSubtitleOverlayActions() -> [PlayerOverlayMenuAction] {
         if stremioSubtitleFetchInProgress {
-            return [makeOverlayAction(title: "Searching subtitle addons...", imageName: "hourglass", isEnabled: false) {}]
+            return [makeOverlayAction(title: eclipseLocalized("Searching subtitle addons..."), imageName: "hourglass", isEnabled: false) {}]
         }
         if stremioSubtitleResults.isEmpty {
             if stremioSubtitleSearchAttempted {
                 return [
-                    makeOverlayAction(title: "No subtitle addon results", imageName: "captions.bubble", isEnabled: false) {},
-                    makeOverlayAction(title: "Refresh subtitle addons", imageName: "arrow.clockwise") { [weak self] in
+                    makeOverlayAction(title: eclipseLocalized("No subtitle addon results"), imageName: "captions.bubble", isEnabled: false) {},
+                    makeOverlayAction(title: eclipseLocalized("Refresh subtitle addons"), imageName: "arrow.clockwise") { [weak self] in
                         self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                         self?.hideOverlayMenu()
                     }
                 ]
             }
             return [
-                makeOverlayAction(title: "Search subtitle addons", imageName: "magnifyingglass") { [weak self] in
+                makeOverlayAction(title: eclipseLocalized("Search subtitle addons"), imageName: "magnifyingglass") { [weak self] in
                     self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-menu")
                     self?.hideOverlayMenu()
                 }
@@ -11966,7 +11966,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         var actions: [PlayerOverlayMenuAction] = [
-            makeOverlayAction(title: "Refresh subtitle addons", imageName: "arrow.clockwise") { [weak self] in
+            makeOverlayAction(title: eclipseLocalized("Refresh subtitle addons"), imageName: "arrow.clockwise") { [weak self] in
                 self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh", forceRefresh: true)
                 self?.hideOverlayMenu()
             }
@@ -11983,20 +11983,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func openSubtitlesOverlayActions() -> [PlayerOverlayMenuAction] {
         if openSubtitlesFetchInProgress {
-            return [makeOverlayAction(title: "Searching OpenSubtitles...", imageName: "hourglass", isEnabled: false) {}]
+            return [makeOverlayAction(title: eclipseLocalized("Searching OpenSubtitles..."), imageName: "hourglass", isEnabled: false) {}]
         }
         if openSubtitlesResults.isEmpty {
             if openSubtitlesSearchAttempted {
                 return [
-                    makeOverlayAction(title: "No OpenSubtitles results", imageName: "captions.bubble", isEnabled: false) {},
-                    makeOverlayAction(title: "Refresh OpenSubtitles", imageName: "arrow.clockwise") { [weak self] in
+                    makeOverlayAction(title: eclipseLocalized("No OpenSubtitles results"), imageName: "captions.bubble", isEnabled: false) {},
+                    makeOverlayAction(title: eclipseLocalized("Refresh OpenSubtitles"), imageName: "arrow.clockwise") { [weak self] in
                         self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                         self?.hideOverlayMenu()
                     }
                 ]
             }
             return [
-                makeOverlayAction(title: "Search OpenSubtitles", imageName: "magnifyingglass") { [weak self] in
+                makeOverlayAction(title: eclipseLocalized("Search OpenSubtitles"), imageName: "magnifyingglass") { [weak self] in
                     self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-menu")
                     self?.hideOverlayMenu()
                 }
@@ -12004,7 +12004,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         }
 
         var actions: [PlayerOverlayMenuAction] = [
-            makeOverlayAction(title: "Refresh OpenSubtitles", imageName: "arrow.clockwise") { [weak self] in
+            makeOverlayAction(title: eclipseLocalized("Refresh OpenSubtitles"), imageName: "arrow.clockwise") { [weak self] in
                 self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh", forceRefresh: true)
                 self?.hideOverlayMenu()
             }
@@ -12043,13 +12043,13 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         guard isMPVRenderer, !isClosing, playbackProfileIsStillActive("subtitle timing controls") else { return }
         autoplayEndGeneration = nil
         showControlsTemporarily()
-        showOverlayMenu(title: "Subtitle Delay", kind: "subtitleTiming", sections: [])
+        showOverlayMenu(title: eclipseLocalized("Subtitle Delay"), kind: "subtitleTiming", sections: [])
 
         let value = UILabel()
         value.font = .monospacedDigitSystemFont(ofSize: 20, weight: .semibold)
         value.textColor = .white
         value.textAlignment = .center
-        value.accessibilityLabel = "Subtitle delay"
+        value.accessibilityLabel = eclipseLocalized("Subtitle delay")
         value.accessibilityIdentifier = "player.subtitleDelay.value"
         let minus = UIButton(type: .system)
         let plus = UIButton(type: .system)
@@ -12143,35 +12143,35 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         ]
 
         return [
-            PlayerOverlayMenuSection(title: "Text Color", actions: foregroundColors.map { name, color in
+            PlayerOverlayMenuSection(title: eclipseLocalized("Text Color"), actions: foregroundColors.map { name, color in
                 makeOverlayAction(title: name, imageName: "paintpalette", isSelected: subtitleModel.foregroundColor == color) { [weak self] in
                     self?.subtitleModel.foregroundColor = color
                     self?.updateCurrentSubtitleAppearance()
                     self?.showMPVSubtitleMenu()
                 }
             }),
-            PlayerOverlayMenuSection(title: "Stroke Color", actions: strokeColors.map { name, color in
+            PlayerOverlayMenuSection(title: eclipseLocalized("Stroke Color"), actions: strokeColors.map { name, color in
                 makeOverlayAction(title: name, imageName: "pencil.tip", isSelected: subtitleModel.strokeColor == color) { [weak self] in
                     self?.subtitleModel.strokeColor = color
                     self?.updateCurrentSubtitleAppearance()
                     self?.showMPVSubtitleMenu()
                 }
             }),
-            PlayerOverlayMenuSection(title: "Stroke Width", actions: strokeWidths.map { name, width in
+            PlayerOverlayMenuSection(title: eclipseLocalized("Stroke Width"), actions: strokeWidths.map { name, width in
                 makeOverlayAction(title: name, imageName: "lineweight", isSelected: subtitleModel.strokeWidth == width) { [weak self] in
                     self?.subtitleModel.strokeWidth = width
                     self?.updateCurrentSubtitleAppearance()
                     self?.showMPVSubtitleMenu()
                 }
             }),
-            PlayerOverlayMenuSection(title: "Font Size", actions: fontSizes.map { name, size in
+            PlayerOverlayMenuSection(title: eclipseLocalized("Font Size"), actions: fontSizes.map { name, size in
                 makeOverlayAction(title: name, imageName: "textformat.size", isSelected: subtitleModel.fontSize == size) { [weak self] in
                     self?.subtitleModel.fontSize = size
                     self?.updateCurrentSubtitleAppearance()
                     self?.showMPVSubtitleMenu()
                 }
             }),
-            PlayerOverlayMenuSection(title: "Vertical Position", actions: verticalOffsets.map { name, offset in
+            PlayerOverlayMenuSection(title: eclipseLocalized("Vertical Position"), actions: verticalOffsets.map { name, offset in
                 makeOverlayAction(title: name, imageName: "arrow.up.and.down", isSelected: abs(subtitleModel.verticalOffset - offset) < 0.01) { [weak self] in
                     self?.subtitleModel.verticalOffset = offset
                     self?.updateCurrentSubtitleAppearance()
@@ -12311,7 +12311,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         var trackActions: [UIAction] = []
 
         let disableAction = UIAction(
-            title: "Disable Subtitles",
+            title: eclipseLocalized("Disable Subtitles"),
             image: UIImage(systemName: "xmark"),
             state: subtitleModel.isVisible ? .off : .on
         ) { [weak self] _ in
@@ -12331,7 +12331,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
         if externalTracks.isEmpty && embeddedTracks.isEmpty {
 
-            let noTracksAction = UIAction(title: "No subtitles in stream", state: .off) { _ in }
+            let noTracksAction = UIAction(title: eclipseLocalized("No subtitles in stream"), state: .off) { _ in }
             trackActions.append(noTracksAction)
         } else {
             let externalSubtitleActions = externalTracks.map { (id, name) in
@@ -12409,7 +12409,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        let trackMenu = UIMenu(title: "Select Track", image: UIImage(systemName: "list.bullet"), children: trackActions)
+        let trackMenu = UIMenu(title: eclipseLocalized("Select Track"), image: UIImage(systemName: "list.bullet"), children: trackActions)
         var menuChildren: [UIMenuElement] = [trackMenu, subtitleDelayMenu()]
         if let stremioMenu = stremioSubtitleMenu() {
             menuChildren.append(stremioMenu)
@@ -12421,7 +12421,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             let appearanceMenu = createAppearanceMenu()
             menuChildren.append(appearanceMenu)
         }
-        let subtitleMenu = UIMenu(title: "Subtitles", image: UIImage(systemName: "captions.bubble"), children: menuChildren)
+        let subtitleMenu = UIMenu(title: eclipseLocalized("Subtitles"), image: UIImage(systemName: "captions.bubble"), children: menuChildren)
         subtitleButton.menu = subtitleMenu
         nativeSubtitleMenuContentSignature = menuSignature
     }
@@ -12577,20 +12577,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         var actions: [UIMenuElement] = []
 
         if stremioSubtitleFetchInProgress {
-            actions.append(UIAction(title: "Searching subtitle addons...", image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
+            actions.append(UIAction(title: eclipseLocalized("Searching subtitle addons..."), image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
         } else if stremioSubtitleResults.isEmpty {
             if stremioSubtitleSearchAttempted {
-                actions.append(UIAction(title: "No subtitle addon results", image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
-                actions.append(UIAction(title: "Refresh subtitle addons", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+                actions.append(UIAction(title: eclipseLocalized("No subtitle addon results"), image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
+                actions.append(UIAction(title: eclipseLocalized("Refresh subtitle addons"), image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                     self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                 })
             } else {
-                actions.append(UIAction(title: "Search subtitle addons", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+                actions.append(UIAction(title: eclipseLocalized("Search subtitle addons"), image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
                     self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-menu")
                 })
             }
         } else {
-            actions.append(UIAction(title: "Refresh subtitle addons", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+            actions.append(UIAction(title: eclipseLocalized("Refresh subtitle addons"), image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                 self?.fetchStremioSubtitles(autoSelect: false, reason: "manual-refresh", forceRefresh: true)
             })
 
@@ -12606,7 +12606,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(contentsOf: subtitleActions)
         }
 
-        return UIMenu(title: "Stremio Subtitles", image: UIImage(systemName: "puzzlepiece.extension"), children: actions)
+        return UIMenu(title: eclipseLocalized("Stremio Subtitles"), image: UIImage(systemName: "puzzlepiece.extension"), children: actions)
     }
 
     private func openSubtitlesMenu() -> UIMenu? {
@@ -12615,20 +12615,20 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         var actions: [UIMenuElement] = []
 
         if openSubtitlesFetchInProgress {
-            actions.append(UIAction(title: "Searching OpenSubtitles...", image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
+            actions.append(UIAction(title: eclipseLocalized("Searching OpenSubtitles..."), image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in })
         } else if openSubtitlesResults.isEmpty {
             if openSubtitlesSearchAttempted {
-                actions.append(UIAction(title: "No OpenSubtitles results", image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
-                actions.append(UIAction(title: "Refresh OpenSubtitles", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+                actions.append(UIAction(title: eclipseLocalized("No OpenSubtitles results"), image: UIImage(systemName: "captions.bubble"), attributes: .disabled) { _ in })
+                actions.append(UIAction(title: eclipseLocalized("Refresh OpenSubtitles"), image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                     self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh-empty", forceRefresh: true)
                 })
             } else {
-                actions.append(UIAction(title: "Search OpenSubtitles", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+                actions.append(UIAction(title: eclipseLocalized("Search OpenSubtitles"), image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
                     self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-menu")
                 })
             }
         } else {
-            actions.append(UIAction(title: "Refresh OpenSubtitles", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+            actions.append(UIAction(title: eclipseLocalized("Refresh OpenSubtitles"), image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                 self?.fetchOpenSubtitles(autoSelect: false, reason: "manual-refresh", forceRefresh: true)
             })
 
@@ -12643,7 +12643,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             actions.append(contentsOf: subtitleActions)
         }
 
-        return UIMenu(title: "OpenSubtitles", image: UIImage(systemName: "globe"), children: actions)
+        return UIMenu(title: eclipseLocalized("OpenSubtitles"), image: UIImage(systemName: "globe"), children: actions)
     }
 
     private func openSubtitleDisplayName(_ subtitle: StremioSubtitle) -> String {
@@ -13539,9 +13539,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         let embeddedTracks = rendererGetSubtitleTracks()
         Logger.shared.log("subtitleButtonTapped: embedded flow, tracks=\(embeddedTracks.count)", type: "Info")
 
-        let alert = UIAlertController(title: "Select Subtitle", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: eclipseLocalized("Select Subtitle"), message: nil, preferredStyle: .actionSheet)
 
-        let disable = UIAlertAction(title: "Disable Subtitles", style: .destructive) { [weak self] _ in
+        let disable = UIAlertAction(title: eclipseLocalized("Disable Subtitles"), style: .destructive) { [weak self] _ in
             Logger.shared.log("Embedded subtitles disabled via action sheet", type: "Info")
             guard let self else { return }
             self.userSelectedSubtitleTrack = true
@@ -13556,7 +13556,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         alert.addAction(disable)
 
         if embeddedTracks.isEmpty {
-            alert.addAction(UIAlertAction(title: "No subtitles in stream", style: .cancel, handler: nil))
+            alert.addAction(UIAlertAction(title: eclipseLocalized("No subtitles in stream"), style: .cancel, handler: nil))
         } else {
             for (id, name) in embeddedTracks {
                 alert.addAction(UIAlertAction(title: name, style: .default) { [weak self] _ in
@@ -13574,7 +13574,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
 
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Cancel"), style: .cancel, handler: nil))
 
 #if os(iOS)
         if let pop = alert.popoverPresentationController {
@@ -13588,9 +13588,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func showSubtitleSelectionMenu() {
-        let alert = UIAlertController(title: "Select Subtitle", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: eclipseLocalized("Select Subtitle"), message: nil, preferredStyle: .actionSheet)
 
-        let disableAction = UIAlertAction(title: "Disable Subtitles", style: .default) { [weak self] _ in
+        let disableAction = UIAlertAction(title: eclipseLocalized("Disable Subtitles"), style: .default) { [weak self] _ in
             guard let self else { return }
             self.setSessionAwareSubtitleVisible(false)
             self.userSelectedSubtitleTrack = true
@@ -13620,7 +13620,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
             alert.addAction(action)
         }
 
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+        let cancelAction = UIAlertAction(title: eclipseLocalized("Cancel"), style: .cancel, handler: nil)
         alert.addAction(cancelAction)
 
 #if os(iOS)
@@ -13751,8 +13751,8 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
     private func presentErrorAlert(title: String, message: String) {
         DispatchQueue.main.async {
             let ac = UIAlertController(title: title, message: message, preferredStyle: .alert)
-            ac.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
-            ac.addAction(UIAlertAction(title: "View Logs", style: .default, handler: { _ in
+            ac.addAction(UIAlertAction(title: eclipseLocalized("OK"), style: .default, handler: nil))
+            ac.addAction(UIAlertAction(title: eclipseLocalized("View Logs"), style: .default, handler: { _ in
                 self.viewLogsTapped()
             }))
             self.showErrorBanner(message)
@@ -13863,12 +13863,12 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 
 #if compiler(>=6.0)
             if #available(iOS 26.0, tvOS 26.0, *) {
-                close = UIBarButtonItem(title: "Close", style: .prominent, target: self, action: #selector(dismissLogs))
+                close = UIBarButtonItem(title: eclipseLocalized("Close"), style: .prominent, target: self, action: #selector(dismissLogs))
             } else {
-                close = UIBarButtonItem(title: "Close", style: .done, target: self, action: #selector(dismissLogs))
+                close = UIBarButtonItem(title: eclipseLocalized("Close"), style: .done, target: self, action: #selector(dismissLogs))
             }
 #else
-            close = UIBarButtonItem(title: "Close", style: .done, target: self, action: #selector(dismissLogs))
+            close = UIBarButtonItem(title: eclipseLocalized("Close"), style: .done, target: self, action: #selector(dismissLogs))
 #endif
             vc.navigationItem.rightBarButtonItem = close
             self.present(nav, animated: true, completion: nil)
@@ -14236,19 +14236,19 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #if os(iOS)
     private func presentWatchTogetherCloseConfirmation() {
         let alert = UIAlertController(
-            title: "Watch Together is Active",
+            title: eclipseLocalized("Watch Together is Active"),
             message: "Closing the player affects the SharePlay session.",
             preferredStyle: .actionSheet
         )
-        alert.addAction(UIAlertAction(title: "Leave Session & Close", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Leave Session & Close"), style: .destructive) { [weak self] _ in
             WatchTogetherCoordinator.shared.leaveSession()
             self?.closePlayer(allowWhilePlaybackLocked: false)
         })
-        alert.addAction(UIAlertAction(title: "End for Everyone & Close", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("End for Everyone & Close"), style: .destructive) { [weak self] _ in
             WatchTogetherCoordinator.shared.endSessionForEveryone()
             self?.closePlayer(allowWhilePlaybackLocked: false)
         })
-        alert.addAction(UIAlertAction(title: "Keep Watching", style: .cancel))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Keep Watching"), style: .cancel))
         if let popover = alert.popoverPresentationController {
             popover.sourceView = closeButton
             popover.sourceRect = closeButton.bounds
@@ -14261,7 +14261,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
 #if os(iOS)
         guard allowWhilePlaybackLocked || !PlayerPlaybackLockSettings.isLocked() else {
             showControlsTemporarily()
-            showPlayerNotice("Unlock the player before closing.")
+            showPlayerNotice(eclipseLocalized("Unlock the player before closing."))
             return
         }
 #endif
@@ -15256,7 +15256,7 @@ private extension PlayerViewController {
         case .ready:
             beginWatchTogetherActivity()
         case .activating:
-            showPlayerNotice("SharePlay is starting...")
+            showPlayerNotice(eclipseLocalized("SharePlay is starting..."))
         case .active(let participantCount, let mediaMatches, let sharedTitle):
             if mediaMatches {
                 presentWatchTogetherSessionMenu(participantCount: participantCount)
@@ -15268,11 +15268,11 @@ private extension PlayerViewController {
 
     func beginWatchTogetherActivity() {
         guard isWatchTogetherAvailable else {
-            showPlayerNotice("Watch Together requires MPV with the MoltenVK renderer and must be enabled in Settings.")
+            showPlayerNotice(eclipseLocalized("Watch Together requires MPV with the MoltenVK renderer and must be enabled in Settings."))
             return
         }
         guard watchTogetherMediaIdentifier != nil else {
-            showPlayerNotice("Watch Together is unavailable because this video has no media identity.")
+            showPlayerNotice(eclipseLocalized("Watch Together is unavailable because this video has no media identity."))
             return
         }
         Task { @MainActor [weak self] in
@@ -15280,13 +15280,13 @@ private extension PlayerViewController {
             let result = await WatchTogetherCoordinator.shared.beginActivity()
             switch result {
             case .started:
-                self.showPlayerNotice("Starting secure Watch Together with SharePlay...")
+                self.showPlayerNotice(eclipseLocalized("Starting secure Watch Together with SharePlay..."))
             case .needsGroupSession:
                 self.presentWatchTogetherSharingSheetIfAvailable()
             case .cancelled:
                 break
             case .unavailable(let message):
-                self.presentWatchTogetherAlert(title: "Watch Together Unavailable", message: message)
+                self.presentWatchTogetherAlert(title: eclipseLocalized("Watch Together Unavailable"), message: message)
             }
         }
     }
@@ -15295,13 +15295,13 @@ private extension PlayerViewController {
         guard #available(iOS 15.4, *),
               let activity = WatchTogetherCoordinator.shared.activityForSharing() else {
             presentWatchTogetherAlert(
-                title: "SharePlay Needs a Group",
+                title: eclipseLocalized("SharePlay Needs a Group"),
                 message: "Start or join a FaceTime or Messages group session, then tap Watch Together again."
             )
             return
         }
         guard presentedViewController == nil else {
-            showPlayerNotice("Close the current menu, then tap Watch Together again.")
+            showPlayerNotice(eclipseLocalized("Close the current menu, then tap Watch Together again."))
             return
         }
 
@@ -15318,7 +15318,7 @@ private extension PlayerViewController {
             if let error {
                 self.showPlayerNotice("Watch Together invitation failed: \(error.localizedDescription)")
             } else if completed {
-                self.showPlayerNotice("Watch Together invitation shared.")
+                self.showPlayerNotice(eclipseLocalized("Watch Together invitation shared."))
             }
         }
         controller.popoverPresentationController?.sourceView = watchTogetherButton
@@ -15330,22 +15330,22 @@ private extension PlayerViewController {
         guard presentedViewController == nil else { return }
         let sessionPeople = participantCount == 1 ? "1 person" : "\(participantCount) people"
         let alert = UIAlertController(
-            title: "Watch Together",
+            title: eclipseLocalized("Watch Together"),
             message: "SharePlay is active with \(sessionPeople) in the session.",
             preferredStyle: .actionSheet
         )
-        alert.addAction(UIAlertAction(title: "Sync Everyone Now", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Sync Everyone Now"), style: .default) { [weak self] _ in
             guard let self else { return }
             WatchTogetherCoordinator.shared.sendCurrentState(reason: "player-menu", from: self)
-            self.showPlayerNotice("Sent the current playback position to the group.")
+            self.showPlayerNotice(eclipseLocalized("Sent the current playback position to the group."))
         })
-        alert.addAction(UIAlertAction(title: "Leave Session", style: .destructive) { _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Leave Session"), style: .destructive) { _ in
             WatchTogetherCoordinator.shared.leaveSession()
         })
-        alert.addAction(UIAlertAction(title: "End for Everyone", style: .destructive) { _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("End for Everyone"), style: .destructive) { _ in
             WatchTogetherCoordinator.shared.endSessionForEveryone()
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Cancel"), style: .cancel))
         if let popover = alert.popoverPresentationController {
             popover.sourceView = watchTogetherButton
             popover.sourceRect = watchTogetherButton.bounds
@@ -15356,18 +15356,18 @@ private extension PlayerViewController {
     func presentWatchTogetherMismatchMenu(sharedTitle: String) {
         guard presentedViewController == nil else { return }
         let alert = UIAlertController(
-            title: "Different Watch Together Title",
+            title: eclipseLocalized("Different Watch Together Title"),
             message: "The current SharePlay session is for \(sharedTitle). Leave it before starting this title.",
             preferredStyle: .actionSheet
         )
-        alert.addAction(UIAlertAction(title: "Leave & Start This Title", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Leave & Start This Title"), style: .default) { [weak self] _ in
             WatchTogetherCoordinator.shared.leaveSession()
             self?.beginWatchTogetherActivity()
         })
-        alert.addAction(UIAlertAction(title: "Leave Current Session", style: .destructive) { _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Leave Current Session"), style: .destructive) { _ in
             WatchTogetherCoordinator.shared.leaveSession()
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Cancel"), style: .cancel))
         if let popover = alert.popoverPresentationController {
             popover.sourceView = watchTogetherButton
             popover.sourceRect = watchTogetherButton.bounds
@@ -15381,7 +15381,7 @@ private extension PlayerViewController {
             return
         }
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addAction(UIAlertAction(title: eclipseLocalized("OK"), style: .default))
         present(alert, animated: true)
     }
 
@@ -15725,7 +15725,7 @@ extension PlayerViewController: UIAdaptivePresentationControllerDelegate {
         guard isPlayerPresentation(presentationController),
               PlayerPlaybackLockSettings.isLocked() else { return }
         showControlsTemporarily()
-        showPlayerNotice("Unlock the player before closing.")
+        showPlayerNotice(eclipseLocalized("Unlock the player before closing."))
     }
 
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {

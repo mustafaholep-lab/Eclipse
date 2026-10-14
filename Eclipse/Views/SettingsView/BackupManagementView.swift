@@ -231,6 +231,7 @@ struct BackupManagementView: View {
                 DispatchQueue.main.async {
 
                     let dateFormatter = DateFormatter()
+        dateFormatter.locale = LocalizationManager.selectedLocale
                     dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
                     backupFileName = "Eclipse_Backup_\(dateFormatter.string(from: Date())).json"
 

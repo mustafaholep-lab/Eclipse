@@ -115,7 +115,7 @@ struct MangaCatalogSettingsView: View {
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                     .foregroundColor(source.enabled ? .primary : .secondary)
-                                Text("\(source.effectiveLanguage.uppercased()) · \(source.mediaType == .manga ? "Manga" : "Web Novel")")
+                                Text("\(source.effectiveLanguage.uppercased(with: LocalizationManager.selectedLocale)) · \(source.mediaType == .manga ? "Manga" : "Web Novel")")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 if source.maturity == .mature && !readerExtensionManager.showMatureSources {

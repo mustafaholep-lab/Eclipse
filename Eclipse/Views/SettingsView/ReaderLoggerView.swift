@@ -187,6 +187,7 @@ final class ReaderLoggerManager: ObservableObject {
         var parsedLogs: [LogEntry] = []
 
         let dateFormatter = DateFormatter()
+        dateFormatter.locale = LocalizationManager.selectedLocale
         dateFormatter.dateFormat = "dd-MM HH:mm:ss"
 
         for line in logLines {

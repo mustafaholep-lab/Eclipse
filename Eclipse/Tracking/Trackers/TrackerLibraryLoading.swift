@@ -55,10 +55,10 @@ enum TrackerLibrarySection: Hashable, Identifiable {
     }
     var title: String {
         switch self {
-        case .list: return "Library"
-        case .watchlist: return "Watchlist"
-        case .history: return "Watched History"
-        case .collection: return "Collection"
+        case .list: return eclipseLocalized("Library")
+        case .watchlist: return eclipseLocalized("Watchlist")
+        case .history: return eclipseLocalized("Watched History")
+        case .collection: return eclipseLocalized("Collection")
         case .customList(_, let name): return name
         case .aniListCustomList(let name): return name
         }

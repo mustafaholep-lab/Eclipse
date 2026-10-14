@@ -704,14 +704,14 @@ enum AutoModeQualityPreference: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .manual: return "Ask"
-        case .auto: return "Auto"
-        case .highest: return "Highest"
-        case .quality2160: return "2160p"
-        case .quality1080: return "1080p"
-        case .quality720: return "720p"
-        case .quality480: return "480p"
-        case .lowest: return "Lowest"
+        case .manual: return eclipseLocalized("Ask")
+        case .auto: return eclipseLocalized("Auto")
+        case .highest: return eclipseLocalized("Highest")
+        case .quality2160: return eclipseLocalized("2160p")
+        case .quality1080: return eclipseLocalized("1080p")
+        case .quality720: return eclipseLocalized("720p")
+        case .quality480: return eclipseLocalized("480p")
+        case .lowest: return eclipseLocalized("Lowest")
         }
     }
 

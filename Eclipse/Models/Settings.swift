@@ -72,9 +72,9 @@ enum LibraryCollectionLayout: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .horizontal:
-            return "Horizontal"
+            return eclipseLocalized("Horizontal")
         case .vertical:
-            return "Vertical"
+            return eclipseLocalized("Vertical")
         }
     }
 }
@@ -238,11 +238,11 @@ enum MPVPlayerSkin: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .defaultSkin: return "Default"
-        case .blackAndGold: return "Black and Gold"
-        case .prismatic: return "Prismatic"
-        case .cyberpunk: return "Cyberpunk"
-        case .custom: return "Custom"
+        case .defaultSkin: return eclipseLocalized("Default")
+        case .blackAndGold: return eclipseLocalized("Black and Gold")
+        case .prismatic: return eclipseLocalized("Prismatic")
+        case .cyberpunk: return eclipseLocalized("Cyberpunk")
+        case .custom: return eclipseLocalized("Custom")
         }
     }
 
@@ -280,10 +280,10 @@ enum MPVPlayerSkinAnimationStyle: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .glow: return "Glow"
-        case .spectrum: return "Spectrum"
-        case .sweep: return "Scan"
-        case .aurora: return "Aurora"
+        case .glow: return eclipseLocalized("Glow")
+        case .spectrum: return eclipseLocalized("Spectrum")
+        case .sweep: return eclipseLocalized("Scan")
+        case .aurora: return eclipseLocalized("Aurora")
         }
     }
 
@@ -380,25 +380,25 @@ enum MediaDetailElement: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .actions:
-            return "Actions"
+            return eclipseLocalized("Actions")
         case .overview:
-            return "Overview"
+            return eclipseLocalized("Overview")
         case .details:
-            return "Details"
+            return eclipseLocalized("Details")
         case .cast:
-            return "Cast"
+            return eclipseLocalized("Cast")
         case .similarTitles:
-            return "Similar Titles"
+            return eclipseLocalized("Similar Titles")
         case .ratingNotes:
-            return "Rating & Notes"
+            return eclipseLocalized("Rating & Notes")
         case .traktComments:
-            return "Trakt Reviews"
+            return eclipseLocalized("Trakt Reviews")
         case .episodes:
-            return "Episodes"
+            return eclipseLocalized("Episodes")
         case .stills:
-            return "Stills"
+            return eclipseLocalized("Stills")
         case .trailers:
-            return "Trailers"
+            return eclipseLocalized("Trailers")
         }
     }
 
@@ -685,13 +685,13 @@ enum ReaderDetailElement: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .overview:
-            return "Overview"
+            return eclipseLocalized("Overview")
         case .tags:
-            return "Tags"
+            return eclipseLocalized("Tags")
         case .ratingNotes:
-            return "Rating & Notes"
+            return eclipseLocalized("Rating & Notes")
         case .chapters:
-            return "Chapters"
+            return eclipseLocalized("Chapters")
         }
     }
 
@@ -789,13 +789,13 @@ enum MPVMetalQualityProfile: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .auto:
-            return "Auto (Let Eclipse decide for your device)"
+            return eclipseLocalized("Auto (Let Eclipse decide for your device)")
         case .balanced:
-            return "Balanced"
+            return eclipseLocalized("Balanced")
         case .lowHeat:
-            return "Low Heat"
+            return eclipseLocalized("Low Heat")
         case .sharp:
-            return "Sharp"
+            return eclipseLocalized("Sharp")
         }
     }
 
@@ -831,11 +831,11 @@ enum MPVUpscalingMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .off: return "Off"
-        case .upscaleTo1080: return "Upscale to 1080p"
-        case .upscaleTo4K: return "Upscale to 4K"
-        case .oneLevelAlways: return "Upscale by one level"
-        case .auto: return "Auto (Lanczos + deband)"
+        case .off: return eclipseLocalized("Off")
+        case .upscaleTo1080: return eclipseLocalized("Upscale to 1080p")
+        case .upscaleTo4K: return eclipseLocalized("Upscale to 4K")
+        case .oneLevelAlways: return eclipseLocalized("Upscale by one level")
+        case .auto: return eclipseLocalized("Auto (Lanczos + deband)")
         }
     }
 
@@ -870,10 +870,10 @@ enum MPVTVUpscalingTarget: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .display: return "Display Resolution"
-        case .hd1080: return "1080p"
-        case .qhd1440: return "1440p"
-        case .uhd4K: return "4K"
+        case .display: return eclipseLocalized("Display Resolution")
+        case .hd1080: return eclipseLocalized("1080p")
+        case .qhd1440: return eclipseLocalized("1440p")
+        case .uhd4K: return eclipseLocalized("4K")
         }
     }
 
@@ -916,11 +916,11 @@ enum MPVNeuralUpscaler: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .off: return "Off"
-        case .automatic: return "Automatic"
-        case .anime: return "Animation (ArtCNN)"
-        case .animeLowBitrate: return "Animation, Low Bitrate"
-        case .general: return "Live Action (FSR 1)"
+        case .off: return eclipseLocalized("Off")
+        case .automatic: return eclipseLocalized("Automatic")
+        case .anime: return eclipseLocalized("Animation (ArtCNN)")
+        case .animeLowBitrate: return eclipseLocalized("Animation, Low Bitrate")
+        case .general: return eclipseLocalized("Live Action (FSR 1)")
         }
     }
 
@@ -950,10 +950,10 @@ enum AudioComfortMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .original: return "Original"
-        case .comfort: return "Comfort"
-        case .dialogue: return "Dialogue"
-        case .night: return "Night / Anime-like"
+        case .original: return eclipseLocalized("Original")
+        case .comfort: return eclipseLocalized("Comfort")
+        case .dialogue: return eclipseLocalized("Dialogue")
+        case .night: return eclipseLocalized("Night / Anime-like")
         }
     }
 
@@ -998,9 +998,9 @@ enum AudioComfortContentCategory: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .anime: return "Anime"
-        case .westernAnimation: return "Western Animation"
-        case .liveAction: return "Live Action"
+        case .anime: return eclipseLocalized("Anime")
+        case .westernAnimation: return eclipseLocalized("Western Animation")
+        case .liveAction: return eclipseLocalized("Live Action")
         }
     }
 
@@ -1024,9 +1024,9 @@ enum MPVHDRMode: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .auto: return "Auto"
-        case .hdr: return "Always HDR"
-        case .sdr: return "Always SDR"
+        case .auto: return eclipseLocalized("Auto")
+        case .hdr: return eclipseLocalized("Always HDR")
+        case .sdr: return eclipseLocalized("Always SDR")
         }
     }
 
@@ -1301,11 +1301,11 @@ enum CloudSyncTotalBudget: Int, CaseIterable, Identifiable, Sendable {
 
     var displayName: String {
         switch self {
-        case .compact: return "25 MB"
-        case .standard: return "50 MB"
-        case .generous: return "100 MB"
-        case .large: return "250 MB"
-        case .unlimited: return "No Limit"
+        case .compact: return eclipseLocalized("25 MB")
+        case .standard: return eclipseLocalized("50 MB")
+        case .generous: return eclipseLocalized("100 MB")
+        case .large: return eclipseLocalized("250 MB")
+        case .unlimited: return eclipseLocalized("No Limit")
         }
     }
 
@@ -1334,9 +1334,9 @@ enum CloudSyncProvider: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var displayName: String {
         switch self {
-        case .iCloud: return "iCloud"
-        case .googleDrive: return "Google Drive"
-        case .oneDrive: return "OneDrive"
+        case .iCloud: return eclipseLocalized("iCloud")
+        case .googleDrive: return eclipseLocalized("Google Drive")
+        case .oneDrive: return eclipseLocalized("OneDrive")
         }
     }
 
