@@ -13,14 +13,14 @@ permissions:
 jobs:
   build-ios:
     name: Build and test iOS
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Validate immutable MPVKit revision
         env:
-          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION }}
+          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION || '5d163c6e405483e4979b2b7260c3d969611de667' }}
         run: |
           set -euo pipefail
 
@@ -32,11 +32,11 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: Soupy-dev/MPVKit
-          ref: ${{ vars.MPVKIT_SOURCE_REVISION }}
+          ref: ${{ vars.MPVKIT_SOURCE_REVISION || '5d163c6e405483e4979b2b7260c3d969611de667' }}
           path: MPVKit
       - name: Verify immutable MPVKit checkout
         env:
-          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION }}
+          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION || '5d163c6e405483e4979b2b7260c3d969611de667' }}
         run: test "$(git -C MPVKit rev-parse HEAD)" = "$MPVKIT_SOURCE_REVISION"
       - name: Expose sibling MPVKit package
         run: ln -sfn "$GITHUB_WORKSPACE/MPVKit" "$GITHUB_WORKSPACE/../MPVKit"
