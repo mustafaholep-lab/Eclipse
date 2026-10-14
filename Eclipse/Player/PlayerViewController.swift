@@ -16488,6 +16488,9 @@ extension PlayerViewController: PiPControllerDelegate {
                   self.owningPlaybackSceneIsForegroundActive() else { return }
             switch outcome {
             case .completed:
+#if os(iOS)
+                WatchTogetherCoordinator.shared.playbackDidReturnToForeground(self)
+#endif
                 self.mpvBackgroundLifecycleIsArmed = false
                 self.mpvForegroundRecoveryRetryCount = 0
                 _ = self.claimMPVAppExitPictureInPictureOwnership(

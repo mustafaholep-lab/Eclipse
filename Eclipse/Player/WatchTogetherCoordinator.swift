@@ -303,6 +303,10 @@ final class WatchTogetherCoordinator: ObservableObject {
     private var peerTransitionNoticeTask: Task<Void, Never>?
     private var pendingDisabledSession: GroupSession<EclipseWatchTogetherActivity>?
     private var profileObservationInstalled = false
+    private var foregroundSyncTask: Task<Void, Never>?
+    private var needsForegroundSeek = false
+    private var interruptedMediaIdentifier: String?
+    private var resumeHostAfterLifecyclePause = false
 
     private init() {}
 
@@ -315,6 +319,45 @@ final class WatchTogetherCoordinator: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self?.configure(session)
             }
+        }
+    }
+
+    func applicationDidEnterBackground() {
+        // Keep the GroupSession and messenger owned by this app-wide coordinator.
+        // AVAudioSession/PiP owns background execution while playback is running.
+        foregroundSyncTask?.cancel()
+        resumeHostAfterLifecyclePause = isLocalStateAuthority && currentSharedState?.isPlaying == true
+        needsForegroundSeek = true
+    }
+
+    func applicationDidBecomeActive() {
+        start()
+        foregroundSyncTask?.cancel()
+        guard let session else { return } // Apple supplies replacement sessions through sessions().
+        needsForegroundSeek = true
+        foregroundSyncTask = Task { [weak self, weak session] in
+            for delay: UInt64 in [0, 500_000_000, 1_000_000_000, 2_000_000_000] {
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                guard let self, let session, self.session?.id == session.id else { return }
+                guard session.state == .joined else { continue }
+                self.sendHello()
+                self.requestCurrentState()
+                if self.isLocalStateAuthority { self.sendState(reason: .snapshot) }
+            }
+        }
+    }
+
+    func playbackDidReturnToForeground(_ sender: any WatchTogetherPlaybackDelegate) {
+        guard playbackDelegate === sender, isAttachedToCurrentActivity else { return }
+        if isLocalStateAuthority, resumeHostAfterLifecyclePause,
+           currentSharedState?.pausedByLifecycle == true {
+            resumeHostAfterLifecyclePause = false
+            sendState(reason: .play, forcedPlayingState: true, advancesRevision: true)
+            if let state = currentSharedState { applySharedState(state, to: sender, forceSeek: true) }
+        } else {
+            resumeHostAfterLifecyclePause = false
+            needsForegroundSeek = true
+            requestCurrentState()
         }
     }
 
@@ -889,6 +932,7 @@ final class WatchTogetherCoordinator: ObservableObject {
             declinePendingDisabledSession()
         }
 
+        let isRestoringMedia = interruptedMediaIdentifier == newSession.activity.mediaIdentifier
         activationTimeoutTask?.cancel()
         activationTimeoutTask = nil
         if let session, session.id != newSession.id {
@@ -897,6 +941,7 @@ final class WatchTogetherCoordinator: ObservableObject {
         clearSession(leaveCurrent: false)
 
         session = newSession
+        needsForegroundSeek = isRestoringMedia
         let activitySeedState = validatedState(newSession.activity.initialState)
             ?? bootstrapState(for: newSession.activity)
         let isOriginator = newSession.activity.originatorInstanceID == senderInstanceID
@@ -946,7 +991,10 @@ final class WatchTogetherCoordinator: ObservableObject {
                     self.notifyConnectionState()
                 case .invalidated(let error):
                     Logger.shared.log("WatchTogether: session invalidated: \(error.localizedDescription)", type: "Player")
+                    let mediaIdentifier = self.currentSharedState?.mediaIdentifier ?? newSession.activity.mediaIdentifier
                     self.clearSession(leaveCurrent: false)
+                    self.interruptedMediaIdentifier = mediaIdentifier
+                    self.playbackDelegate?.watchTogetherShowNotice(NSLocalizedString("SharePlay was interrupted. Playback will sync when SharePlay restores the session.", comment: "SharePlay recovery"))
                 @unknown default:
                     self.clearSession(leaveCurrent: false)
                 }
@@ -1591,7 +1639,8 @@ final class WatchTogetherCoordinator: ObservableObject {
         if pendingJoinRequest?.media == state.media {
             pendingJoinRequest = nil
         }
-        let forceSeek = reason == .seek || reason == .nextEpisode
+        let forceSeek = needsForegroundSeek || reason == .seek || reason == .nextEpisode
+        needsForegroundSeek = false
         applySharedState(state, to: delegate, forceSeek: forceSeek)
         presentStateNotices(for: state, to: delegate)
         notifyConnectionState()
@@ -2055,6 +2104,11 @@ final class WatchTogetherCoordinator: ObservableObject {
         if leaveCurrent {
             session?.leave()
         }
+        foregroundSyncTask?.cancel()
+        foregroundSyncTask = nil
+        interruptedMediaIdentifier = nil
+        resumeHostAfterLifecyclePause = false
+        needsForegroundSeek = false
         participantGraceTask?.cancel()
         participantGraceTask = nil
         participantNames.removeAll()

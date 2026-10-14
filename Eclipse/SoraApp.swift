@@ -388,7 +388,11 @@ struct SoraApp: App {
                 }
             }
             .onChange(of: scenePhase) { newPhase in
+                if newPhase == .background {
+                    Task { @MainActor in WatchTogetherCoordinator.shared.applicationDidEnterBackground() }
+                }
                 if newPhase == .active {
+                    Task { @MainActor in WatchTogetherCoordinator.shared.applicationDidBecomeActive() }
                     trackerManager.checkForExpiredTrackerSessions()
                     MediaStateSyncBootstrap.syncOnActivation()
                     ExperimentalCloudSyncManager.shared.syncOnActivationIfNeeded(reason: "active")
