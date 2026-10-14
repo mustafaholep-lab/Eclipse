@@ -195,7 +195,11 @@ protocol WatchTogetherPlaybackDelegate: AnyObject {
 }
 
 @MainActor
-final class WatchTogetherCoordinator {
+final class WatchTogetherCoordinator: ObservableObject {
+    @Published private(set) var visibleParticipants: [WatchTogetherParticipantSnapshot] = []
+    private var participantNames: [UUID: String] = [:]
+    private var participantDepartureTimes: [UUID: Date] = [:]
+    private var participantGraceTask: Task<Void, Never>?
     static let shared = WatchTogetherCoordinator()
 
     private enum MessageReason: String, Codable, Sendable {
@@ -223,6 +227,7 @@ final class WatchTogetherCoordinator {
         let controlAuthorityID: UUID?
         let targetMedia: WatchTogetherMediaDescriptor?
         let state: WatchTogetherSharedState?
+        var displayName: String? = nil
         var echoInstanceID: UUID?
         var echoSentAt: TimeInterval?
         var echoReceivedAt: TimeInterval?
@@ -951,6 +956,7 @@ final class WatchTogetherCoordinator {
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak newSession] _ in
                 guard let self, let newSession, self.session?.id == newSession.id else { return }
+                self.updateVisibleParticipants()
                 self.reconcileStateAuthority(in: newSession)
                 self.sendHello()
                 self.requestCurrentState()
@@ -1215,6 +1221,7 @@ final class WatchTogetherCoordinator {
                 pendingClockEchoByInstanceID.removeValue(forKey: echo.key)
             }
         }
+        outboundMessage.displayName = Self.sanitizedParticipantName(ProfileManager.shared.activeProfile?.name)
         outboundMessages.append(OutboundMessage(message: outboundMessage, participants: participants))
         drainOutboundMessagesIfNeeded()
     }
@@ -1258,6 +1265,10 @@ final class WatchTogetherCoordinator {
         let lastSequence = lastSequenceBySender[senderKey] ?? 0
         guard message.sequence > lastSequence else { return }
         lastSequenceBySender[senderKey] = message.sequence
+        if let name = Self.sanitizedParticipantName(message.displayName) {
+            participantNames[context.source.id] = name
+            updateVisibleParticipants()
+        }
         participantIDByInstanceID[message.senderInstanceID] = context.source.id
         recordClockEvidence(from: message)
 
@@ -1981,6 +1992,44 @@ final class WatchTogetherCoordinator {
         return true
     }
 
+    static func sanitizedParticipantName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        let safe = name.components(separatedBy: .controlCharacters).joined(separator: " ")
+            .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return safe.isEmpty ? nil : String(safe.prefix(40))
+    }
+
+    private func updateVisibleParticipants() {
+        guard let session else { visibleParticipants = []; return }
+        let now = Date()
+        let activeIDs = Set(session.activeParticipants.map(\.id))
+        for person in visibleParticipants where !activeIDs.contains(person.id) {
+            if participantDepartureTimes[person.id] == nil { participantDepartureTimes[person.id] = now }
+        }
+        for id in activeIDs { participantDepartureTimes.removeValue(forKey: id) }
+        let retained = visibleParticipants.filter { person in
+            !activeIDs.contains(person.id) && now.timeIntervalSince(participantDepartureTimes[person.id] ?? now) < 5
+        }.map { WatchTogetherParticipantSnapshot(id: $0.id, name: $0.name, isLocal: $0.isLocal, isReconnecting: true) }
+        let active = session.activeParticipants.sorted(by: participantSort).map { participant in
+            let isLocal = participant == session.localParticipant
+            let fallback = String(format: NSLocalizedString("Participant %@", comment: "Anonymous SharePlay participant"), String(participant.id.uuidString.prefix(4)))
+            return WatchTogetherParticipantSnapshot(id: participant.id,
+                name: isLocal ? (Self.sanitizedParticipantName(ProfileManager.shared.activeProfile?.name) ?? NSLocalizedString("You", comment: "Local participant")) : (participantNames[participant.id] ?? fallback),
+                isLocal: isLocal, isReconnecting: false)
+        }
+        visibleParticipants = active + retained
+        participantGraceTask?.cancel()
+        if !retained.isEmpty {
+            participantGraceTask = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                self?.updateVisibleParticipants()
+            }
+        }
+        let retainedIDs = Set(visibleParticipants.map(\.id))
+        participantNames = participantNames.filter { retainedIDs.contains($0.key) }
+        participantDepartureTimes = participantDepartureTimes.filter { retainedIDs.contains($0.key) }
+    }
+
     private func notifyConnectionState() {
         guard let delegate = playbackDelegate else { return }
         guard let session, session.state == .joined else {
@@ -2006,6 +2055,11 @@ final class WatchTogetherCoordinator {
         if leaveCurrent {
             session?.leave()
         }
+        participantGraceTask?.cancel()
+        participantGraceTask = nil
+        participantNames.removeAll()
+        participantDepartureTimes.removeAll()
+        visibleParticipants.removeAll()
         stateCancellable?.cancel()
         participantsCancellable?.cancel()
         messageTask?.cancel()

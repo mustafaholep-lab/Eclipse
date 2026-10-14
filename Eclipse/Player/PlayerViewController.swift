@@ -5522,6 +5522,18 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         videoContainer.addSubview(pipButton)
 #if os(iOS)
         videoContainer.addSubview(watchTogetherButton)
+        let participants = UIHostingController(rootView: WatchTogetherParticipantsView())
+        participants.view.backgroundColor = .clear
+        participants.sizingOptions = .intrinsicContentSize
+        addChild(participants)
+        videoContainer.addSubview(participants.view)
+        participants.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            participants.view.topAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.topAnchor, constant: 54),
+            participants.view.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            participants.view.widthAnchor.constraint(lessThanOrEqualTo: videoContainer.safeAreaLayoutGuide.widthAnchor, multiplier: 0.75)
+        ])
+        participants.didMove(toParent: self)
 #endif
         videoContainer.addSubview(playerTitleLabel)
         videoContainer.addSubview(skipBackwardButton)

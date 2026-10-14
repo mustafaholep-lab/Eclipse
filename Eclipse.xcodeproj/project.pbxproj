@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ECA500012026101400000001 /* WatchTogetherParticipantsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA500022026101400000001 /* WatchTogetherParticipantsView.swift */; };
 		ECA200012026101400000001 /* HLSBackgroundTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA200022026101400000001 /* HLSBackgroundTransport.swift */; };
 		ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA100022026101400000001 /* DisplayRefreshSettings.swift */; };
 		10777B4D23D74A269E19F9BB = {isa = PBXBuildFile; fileRef = EDC0129047994159938DA361; };
@@ -809,6 +810,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		ECA500022026101400000001 /* WatchTogetherParticipantsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTogetherParticipantsView.swift; sourceTree = "<group>"; };
 		ECA200022026101400000001 /* HLSBackgroundTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLSBackgroundTransport.swift; sourceTree = "<group>"; };
 		ECA100022026101400000001 /* DisplayRefreshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRefreshSettings.swift; sourceTree = "<group>"; };
 		81ECB804A2424540A60DFE91 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Eclipse/Views/TrackerCollectionView.swift"; sourceTree = SOURCE_ROOT; };
@@ -1392,6 +1394,7 @@
 				13F315AF2EAD03F70025BD7A /* SubtitleLoader.swift */,
 				1324E7B52E940BD70036B5F5 /* PlayerViewController.swift */,
 				6BCFA99B6F2344E8850E02AD /* WatchTogetherCoordinator.swift */,
+				ECA500022026101400000001 /* WatchTogetherParticipantsView.swift */,
 				1324E7B42E940BD70036B5F5 /* MPVNativeRenderer.swift */,
 				SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */,
 				SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */,
@@ -2760,6 +2763,7 @@
 				13F072AB2E4B2D9200EF90EB /* Movie-Details.swift in Sources */,
 				1324E7BD2E940BD70036B5F5 /* PlayerViewController.swift in Sources */,
 				7BC72B40F59C41D6B2D8EB9B /* WatchTogetherCoordinator.swift in Sources */,
+				ECA500012026101400000001 /* WatchTogetherParticipantsView.swift in Sources */,
 				1324E7BE2E940BD70036B5F5 /* SampleBufferDisplayView.swift in Sources */,
 				13E1EDD32ED9E65F00087629 /* mangaModel.xcdatamodeld in Sources */,
 				13F0729B2E4B2D9200EF90EB /* ServicesEntity.swift in Sources */,
