@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-ios:
     name: Build and test iOS
@@ -52,7 +56,7 @@ jobs:
           # credentials or publish an installable app before the owner deliberately runs a
           # distribution workflow after the App Store release is live.
           test ! -e Build.local.xcconfig
-          xcodebuild build \
+          xcodebuild build -jobs 1 \
             -project Eclipse.xcodeproj \
             -scheme Eclipse \
             -configuration Release \
@@ -63,6 +67,9 @@ jobs:
             -skipPackagePluginValidation \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             ENABLE_USER_SCRIPT_SANDBOXING=NO
 
       - name: Select iOS simulator
@@ -108,7 +115,7 @@ jobs:
             exit 0
           fi
 
-          xcodebuild test \
+          xcodebuild test -jobs 1 \
             -project Eclipse.xcodeproj \
             -scheme Eclipse \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
@@ -118,4 +125,7 @@ jobs:
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
