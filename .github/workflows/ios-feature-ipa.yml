@@ -186,7 +186,26 @@ jobs:
           import pathlib
           import plistlib
           import shutil
+          import hashlib
+          import re
+          import tempfile
+          import urllib.request
+          import zipfile
           root = pathlib.Path('MPVKit/dist').resolve()
+          # Libplacebo's upstream build step restores native link inputs only.
+          # Stage the exact binary target pinned by the reviewed package manifest.
+          manifest = pathlib.Path('MPVKit/Package.swift').read_text()
+          target = re.search(r'name:\s*"Libplacebo",\s*url:\s*"([^"]+)",\s*checksum:\s*"([^"]+)"', manifest)
+          assert target, 'Missing pinned Libplacebo target'
+          with tempfile.TemporaryDirectory() as scratch:
+              archive = pathlib.Path(scratch) / 'Libplacebo.zip'
+              urllib.request.urlretrieve(target[1], archive)
+              assert hashlib.sha256(archive.read_bytes()).hexdigest() == target[2], 'Libplacebo checksum mismatch'
+              destination = root / 'release/xcframework'
+              with zipfile.ZipFile(archive) as bundle:
+                  for member in bundle.namelist():
+                      assert (destination / member).resolve().is_relative_to(destination)
+                  bundle.extractall(destination)
           required = ['Libmpv', 'MoltenVK', 'Libplacebo', 'Libavcodec', 'Libavdevice',
                       'Libavfilter', 'Libavformat', 'Libavutil', 'Libswresample', 'Libswscale']
           matrix = [('ios', None, {'arm64'}), ('ios', 'simulator', {'arm64', 'x86_64'}),
