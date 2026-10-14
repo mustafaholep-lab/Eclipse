@@ -512,6 +512,13 @@ struct SettingsView: View {
 
                 GlassSection(header: "Basic") {
                     VStack(spacing: 0) {
+#if os(iOS)
+                        NavigationLink(destination: DisplayRefreshSettingsView()) {
+                            GlassSettingsRow(icon: "speedometer", iconColor: .cyan, title: "Display Refresh Rate")
+                        }
+                        .buttonStyle(.plain)
+                        GlassDivider()
+#endif
                         NavigationLink(destination: settingsSearchableContent(PerformanceModeSettingsView())) {
                             GlassSettingsRow(icon: "bolt.fill", iconColor: .yellow, title: "Performance Mode") {
                                 HStack(spacing: 4) {

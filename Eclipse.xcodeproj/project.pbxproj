@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA100022026101400000001 /* DisplayRefreshSettings.swift */; };
 		3C90E2239531A7EB59464043 /* EclipseSyncPlayerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97887B9F757FD5A989F87F2 /* EclipseSyncPlayerIntegrationTests.swift */; };
 		0B8AD17EEC5E61FAEA0FFB6F /* EclipseSyncPlayerAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8328B9C644A3E7BE5084A3 /* EclipseSyncPlayerAdapter.swift */; };
 		5DC053F5F802C29B6A381A18 /* EclipseSyncProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */; };
@@ -406,6 +407,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		ECA100022026101400000001 /* DisplayRefreshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRefreshSettings.swift; sourceTree = "<group>"; };
 		9C50A0010000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerCloudSync.swift; sourceTree = "<group>"; };
 		9C50A0010000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerCloudSyncTests.swift; sourceTree = "<group>"; };
 		C90B9356AC0D4DD8B8D31500 /* DownloadResumeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadResumeTests.swift; sourceTree = "<group>"; };
@@ -1387,6 +1389,7 @@
 			children = (
 				129CC90B2EBA920A00D2D84B /* Bundle.swift */,
 				AD20000A2FE2000000AD200A /* Localization.swift */,
+				ECA100022026101400000001 /* DisplayRefreshSettings.swift */,
 				13F0728F2E4B2D9100EF90EB /* URLSession */,
 				13F0728D2E4B2D9100EF90EB /* UIImage */,
 				13F072912E4B2D9100EF90EB /* Color */,
@@ -1917,6 +1920,7 @@
 				13F072BA2E4B2D9200EF90EB /* TMDBService.swift in Sources */,
 				13F072C22E4B2D9200EF90EB /* AniListService.swift in Sources */,
 				AD20000B2FE2000000AD200B /* Localization.swift in Sources */,
+				ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */,
 				13F187AD2E6F38CE00747F7E /* LibraryItem.swift in Sources */,
 				13F187B02E6F38CE00747F7E /* CreateCollectionView.swift in Sources */,
 				13F072A42E4B2D9200EF90EB /* ServicesView.swift in Sources */,
