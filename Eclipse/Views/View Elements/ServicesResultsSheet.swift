@@ -1044,6 +1044,9 @@ struct ModulesSearchResultsSheet: View {
     @State private var serviceStreamExtractionGeneration: UUID?
     @State private var showManualPicker = false
     @State private var sheetHostController: ServicesPresentationController?
+#if os(iOS)
+    @State private var pendingMobileStremioSelection: (stream: StremioStream, addon: StremioAddon, autoMode: Bool, authority: ProviderPlaybackScopeAuthority)?
+#endif
 #if os(tvOS)
     @State private var pendingTVStremioSelection: TVStremioSelection?
     @State private var pendingTVPluginSelection: TVPluginSelection?
@@ -6682,6 +6685,10 @@ struct ModulesSearchResultsSheet: View {
         .sheet(isPresented: $viewModel.showingStremioStreamPicker, onDismiss: completeTVStremioSelection) {
             tvStremioStreamPicker
         }
+#elseif os(iOS)
+        .sheet(isPresented: $viewModel.showingStremioStreamPicker, onDismiss: completeMobileStremioSelection) {
+            mobileStremioStreamPicker
+        }
 #else
         .adaptiveConfirmationDialog("Select Stream", isPresented: $viewModel.showingStremioStreamPicker, titleVisibility: .visible) {
             stremioStreamPickerContent
@@ -7827,6 +7834,69 @@ struct ModulesSearchResultsSheet: View {
             viewModel.pendingPlaybackAutoMode = false
         }
     }
+
+#if os(iOS)
+    private func completeMobileStremioSelection() {
+        let selection = pendingMobileStremioSelection
+        pendingMobileStremioSelection = nil
+        guard let selection, isSheetActive, selection.authority.isCurrent,
+              forcedWatchTogetherMediaIsCurrent() else { return }
+        playStremioStream(selection.stream, addon: selection.addon, autoModeLaunch: selection.autoMode)
+    }
+
+    private var mobileStremioStreamPicker: some View {
+        NavigationView {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if let addon = viewModel.selectedStremioAddon,
+                       let options = viewModel.stremioStreamOptions {
+                        Text(addon.manifest.name)
+                            .font(.headline)
+                        let streams = filteredStremioStreams(options, addon: addon)
+                        ForEach(Array(streams.prefix(Self.maxVisibleStremioStreamsPerAddon))) { stream in
+                            Button {
+                                pendingMobileStremioSelection = (stream, addon, viewModel.pendingPlaybackAutoMode, .capture())
+                                viewModel.showingStremioStreamPicker = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(stremioStreamLabel(for: stream))
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                    if let details = stremioStyleDetails(for: stream, headline: stremioStreamLabel(for: stream)) {
+                                        Text(verbatim: details)
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                                .background(Color.secondary.opacity(0.1))
+                                .cornerRadius(12)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("streamPicker.stremio.\(stream.id)")
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Select Stream")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        pendingMobileStremioSelection = nil
+                        viewModel.showingStremioStreamPicker = false
+                        viewModel.pendingPlaybackAutoMode = false
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+#endif
 
     @ViewBuilder
     private var stremioStreamPickerMessage: some View {
