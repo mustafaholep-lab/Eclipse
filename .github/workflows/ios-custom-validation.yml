@@ -46,3 +46,6 @@ jobs:
           PY
           plutil -lint Eclipse.xcodeproj/project.pbxproj
           xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios15.0-simulator -sdk "$sdk" Eclipse/Extensions/DisplayRefreshSettings.swift
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios15.0-simulator -sdk "$sdk" Eclipse/Models/DownloadBackgroundExecution.swift
+          printf '%s\n' 'enum HLSDownloader { static let maximumMediaObjectBytes = 128 * 1024 * 1024 }' > "$RUNNER_TEMP/hls-limit.swift"
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios15.0-simulator -sdk "$sdk" Eclipse/Models/HLSBackgroundTransport.swift "$RUNNER_TEMP/hls-limit.swift"

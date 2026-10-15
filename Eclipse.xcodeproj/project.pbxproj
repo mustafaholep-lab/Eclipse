@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ECA260012026101500000001 /* DownloadBackgroundExecution.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA260022026101500000001; };
+		ECA200012026101500000001 /* HLSBackgroundTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA200022026101500000001; };
 		ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA100022026101400000001 /* DisplayRefreshSettings.swift */; };
 		3C90E2239531A7EB59464043 /* EclipseSyncPlayerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97887B9F757FD5A989F87F2 /* EclipseSyncPlayerIntegrationTests.swift */; };
 		0B8AD17EEC5E61FAEA0FFB6F /* EclipseSyncPlayerAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8328B9C644A3E7BE5084A3 /* EclipseSyncPlayerAdapter.swift */; };
@@ -407,6 +409,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		ECA260022026101500000001 /* DownloadBackgroundExecution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadBackgroundExecution.swift; sourceTree = "<group>"; };
+		ECA200022026101500000001 /* HLSBackgroundTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLSBackgroundTransport.swift; sourceTree = "<group>"; };
 		ECA100022026101400000001 /* DisplayRefreshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRefreshSettings.swift; sourceTree = "<group>"; };
 		9C50A0010000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerCloudSync.swift; sourceTree = "<group>"; };
 		9C50A0010000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerCloudSyncTests.swift; sourceTree = "<group>"; };
@@ -1543,6 +1547,8 @@
 				DD1111102FB0000000DD1110 /* DownloadManager.swift */,
 				DLPATHFR000000000000000001 /* DownloadPathIdentityPolicy.swift */,
 				DD1111142FB0000000DD1114 /* HLSDownloader.swift */,
+				ECA260022026101500000001 /* DownloadBackgroundExecution.swift */,
+				ECA200022026101500000001 /* HLSBackgroundTransport.swift */,
 				AA5555502F10000000AA5550 /* CatalogManager.swift */,
 				PROFR0100000000000000001 /* ProfileManager.swift */,
 				PSSFR0100000000000000001 /* ProfileSettingsStore.swift */,
@@ -2074,6 +2080,8 @@
 				DD1111112FB0000000DD1111 /* DownloadManager.swift in Sources */,
 				DLPATHBF100000000000000001 /* DownloadPathIdentityPolicy.swift in Sources */,
 				DD1111152FB0000000DD1115 /* HLSDownloader.swift in Sources */,
+				ECA260012026101500000001 /* DownloadBackgroundExecution.swift in Sources */,
+				ECA200012026101500000001 /* HLSBackgroundTransport.swift in Sources */,
 				DD2222222FB0000000DD2222 /* DownloadsView.swift in Sources */,
 				DD4444442FB0000000DD4444 /* DownloadedShowDetailView.swift in Sources */,
 				AF00000000000000000000A1 /* AppHub.swift in Sources */,

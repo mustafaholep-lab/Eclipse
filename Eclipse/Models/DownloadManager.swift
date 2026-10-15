@@ -436,6 +436,31 @@ struct ProtectedDownloadTransportPlan: Equatable {
 
 typealias NuvioDownloadTransportPlan = ProtectedDownloadTransportPlan
 
+/// User-selected TorBox files can be handed to the system daemon on iOS 18 too.
+/// This deliberately trusts only the official HTTPS service routes. Arbitrary
+/// addons, header-bearing requests and HLS retain the validated local proxy.
+enum TorBoxBackgroundDownloadPolicy {
+    static func allows(url: URL, headers: [String: String], isHLS: Bool) -> Bool {
+        guard !isHLS, headers.isEmpty,
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https", parts.user == nil, parts.password == nil,
+              parts.fragment == nil, parts.port == nil || parts.port == 443,
+              let host = parts.host?.lowercased() else { return false }
+        if host == "torrentio.strem.fun" {
+            let path = url.pathComponents.filter { $0 != "/" }
+            return path.count >= 4 && path[0] == "torbox" && !path[1].isEmpty
+                && path[2].count == 40 && path[2].allSatisfy(\.isHexDigit)
+                && Int(path[3]).map { $0 >= 0 } == true && parts.query == nil
+        }
+        if host == "api.torbox.app" {
+            return ["/v1/api/torrents/requestdl", "/v1/api/usenet/requestdl", "/v1/api/webdl/requestdl"].contains(parts.path)
+        }
+        let cdn = host.range(of: #"^store-[a-z0-9-]+\.tb-cdn\.io$"#, options: .regularExpression) != nil
+        let serviceCDN = host.hasSuffix(".torbox.app") && host != "api.torbox.app"
+        return (cdn || serviceCDN) && parts.path.hasPrefix("/dld/")
+    }
+}
+
 #if os(iOS) && !targetEnvironment(macCatalyst)
 private final class NuvioDownloadChallengeCapture: @unchecked Sendable {
     private let lock = NSLock()
@@ -1708,6 +1733,7 @@ final class DownloadManager: NSObject, ObservableObject {
         let authorityReference: ProviderContentReference?
         let stremioConfiguredOriginAuthority: SkyStreamPinnedOriginAuthority?
         let mainProxyURL: URL
+        var isSystemManaged = false
         var subtitleProxyURLs = Set<URL>()
         var mainTaskIdentifier: Int?
         var hlsVariantProxyURL: URL?
@@ -1736,6 +1762,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private var scheduledQueueWakeWorkItem: DispatchWorkItem?
     private var scheduledQueueWakeDate: Date?
     private var isolatedDownloadsDirectory: URL?
+    private var backgroundExecutionOverride: (() -> Bool)?
     private var transportMayStartOverride: (() -> Bool)?
     private var refreshSourceOverride: (@MainActor (DownloadItem) async -> RefreshedDownloadSource?)?
     private var transferStarterOverride: ((DownloadItem) -> Void)?
@@ -1774,6 +1801,9 @@ final class DownloadManager: NSObject, ObservableObject {
         if !fileManager.fileExists(atPath: dir.path) {
             try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+#if os(iOS)
+        try? fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: dir.path)
+#endif
         return dir
     }
 
@@ -1784,8 +1814,10 @@ final class DownloadManager: NSObject, ObservableObject {
         initialDownloads: [DownloadItem],
         transportMayStart: @escaping () -> Bool,
         refreshSource: @escaping @MainActor (DownloadItem) async -> RefreshedDownloadSource?,
-        transferStarter: @escaping (DownloadItem) -> Void
+        transferStarter: @escaping (DownloadItem) -> Void,
+        backgroundExecutionMayContinue: (() -> Bool)? = nil
     ) {
+        backgroundExecutionOverride = backgroundExecutionMayContinue
         isolatedDownloadsDirectory = downloadsDirectory
         transportMayStartOverride = transportMayStart
         refreshSourceOverride = refreshSource
@@ -1931,12 +1963,54 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func applicationDidBecomeActive() {
+        beginUserInitiatedBackgroundDownloads()
         processQueue()
     }
 
     func applicationDidEnterBackground() {
+        if backgroundExecutionMayContinue { return }
 #if os(iOS) && !targetEnvironment(macCatalyst)
-        suspendProtectedProviderAttempts(message: "Waiting for app to reopen", processWhenPossible: false)
+        suspendProtectedProviderAttempts(message: "Waiting for app to reopen", processWhenPossible: false, preserveSystemTransfers: true)
+#endif
+    }
+
+    private var backgroundExecutionMayContinue: Bool {
+        if let backgroundExecutionOverride { return backgroundExecutionOverride() }
+#if os(iOS)
+        return DownloadBackgroundExecution.mayContinue
+#else
+        return false
+#endif
+    }
+
+    private func beginUserInitiatedBackgroundDownloads() {
+#if os(iOS)
+        guard isolatedDownloadsDirectory == nil else { return }
+        let ids = Set(downloads.filter { $0.status == .queued || $0.status == .downloading }.map(\.id))
+        DownloadBackgroundExecution.begin(ids: ids, title: eclipseLocalized("Downloads"), subtitle: eclipseLocalized("Downloading"), ready: { [weak self] in
+            self?.processQueue()
+            self?.updateBackgroundDownloadProgress()
+        }, expired: { [weak self] ids in
+            guard let self else { return }
+            for item in self.downloads where ids.contains(item.id) && item.status == .downloading {
+                if self.protectedProviderAttempts[item.id]?.isSystemManaged == true { continue }
+                if item.claimsProtectedProviderTransport || item.isHLS { self.pauseDownload(id: item.id) }
+            }
+        })
+#endif
+    }
+
+    private func updateBackgroundDownloadProgress() {
+#if os(iOS)
+        guard isolatedDownloadsDirectory == nil else { return }
+        let update = { [weak self] in
+            guard let self else { return }
+            DownloadBackgroundExecution.update(self.downloads.map {
+                DownloadBackgroundProgress(id: $0.id, fraction: $0.progress,
+                    pending: $0.status == .queued || $0.status == .downloading, succeeded: $0.status == .completed)
+            })
+        }
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
 #endif
     }
 
@@ -2840,6 +2914,7 @@ final class DownloadManager: NSObject, ObservableObject {
         downloads.append(item)
         saveDownloads()
         captureKidsPolicyDetails(forDownload: id, tmdbId: tmdbId, isMovie: isMovie)
+        beginUserInitiatedBackgroundDownloads()
         processQueue()
 
         Logger.shared.log("Enqueued download: \(displayTitle) id=\(id)", type: "Download")
@@ -2984,6 +3059,7 @@ final class DownloadManager: NSObject, ObservableObject {
             downloads[index].rateLimitRetryCount = nil
             downloads[index].error = nil
             mediaSourceRecoveryAttempts.removeValue(forKey: id)
+            beginUserInitiatedBackgroundDownloads()
 
             if downloads[index].isHLS && downloads[index].hlsResumeSegmentIndex == nil {
                 downloads[index].progress = 0
@@ -5217,7 +5293,8 @@ final class DownloadManager: NSObject, ObservableObject {
                 return candidate
             },
             minimumRequestStartInterval: streamURLOverride == nil ? nil : 0,
-            enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS
+            enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS,
+            allowsBackgroundTransport: !item.claimsProtectedProviderTransport
         )
 
         downloader.onVariantResolved = { [weak self] variantURL, totalSegments in
@@ -5657,7 +5734,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private var protectedProviderTransportMayStart: Bool {
-        nuvioProtectedTransportMayStart
+        nuvioProtectedTransportMayStart || backgroundExecutionMayContinue
     }
 
     private static func protectedAuthorityState(
@@ -5817,6 +5894,17 @@ final class DownloadManager: NSObject, ObservableObject {
         }
 
         let attemptID = UUID()
+        if providerKind == .stremio, authorityReference?.hasValidStremioSelection == true,
+           TorBoxBackgroundDownloadPolicy.allows(url: originalURL, headers: effectiveHeaders, isHLS: item.isHLS) {
+            var attempt = ProtectedProviderDownloadAttempt(attemptID: attemptID, providerKind: providerKind,
+                authorityURL: originalURL.absoluteString, authorityHeaders: item.headers,
+                authorityReference: authorityReference, stremioConfiguredOriginAuthority: stremioAuthority,
+                mainProxyURL: originalURL)
+            attempt.isSystemManaged = true
+            protectedProviderAttempts[item.id] = attempt
+            return (NuvioDownloadTransportPlan.protectedAttempt(authoritativeURL: originalURL,
+                authoritativeHeaders: item.headers, proxyURL: originalURL), attemptID)
+        }
         guard let proxyURL = MPVHeaderProxy.shared.makeProxyURL(
             for: originalURL,
             headers: effectiveHeaders,
@@ -6052,7 +6140,8 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func suspendProtectedProviderAttempts(
         message: String,
-        processWhenPossible: Bool
+        processWhenPossible: Bool,
+        preserveSystemTransfers: Bool = false
     ) {
         dispatchPrecondition(condition: .onQueue(.main))
         let protectedIDs = Set(protectedProviderAttempts.keys).union(
@@ -6063,6 +6152,7 @@ final class DownloadManager: NSObject, ObservableObject {
         }
         nuvioAutoValidationProxyURLs.removeAll()
         for id in protectedIDs {
+            if preserveSystemTransfers, protectedProviderAttempts[id]?.isSystemManaged == true { continue }
             let wasRecoveringMedia = sourceRefreshes.kind(for: id) == .rejectedMedia
             invalidateSourceRefresh(id: id)
             nuvioDispatchValidationPendingIDs.remove(id)
@@ -6176,7 +6266,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func hlsStartDelayReason() -> String? {
         #if canImport(UIKit)
-        if !backgroundHLSPipelineEnabled && UIApplication.shared.applicationState != .active {
+        if !backgroundHLSPipelineEnabled && !backgroundExecutionMayContinue && UIApplication.shared.applicationState != .active {
             return "Waiting for app to reopen"
         }
 
@@ -7916,6 +8006,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func saveDownloads() {
+        updateBackgroundDownloadProgress()
 
         let rawSnapshot = self.downloads.map(Self.persistedDownloadItem)
         guard rawSnapshot.count <= DownloadMetadataPersistencePolicy.Bounds.items else {

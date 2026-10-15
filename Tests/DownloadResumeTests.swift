@@ -4,6 +4,32 @@ import XCTest
 @testable import Eclipse
 
 final class DownloadResumeTests: XCTestCase {
+    func testTorBoxSystemTransfersRequireOfficialHTTPSRoutesWithoutHeaders() throws {
+        let hash = String(repeating: "a", count: 40)
+        let accepted = [
+            "https://torrentio.strem.fun/torbox/fixture/\(hash)/0/movie.mkv",
+            "https://api.torbox.app/v1/api/torrents/requestdl?token=fixture&torrent_id=1&file_id=2&redirect=true",
+            "https://store-01.tb-cdn.io/dld/fixture"
+        ]
+        for value in accepted {
+            let url = try XCTUnwrap(URL(string: value))
+            XCTAssertTrue(TorBoxBackgroundDownloadPolicy.allows(url: url, headers: [:], isHLS: false))
+            XCTAssertFalse(TorBoxBackgroundDownloadPolicy.allows(url: url, headers: ["Authorization": "fixture"], isHLS: false))
+            XCTAssertFalse(TorBoxBackgroundDownloadPolicy.allows(url: url, headers: [:], isHLS: true))
+        }
+        for value in [
+            "http://torrentio.strem.fun/torbox/fixture/\(hash)/0/movie.mkv",
+            "https://torrentio.strem.fun.evil.example/torbox/fixture/\(hash)/0/movie.mkv",
+            "https://torrentio.strem.fun/realdebrid/fixture/\(hash)/0/movie.mkv",
+            "https://torrentio.strem.fun:444/torbox/fixture/\(hash)/0/movie.mkv",
+            "https://torrentio.strem.fun/torbox/fixture/invalid/0/movie.mkv",
+            "https://user:password@api.torbox.app/v1/api/torrents/requestdl",
+            "https://api.torbox.app/other", "https://store-01.tb-cdn.io.evil.example/dld/fixture",
+            "https://127.0.0.1/dld/fixture"
+        ] {
+            XCTAssertFalse(TorBoxBackgroundDownloadPolicy.allows(url: try XCTUnwrap(URL(string: value)), headers: [:], isHLS: false), value)
+        }
+    }
     func testEpisodeLookupAvoidsCheckingUnrelatedDownloadFiles() {
         let items = (1...500).map { episodeDownload(id: "other-\($0)", episode: $0) }
         let snapshot = EpisodeDownloadLookupSnapshot(items: items, providerAliasesByTMDBID: [:], revision: 7)
