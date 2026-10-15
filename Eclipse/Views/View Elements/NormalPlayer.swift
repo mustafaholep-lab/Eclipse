@@ -63,6 +63,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
 #if os(iOS)
     private let playerSurfaceView = IOSAVPlayerSurfaceView()
     private var pinchZoomedToFill = false
+    private var pinchSubtitleLayoutSignature: String?
     private var pinchGesture: UIPinchGestureRecognizer?
     private var pictureInPictureController: AVPictureInPictureController?
     private var pictureInPicturePossibleObservation: NSKeyValueObservation?
@@ -705,6 +706,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         else { return }
         guard fill != pinchZoomedToFill else { return }
         pinchZoomedToFill = fill
+        pinchSubtitleLayoutSignature = nil
         let transition = CATransition()
         transition.type = .fade
         transition.duration = 0.24
@@ -720,6 +722,9 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         let size = item.presentationSize
         let viewport = playerSurfaceView.bounds.size
         guard size.width > 0, size.height > 0, viewport.width > 0, viewport.height > 0 else { return }
+        let signature = "\(ObjectIdentifier(item))|\(size)|\(viewport)|\(view.safeAreaInsets)|\(appearance.fontSize)|\(appearance.verticalOffset)"
+        guard signature != pinchSubtitleLayoutSignature else { return }
+        pinchSubtitleLayoutSignature = signature
         let scale = max(viewport.width / size.width, viewport.height / size.height)
         let rendered = CGSize(width: size.width * scale, height: size.height * scale)
         let insets = view.safeAreaInsets
@@ -1631,6 +1636,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
                 self.currentPosition = position.isFinite ? max(0, position) : 0
                 self.currentDuration = duration.isFinite && duration > 0 ? duration : 0
 #if os(iOS)
+                if self.pinchZoomedToFill { self.updatePinchSubtitleLayout() }
                 self.mediaControlsController?.update(time: self.currentPosition)
                 self.updateNextEpisodeState(position: self.currentPosition, duration: self.currentDuration)
 #endif
