@@ -2439,6 +2439,9 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func applicationDidBecomeActive() {
+        // A previously requested download can resume automatically after launch;
+        // renew its execution grant before dispatching the restored queue.
+        beginUserInitiatedBackgroundDownloads()
         processQueue()
     }
 
