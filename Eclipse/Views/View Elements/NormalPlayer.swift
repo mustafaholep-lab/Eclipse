@@ -726,7 +726,8 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         guard pinchZoomedToFill else { item.textStyleRules = pinchOriginalTextStyleRules; return }
         let defaults = ProfileSettingsStore.active
         let savedSize = defaults.double(forKey: "subtitles_fontSize")
-        let fontSize = CGFloat(savedSize.isFinite && savedSize > 0 ? min(max(savedSize, 16), 52) : 30)
+        let defaultSize: Double = UIDevice.current.userInterfaceIdiom == .pad ? 30 : 22
+        let fontSize = CGFloat(savedSize.isFinite && savedSize > 0 ? min(max(savedSize, 16), 52) : defaultSize)
         let savedOffset = defaults.object(forKey: "playerSubtitleOverlayBottomConstant") as? Double ?? -6
         let verticalOffset = CGFloat(savedOffset.isFinite ? min(max(savedOffset, -24), 24) : -6)
         let size = item.presentationSize
@@ -738,7 +739,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         let scale = max(viewport.width / size.width, viewport.height / size.height)
         let rendered = CGSize(width: size.width * scale, height: size.height * scale)
         let insets = view.safeAreaInsets
-        let lineInset = insets.bottom + max(50, fontSize * 2 - (verticalOffset + 6) * 2.5)
+        let lineInset = insets.bottom + max(50, fontSize * 2 + (verticalOffset + 6) * 2.5)
         let bottom = (rendered.height - viewport.height) / 2 + viewport.height - lineInset
         var attributes = pinchOriginalTextStyleRules?.first?.textMarkupAttributes ?? [:]
         attributes[kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String] = max(0, min(100, bottom / rendered.height * 100))

@@ -27,4 +27,9 @@ assert info['ECLIPSE_SYNC_SERVER_URL'] == '$(ECLIPSE_SYNC_SERVER_URL)'
 assert 'audio' in info['UIBackgroundModes']
 for name in ['EclipseSyncCoordinator', 'EclipseSyncTransport', 'EclipseSyncProtocol', 'EclipseSyncPlayerAdapter', 'PlaybackLifecycleRecoveryPolicy']:
     assert (root / f'Eclipse/Player/{name}.swift').is_file(), name
+project = (root / 'Eclipse.xcodeproj/project.pbxproj').read_text(encoding='utf-8')
+source_phases = re.findall(r'isa = PBXSourcesBuildPhase;.*?files = \((.*?)\);', project, re.S)
+ios_sources = next(phase for phase in source_phases if 'SoraApp.swift in Sources' in phase)
+for name in ['DisplayRefreshSettings', 'DownloadBackgroundExecution', 'HLSBackgroundTransport']:
+    assert f'{name}.swift in Sources' in ios_sources, f'{name} missing from iOS target'
 print(f'Custom Eclipse ancestry, Sync configuration, and {len(catalog["strings"])} Turkish catalog entries verified')
