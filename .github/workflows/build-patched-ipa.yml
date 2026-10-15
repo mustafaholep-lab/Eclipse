@@ -98,7 +98,7 @@ jobs:
       - name: Test custom playback, downloads and Eclipse Sync
         run: |
           set -euo pipefail
-          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; import re; cands=[(tuple(int(x) for x in re.findall(r"iOS-([0-9-]+)", rt)[0].split("-")), d["udid"]) for rt, group in devices.items() if "iOS-" in rt for d in group if "iPhone" in d["name"]]; print(max(cands)[1] if cands else "")')"
           test -n "$SIMULATOR_ID"
           xcodebuild test \
             -jobs 1 \
@@ -266,7 +266,7 @@ jobs:
       - name: Build complete unit suite for testing
         run: |
           set -euo pipefail
-          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; import re; cands=[(tuple(int(x) for x in re.findall(r"iOS-([0-9-]+)", rt)[0].split("-")), d["udid"]) for rt, group in devices.items() if "iOS-" in rt for d in group if "iPhone" in d["name"]]; print(max(cands)[1] if cands else "")')"
           test -n "$SIMULATOR_ID"
           DERIVED_DATA_PATH="$RUNNER_TEMP/FullSuiteDerivedData"
           xcodebuild build-for-testing \
