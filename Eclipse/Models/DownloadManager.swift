@@ -2001,7 +2001,9 @@ final class DownloadManager: NSObject, ObservableObject {
         }, expired: { [weak self] ids in
             guard let self else { return }
             for item in self.downloads where ids.contains(item.id) && item.status == .downloading {
+#if !targetEnvironment(macCatalyst)
                 if self.protectedProviderAttempts[item.id]?.isSystemManaged == true { continue }
+#endif
                 if item.claimsProtectedProviderTransport || item.isHLS { self.pauseDownload(id: item.id) }
             }
         })

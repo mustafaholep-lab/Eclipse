@@ -1,6 +1,6 @@
 # Eclipse Sync relay
 
-Small Node.js WebSocket relay for the existing Eclipse Sync protocol v1. One host and one
+Small Node.js WebSocket relay for protocol v1 with opt-in host recovery. One host and one
 client per room by default. Rooms, membership and the latest playback snapshot live only
 in process memory. No database, account system, playback history, media proxy or provider
 integration. The server accepts only the documented playback/identity fields and constructs
@@ -42,6 +42,7 @@ All numeric settings are integers. Invalid settings fail startup with a generic 
 | `PORT` | `8787` | 0–65535 (0 chooses a free port, intended for tests) |
 | `HOST` | `0.0.0.0` | Bind address; use `127.0.0.1` when behind a local reverse proxy |
 | `ROOM_IDLE_TIMEOUT` | `120` | 1–3600 **seconds** without an accepted, newer host state |
+| `HOST_RECONNECT_GRACE` | `90` | 1–300 seconds to restore a disconnected capable host |
 | `MAX_ROOMS` | `1000` | 1–10000 |
 | `MAX_CLIENTS_PER_ROOM` | `1` | 1–16, excluding host; retain 1 for the supported two-user v1 experience |
 | `MAX_MESSAGE_BYTES` | `16384` | 512–16384; retain default for client compatibility |
@@ -63,8 +64,13 @@ not trusted. Behind a proxy, these limits therefore apply to the proxy collectiv
 set capacity appropriately and apply end-user connection/attempt limits at the edge.
 
 Room codes are cryptographically generated six ASCII digits with leading zeroes allowed.
-They are temporary discovery codes, not authentication. Host departure closes the room;
-there is no host election. Client departure frees its slot and leaves the host playing.
+They are temporary discovery codes, not authentication. Explicit host leave closes the room;
+there is no host election. Legacy host disconnect also closes its room immediately. A host
+that negotiates WebSocket subprotocol `eclipse-sync.v2` receives a random recovery ticket.
+Its disconnected room is retained for `HOST_RECONNECT_GRACE`; only the matching ticket,
+session and media can restore it. Successful recovery rotates the ticket. Tickets are
+never logged or sent to clients. Process restart still loses rooms and tickets.
+Client departure frees its slot and leaves the host playing.
 Do not replace an active client connection just because another caller knows its code.
 After transport disconnect and slot release, reconnect/rejoin returns the latest fresh
 snapshot. Same-connection rejoin is idempotent and also requests a host heartbeat through
@@ -159,3 +165,24 @@ messages, clock calibration, nested-field privacy, rate limits, health/handshake
 and anime identity parity with the Swift policy. The end-to-end scenario calibrates two
 participants, relays play/pause/seek/rate/heartbeat, reconnects the client, and closes the room.
 `npm run check` performs JavaScript syntax checks; there is no build step.
+
+## Recovery extension deployment
+
+Application envelopes retain protocol version 1. Only connections negotiating
+`eclipse-sync.v2` receive `resume_ticket`, `room_resumed` and `presence`. Existing clients
+receive their original messages and fields. New apps connected to an old relay retain
+legacy behavior until the server is upgraded. Installing the IPA alone does not activate
+host recovery. Counts include the temporarily disconnected host; `hostConnected`
+distinguishes that state.
+
+Deploy `feat/custom-eclipse-lifecycle` to the existing Render service with root directory
+`tools/eclipse-sync-server`, build `npm ci --ignore-scripts`, start `npm start`, health check
+`/health`, and one instance. No provider credentials or additional paid service is needed.
+A deploy/restart closes existing rooms; create a fresh room afterwards. Install the new
+custom IPA on both phones. Platform sleep/restarts and device force-quit can still end a room.
+
+Recovery tests cover authentic disconnect/restore, wrong and replayed tickets, attempted
+live-host eviction, exact presence counts, grace expiry, explicit leave and legacy clients.
+Test both host assignments on physical devices, including lock/unlock, minimizing, network
+changes, pause and seek after reconnect. The app keeps the current media's real audio
+session active during Sync. A paused or OS-suspended app relies on bounded recovery.

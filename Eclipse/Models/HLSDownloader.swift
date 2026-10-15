@@ -261,8 +261,12 @@ final class HLSDownloader: @unchecked Sendable {
         backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "HLSDownload-\(downloadId)") { [weak self] in
 
             guard let self else { return }
+#if os(iOS)
             if self.usesBackgroundTransport || DownloadBackgroundExecution.mayContinue { self.endBackgroundTask() }
             else { self.cancel(reason: .backgroundTimeExpired) }
+#else
+            self.cancel(reason: .backgroundTimeExpired)
+#endif
         }
         #endif
     }

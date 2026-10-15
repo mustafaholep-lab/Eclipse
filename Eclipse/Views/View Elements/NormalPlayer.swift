@@ -64,6 +64,8 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
     private let playerSurfaceView = IOSAVPlayerSurfaceView()
     private var pinchZoomedToFill = false
     private var pinchSubtitleLayoutSignature: String?
+    private weak var pinchStyledItem: AVPlayerItem?
+    private var pinchOriginalTextStyleRules: [AVTextStyleRule]?
     private var pinchGesture: UIPinchGestureRecognizer?
     private var pictureInPictureController: AVPictureInPictureController?
     private var pictureInPicturePossibleObservation: NSKeyValueObservation?
@@ -717,24 +719,32 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
 
     private func updatePinchSubtitleLayout() {
         guard let item = player?.currentItem else { return }
-        let appearance = PlayerSubtitleAppearance()
-        guard pinchZoomedToFill else { item.textStyleRules = appearance.avTextStyleRules; return }
+        if pinchStyledItem !== item {
+            pinchStyledItem = item
+            pinchOriginalTextStyleRules = item.textStyleRules
+        }
+        guard pinchZoomedToFill else { item.textStyleRules = pinchOriginalTextStyleRules; return }
+        let defaults = ProfileSettingsStore.active
+        let savedSize = defaults.double(forKey: "subtitles_fontSize")
+        let fontSize = CGFloat(savedSize.isFinite && savedSize > 0 ? min(max(savedSize, 16), 52) : 30)
+        let savedOffset = defaults.object(forKey: "playerSubtitleOverlayBottomConstant") as? Double ?? -6
+        let verticalOffset = CGFloat(savedOffset.isFinite ? min(max(savedOffset, -24), 24) : -6)
         let size = item.presentationSize
         let viewport = playerSurfaceView.bounds.size
         guard size.width > 0, size.height > 0, viewport.width > 0, viewport.height > 0 else { return }
-        let signature = "\(ObjectIdentifier(item))|\(size)|\(viewport)|\(view.safeAreaInsets)|\(appearance.fontSize)|\(appearance.verticalOffset)"
+        let signature = "\(ObjectIdentifier(item))|\(size)|\(viewport)|\(view.safeAreaInsets)|\(fontSize)|\(verticalOffset)"
         guard signature != pinchSubtitleLayoutSignature else { return }
         pinchSubtitleLayoutSignature = signature
         let scale = max(viewport.width / size.width, viewport.height / size.height)
         let rendered = CGSize(width: size.width * scale, height: size.height * scale)
         let insets = view.safeAreaInsets
-        let lineInset = insets.bottom + max(50, appearance.fontSize * 2)
+        let lineInset = insets.bottom + max(50, fontSize * 2 - (verticalOffset + 6) * 2.5)
         let bottom = (rendered.height - viewport.height) / 2 + viewport.height - lineInset
-        var attributes = appearance.avTextStyleRules.first?.textMarkupAttributes ?? [:]
+        var attributes = pinchOriginalTextStyleRules?.first?.textMarkupAttributes ?? [:]
         attributes[kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String] = max(0, min(100, bottom / rendered.height * 100))
         attributes[kCMTextMarkupAttribute_TextPositionPercentageRelativeToWritingDirection as String] = 50
         attributes[kCMTextMarkupAttribute_WritingDirectionSizePercentage as String] = max(1, min(100, (viewport.width - insets.left - insets.right - 32) / rendered.width * 100))
-        item.textStyleRules = AVTextStyleRule(textMarkupAttributes: attributes).map { [$0] } ?? appearance.avTextStyleRules
+        item.textStyleRules = AVTextStyleRule(textMarkupAttributes: attributes).map { [$0] } ?? pinchOriginalTextStyleRules
     }
 
     override func viewDidLayoutSubviews() {
