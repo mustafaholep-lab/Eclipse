@@ -624,6 +624,10 @@ final class WatchTogetherCoordinator: ObservableObject {
         return isLocalStateAuthority ? .authority : .follower
     }
 
+    func shouldContinuePlaybackInBackground(from sender: any WatchTogetherPlaybackDelegate) -> Bool {
+        playbackDelegate === sender && isAttachedToCurrentActivity
+    }
+
     func currentAcceptedState(for sender: any WatchTogetherPlaybackDelegate) -> WatchTogetherSharedState? {
         guard playbackDelegate === sender,
               isAttachedToCurrentActivity else {

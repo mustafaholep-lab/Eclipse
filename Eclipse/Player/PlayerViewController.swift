@@ -17128,6 +17128,21 @@ extension PlayerViewController: PiPControllerDelegate {
             return
         }
 
+        // A locked screen or failed automatic PiP handoff is not a user pause.
+        // Keep real media audio running so iOS can retain the joined SharePlay session.
+#if os(iOS)
+        if WatchTogetherCoordinator.shared.shouldContinuePlaybackInBackground(from: self) {
+            cancelMPVBackgroundAudioFallback(reason: "watch-together-audio-\(source)")
+            do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .moviePlayback)
+                try audioSession.setActive(true)
+            } catch {
+                Logger.shared.log("WatchTogether: background audio activation failed: \(error.localizedDescription)", type: "Player")
+            }
+            return
+        }
+#endif
         cancelMPVBackgroundAudioFallback(reason: "executing-\(source)")
         mpvAppExitPiPStartRequested = false
         mpvBackgroundFallbackAutoPaused = true
