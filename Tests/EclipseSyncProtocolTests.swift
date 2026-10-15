@@ -3,6 +3,19 @@ import XCTest
 @testable import Eclipse
 
 final class EclipseSyncProtocolTests: XCTestCase {
+    func testResumeAndPresenceExtensionsAreBoundedAndRoundTrip() throws {
+        let session = UUID()
+        let ticket = String(repeating: "a", count: 64)
+        let messages: [EclipseSyncMessage] = [
+            .resumeRoom(room: "123456", sessionID: session, token: ticket, media: movie),
+            .resumeTicket(room: "123456", sessionID: session, token: ticket),
+            .roomResumed(room: "123456", sessionID: session),
+            .presence(room: "123456", sessionID: session, count: 2, hostConnected: false)
+        ]
+        for message in messages { XCTAssertEqual(try EclipseSyncMessage.decode(message.encoded()), message) }
+        XCTAssertThrowsError(try EclipseSyncMessage.resumeTicket(room: "123456", sessionID: session, token: "short").encoded())
+        XCTAssertThrowsError(try EclipseSyncMessage.presence(room: "123456", sessionID: session, count: 18, hostConnected: true).encoded())
+    }
     private let session = UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000000")!
     private var movie: WatchTogetherMediaDescriptor {
         WatchTogetherMediaDescriptor(tmdbID: 603, mediaType: "movie", seasonNumber: nil, episodeNumber: nil, title: "The Matrix")

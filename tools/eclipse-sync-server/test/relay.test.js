@@ -21,8 +21,8 @@ async function fixture(t, options = {}) {
   t.after(() => relay.close());
   const address = await relay.listen();
   const url = `ws://127.0.0.1:${address.port}`;
-  async function connect(options = {}) {
-    const ws = new WebSocket(url, options);
+  async function connect(options = {}, protocols = []) {
+    const ws = new WebSocket(url, protocols, options);
     const inbox = [];
     ws.on('error', () => {});
     ws.on('message', bytes => inbox.push(JSON.parse(bytes.toString())));
@@ -366,4 +366,78 @@ scenario('end-to-end two clients: calibration, controls, reconnect snapshot, lea
   const reconnected = await f.join(h); assert.equal(reconnected.joined.state.sequence, controls.length);
   h.send('leave_room', { room: h.room, sessionID: h.sessionID });
   assert.equal((await reconnected.next('room_closed')).reason, 'host_left'); assert.equal(f.relay.rooms.size, 0);
+});
+
+async function modernHost(f) {
+  const h = await f.connect({}, ['eclipse-sync.v2']);
+  h.send('create_room', { media: movie });
+  const created = await h.next('room_created');
+  const ticket = await h.next('resume_ticket');
+  return { ...h, ...created, media: movie, token: ticket.token };
+}
+scenario('v2 host reconnect retains room and sequence; wrong and replayed tickets fail', async t => {
+  const f = await fixture(t), h = await modernHost(f), c = await f.join(h);
+  h.send('host_state', { state: state(h) }); await c.next('state');
+  h.ws.terminate(); await h.closed;
+  await eventually(() => f.relay.rooms.get(h.room)?.hostDisconnectedAt != null);
+  assert.equal(f.relay.rooms.size, 1);
+  const bad = await f.connect({}, ['eclipse-sync.v2']);
+  bad.send('resume_room', { room: h.room, sessionID: h.sessionID, token: '0'.repeat(64), media: movie });
+  assert.equal((await bad.next('error')).code, 'room_not_found');
+  const resumed = await f.connect({}, ['eclipse-sync.v2']);
+  const resume = { room: h.room, sessionID: h.sessionID, token: h.token, media: movie };
+  resumed.send('resume_room', resume);
+  assert.equal((await resumed.next('room_resumed')).sessionID, h.sessionID);
+  const ticket = await resumed.next('resume_ticket');
+  assert.notEqual(ticket.token, h.token);
+  resumed.send('host_state', { state: state(h, { sequence: 2, position: 80 }) });
+  assert.equal((await c.next('state')).state.position, 80);
+  resumed.ws.terminate(); await resumed.closed;
+  await eventually(() => f.relay.rooms.get(h.room)?.hostDisconnectedAt != null);
+  bad.send('resume_room', resume);
+  assert.equal((await bad.next('error')).code, 'room_not_found');
+});
+scenario('v2 cannot evict a connected host even with a valid ticket', async t => {
+  const f = await fixture(t), h = await modernHost(f), attacker = await f.connect({}, ['eclipse-sync.v2']);
+  attacker.send('resume_room', { room: h.room, sessionID: h.sessionID, token: h.token, media: movie });
+  assert.equal((await attacker.next('error')).code, 'room_not_found');
+  assert.equal(f.relay.rooms.get(h.room).host.ws.readyState, WebSocket.OPEN);
+});
+scenario('v2 grace is bounded and explicit leave closes immediately', async t => {
+  let time = 100;
+  const f = await fixture(t, { monotonic: () => time, config: { hostReconnectGrace: 5 } });
+  const h = await modernHost(f), c = await f.join(h);
+  h.ws.terminate(); await h.closed;
+  await eventually(() => f.relay.rooms.get(h.room)?.hostDisconnectedAt != null);
+  time += 4; f.relay.sweep(); assert.equal(f.relay.rooms.size, 1);
+  time += 1; f.relay.sweep();
+  assert.equal((await c.next('room_closed')).reason, 'host_disconnected');
+  const second = await modernHost(f);
+  second.send('leave_room', { room: second.room, sessionID: second.sessionID });
+  assert.equal((await second.next('room_closed')).reason, 'host_left');
+  assert.equal(f.relay.rooms.size, 0);
+});
+scenario('v2 presence is exact and legacy peers never receive extension messages', async t => {
+  const f = await fixture(t), h = await modernHost(f);
+  assert.equal((await h.next('presence')).count, 1);
+  const c = await f.join(h);
+  assert.equal((await h.next('presence')).count, 2);
+  c.send('join_room', { room: h.room, media: movie }); await c.next('joined');
+  assert.equal((await h.next('presence')).count, 2);
+  assert.equal(c.inbox.some(m => ['presence', 'resume_ticket'].includes(m.type)), false);
+  c.ws.terminate(); await c.closed;
+  assert.equal((await h.next('presence')).count, 1);
+});
+scenario('resume is media and incarnation bound; malformed tokens and extra fields are rejected', async t => {
+  const f = await fixture(t), h = await modernHost(f);
+  h.ws.terminate(); await h.closed;
+  await eventually(() => f.relay.rooms.get(h.room)?.hostDisconnectedAt != null);
+  const p = await f.connect({}, ['eclipse-sync.v2']);
+  const valid = { room: h.room, sessionID: h.sessionID, token: h.token, media: movie };
+  p.send('resume_room', { ...valid, media: { ...movie, tmdbID: 1 } });
+  assert.equal((await p.next('error')).code, 'room_not_found');
+  p.send('resume_room', { ...valid, sessionID: randomUUID() });
+  assert.equal((await p.next('error')).code, 'room_not_found');
+  assert.throws(() => validateCommand(command('resume_room', { ...valid, token: 'short' }), Date.now() / 1000));
+  assert.throws(() => validateCommand(command('resume_room', { ...valid, url: 'https://private.example' }), Date.now() / 1000));
 });

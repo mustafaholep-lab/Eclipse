@@ -42,31 +42,40 @@ final class EclipseSyncPlayerAdapter: EclipseSyncPlaybackDelegate {
     var state: EclipseSyncConnectionState { coordinator?.connectionState ?? .idle }
     var room: String? { coordinator?.room }
     var role: EclipseSyncRole? { coordinator?.role }
+    var participantCount: Int { coordinator?.participantCount ?? 0 }
+    var hostConnected: Bool { coordinator?.hostConnected ?? true }
     var statusText: String {
+        let roleName = eclipseLocalized(role == .host ? "Host" : "Client")
+        let location = eclipseLocalized("%@ · Room %@", roleName, room ?? "")
         switch state {
-        case .idle: return "Not active"
-        case .connecting: return role == .host ? "Creating room..." : "Joining room..."
-        case .waitingForState: return "Client · Room \(room ?? "") · Waiting for host"
-        case .active(let role, let room): return "\(role == .host ? "Host" : "Client") · Room \(room)"
-        case .reconnecting(let attempt): return "Client · Room \(room ?? "") · Reconnecting (\(attempt)/5)"
-        case .mismatch: return "Different movie or episode. Open the host's title before joining."
+        case .idle: return eclipseLocalized("Not active")
+        case .connecting: return eclipseLocalized(role == .host ? "Creating room..." : "Joining room...")
+        case .waitingForState: return location + " · " + eclipseLocalized("Waiting for host")
+        case .active: return location
+        case .reconnecting(let attempt): return location + " · " + eclipseLocalized("Reconnecting (%lld/5)", Int64(attempt))
+        case .mismatch: return eclipseLocalized("Different movie or episode. Open the host’s title before joining.")
         case .closed(let reason):
             switch reason {
-            case .hostLeft: return "The host left the room."
-            case .hostDisconnected: return "The host disconnected. The room is closed."
-            case .expired: return "The room expired. Create or join a new room."
+            case .hostLeft: return eclipseLocalized("The host left the room.")
+            case .hostDisconnected: return eclipseLocalized("The host disconnected. The room is closed.")
+            case .expired: return eclipseLocalized("The room expired. Create or join a new room.")
             }
         case .rejected(let code):
             switch code {
-            case .roomNotFound: return "Room not found. Check the code or ask the host for a new room."
-            case .roomFull: return "The room already has a client."
-            case .mediaMismatch: return "Different movie or episode."
-            case .hostOnly: return "Only the host can control playback."
-            case .invalidMessage: return "The server rejected the room request."
-            case .rateLimited: return "Too many requests. Try again later."
+            case .roomNotFound: return eclipseLocalized("Room not found. Check the code or ask the host for a new room.")
+            case .roomFull: return eclipseLocalized("The room already has a client.")
+            case .mediaMismatch: return eclipseLocalized("Different movie or episode.")
+            case .hostOnly: return eclipseLocalized("Only the host can control playback.")
+            case .invalidMessage: return eclipseLocalized("The server rejected the room request.")
+            case .rateLimited: return eclipseLocalized("Too many requests. Try again later.")
             }
-        case .failed: return "Eclipse Sync disconnected or could not connect. Try joining again."
+        case .failed: return eclipseLocalized("Eclipse Sync disconnected or could not connect. Try joining again.")
         }
+    }
+    func applicationDidBecomeActive() { coordinator?.applicationDidBecomeActive() }
+
+    func eclipseSyncPresenceChanged(count: Int, hostConnected: Bool) {
+        player?.eclipseSyncUpdateStatus(state)
     }
     var controlPosition: Double? { eclipseSyncSnapshot?.position }
     var eclipseSyncSnapshot: EclipseSyncPlaybackSnapshot? {

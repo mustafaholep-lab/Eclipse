@@ -221,6 +221,60 @@ final class EclipseSyncCoordinatorTests: XCTestCase {
         await coordinator.leave()
     }
 
+    func testHostResumesSameRoomWithTicketAndKeepsPublicationSequence() async throws {
+        let probe = SyncPlaybackProbe(); let (host, wire) = make(probe)
+        try host.createRoom(); wire.receive(.opened)
+        await drain()
+        wire.receive(.message(.roomCreated(room: "482731", sessionID: session)))
+        try await waitUntil { host.latestState != nil }
+        let ticket = String(repeating: "a", count: 64)
+        wire.receive(.message(.resumeTicket(room: "482731", sessionID: session, token: ticket)))
+        await drain()
+        let sequence = try XCTUnwrap(host.latestState?.sequence)
+        wire.receive(.closed(.connection))
+        try await waitUntil { host.connectionState == .reconnecting(attempt: 1) }
+        XCTAssertEqual(host.role, .host)
+        host.reconnectNow(); wire.receive(.opened)
+        try await waitUntil { wire.sent.contains(.resumeRoom(room: "482731", sessionID: self.session, token: ticket, media: probe.media)) }
+        wire.receive(.message(.roomResumed(room: "482731", sessionID: session)))
+        try await waitUntil { host.latestState?.sequence ?? 0 > sequence }
+        XCTAssertEqual(host.room, "482731")
+        XCTAssertEqual(wire.sent.filter { if case .createRoom = $0 { return true }; return false }.count, 1)
+        await host.leave()
+    }
+
+    func testForegroundRefreshUsesFreshStateWithoutImmediateStaleSocketFailure() async throws {
+        let probe = SyncPlaybackProbe(); let (client, wire) = make(probe)
+        try await join(client, wire, initial: state())
+        time += 100
+        client.applicationDidBecomeActive()
+        await drain()
+        client.tick()
+        XCTAssertEqual(client.role, .client)
+        wire.receive(.message(.state(state(sequence: 2, position: 300, sentAt: time + 3))))
+        try await waitUntil { client.latestState?.sequence == 2 }
+        XCTAssertEqual(probe.position, 300)
+        await client.leave()
+    }
+
+    func testPresenceKeepsBriefDepartureAndCancelsItOnRejoin() async throws {
+        let probe = SyncPlaybackProbe(); let (host, wire) = make(probe)
+        try host.createRoom(); wire.receive(.opened); await drain()
+        wire.receive(.message(.roomCreated(room: "482731", sessionID: session))); await drain()
+        wire.receive(.message(.presence(room: "482731", sessionID: session, count: 2, hostConnected: true))); await drain()
+        XCTAssertEqual(host.participantCount, 2)
+        wire.receive(.message(.presence(room: "482731", sessionID: session, count: 1, hostConnected: true))); await drain()
+        XCTAssertEqual(host.participantCount, 2)
+        time += 2
+        wire.receive(.message(.presence(room: "482731", sessionID: session, count: 2, hostConnected: true))); await drain()
+        time += 2; host.tick()
+        XCTAssertEqual(host.participantCount, 2)
+        wire.receive(.message(.presence(room: "482731", sessionID: session, count: 1, hostConnected: true))); await drain()
+        time += 3; host.tick()
+        XCTAssertEqual(host.participantCount, 1)
+        await host.leave()
+    }
+
     func testHostDisconnectClosesWithoutHostElectionAndLeaveCancelsTimers() async throws {
         let probe = SyncPlaybackProbe(); let (host, transport) = make(probe)
         try host.createRoom(); transport.receive(.opened); await drain()

@@ -60,6 +60,10 @@ struct EclipseSyncState: Codable, Equatable {
 
 /// A closed set of messages prevents playback URLs, headers, or credentials entering the wire.
 enum EclipseSyncMessage: Equatable {
+    case resumeRoom(room: String, sessionID: UUID, token: String, media: WatchTogetherMediaDescriptor)
+    case resumeTicket(room: String, sessionID: UUID, token: String)
+    case roomResumed(room: String, sessionID: UUID)
+    case presence(room: String, sessionID: UUID, count: Int, hostConnected: Bool)
     case createRoom(media: WatchTogetherMediaDescriptor)
     case joinRoom(room: String, media: WatchTogetherMediaDescriptor)
     case leaveRoom(room: String, sessionID: UUID)
@@ -93,11 +97,21 @@ enum EclipseSyncMessage: Equatable {
         var serverSentAt: Double?
         var reason: EclipseSyncCloseReason?
         var code: EclipseSyncErrorCode?
+        var token: String?
+        var count: Int?
+        var hostConnected: Bool?
     }
 
     func encoded() throws -> Data {
         var wire: Wire
         switch self {
+        case .resumeRoom(let room, let session, let token, let media):
+            wire = Wire(type: "resume_room", room: room, sessionID: session, media: media, token: token)
+        case .resumeTicket(let room, let session, let token):
+            wire = Wire(type: "resume_ticket", room: room, sessionID: session, token: token)
+        case .roomResumed(let room, let session): wire = Wire(type: "room_resumed", room: room, sessionID: session)
+        case .presence(let room, let session, let count, let online):
+            wire = Wire(type: "presence", room: room, sessionID: session, count: count, hostConnected: online)
         case .createRoom(let media): wire = Wire(type: "create_room", media: media)
         case .joinRoom(let room, let media): wire = Wire(type: "join_room", room: room, media: media)
         case .leaveRoom(let room, let session): wire = Wire(type: "leave_room", room: room, sessionID: session)
@@ -128,6 +142,10 @@ enum EclipseSyncMessage: Equatable {
         guard let type = object["type"] as? String else { throw EclipseSyncProtocolError.invalidMessage }
         let fields: Set<String>
         switch type {
+        case "resume_room": fields = ["room", "sessionID", "token", "media"]
+        case "resume_ticket": fields = ["room", "sessionID", "token"]
+        case "room_resumed": fields = ["room", "sessionID"]
+        case "presence": fields = ["room", "sessionID", "count", "hostConnected"]
         case "create_room": fields = ["media"]
         case "join_room": fields = ["room", "media"]
         case "leave_room", "room_created", "participant_joined", "participant_left": fields = ["room", "sessionID"]
@@ -154,6 +172,24 @@ enum EclipseSyncMessage: Equatable {
             return (room, session)
         }
         switch type {
+        case "resume_room", "resume_ticket":
+            let (room, session) = try membership()
+            guard let token = wire.token, token.utf8.count == 64,
+                  token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw EclipseSyncProtocolError.invalidMessage
+            }
+            if type == "resume_ticket" { return .resumeTicket(room: room, sessionID: session, token: token) }
+            guard let media = wire.media, media.sanitizedForTransport != nil else { throw EclipseSyncProtocolError.invalidMessage }
+            return .resumeRoom(room: room, sessionID: session, token: token, media: media)
+        case "room_resumed":
+            let (room, session) = try membership()
+            return .roomResumed(room: room, sessionID: session)
+        case "presence":
+            let (room, session) = try membership()
+            guard let count = wire.count, (1...17).contains(count), let online = wire.hostConnected else {
+                throw EclipseSyncProtocolError.invalidMessage
+            }
+            return .presence(room: room, sessionID: session, count: count, hostConnected: online)
         case "create_room", "join_room":
             guard let media = wire.media, media.sanitizedForTransport != nil else { throw EclipseSyncProtocolError.invalidMessage }
             if type == "create_room" { return .createRoom(media: media) }

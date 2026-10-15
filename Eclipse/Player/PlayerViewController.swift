@@ -631,6 +631,18 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         return button
     }()
 
+    private let eclipseSyncParticipantsButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+        button.setTitleColor(.white, for: .normal)
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        button.layer.cornerRadius = 14
+        button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        button.isHidden = true
+        return button
+    }()
+
     private let watchTogetherButton: UIButton = {
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
@@ -5915,6 +5927,14 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         videoContainer.addSubview(pipButton)
 #if os(iOS)
         videoContainer.addSubview(watchTogetherButton)
+        videoContainer.addSubview(eclipseSyncParticipantsButton)
+        eclipseSyncParticipantsButton.addTarget(self, action: #selector(eclipseSyncParticipantsTapped), for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            eclipseSyncParticipantsButton.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 8),
+            eclipseSyncParticipantsButton.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            eclipseSyncParticipantsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
+            eclipseSyncParticipantsButton.widthAnchor.constraint(lessThanOrEqualToConstant: 240)
+        ])
 #endif
         videoContainer.addSubview(playerTitleLabel)
         videoContainer.addSubview(skipBackwardButton)
@@ -20085,6 +20105,18 @@ extension PlayerViewController: PiPControllerDelegate {
             return
         }
 
+#if os(iOS)
+        if eclipseSyncAdapter?.isActive == true {
+            cancelMPVBackgroundAudioFallback(reason: "eclipse-sync-audio")
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                Logger.shared.log("Eclipse Sync background audio activation failed", type: "Player")
+            }
+            return
+        }
+#endif
         cancelMPVBackgroundAudioFallback(reason: "executing-\(source)")
         mpvAppExitPiPStartRequested = false
         mpvBackgroundFallbackAutoPaused = true
@@ -20176,6 +20208,7 @@ extension PlayerViewController: PiPControllerDelegate {
                 )
                 return
             }
+            self.eclipseSyncAdapter?.applicationDidBecomeActive()
             self.markBackgroundRecoveryForegrounded(source: "did-become-active")
             self.cancelPendingMPVAppExitPictureInPictureStart(reason: "did-become-active")
             self.clearMPVAppExitPictureInPictureSuppression(reason: "did-become-active")
@@ -20266,7 +20299,7 @@ private extension PlayerViewController {
 
     func presentEclipseSyncJoinPrompt() {
         guard !isClosing, presentedViewController == nil else { return }
-        let alert = UIAlertController(title: eclipseLocalized("Join Eclipse Sync"), message: "Enter the host's six-digit room code.", preferredStyle: .alert)
+        let alert = UIAlertController(title: eclipseLocalized("Join Eclipse Sync"), message: eclipseLocalized("Enter the host's six-digit room code."), preferredStyle: .alert)
         alert.addTextField { field in
             field.placeholder = "Room code"
             field.keyboardType = .numberPad
@@ -20315,6 +20348,29 @@ private extension PlayerViewController {
                 : "Eclipse Sync could not start. This video needs a valid movie or episode identity."
             presentWatchTogetherAlert(title: "Eclipse Sync Unavailable", message: message)
         }
+    }
+
+    @objc func eclipseSyncParticipantsTapped() {
+        guard let adapter = eclipseSyncAdapter, adapter.isActive, presentedViewController == nil else { return }
+        let count = adapter.participantCount
+        var people = [eclipseLocalized("Host") + (adapter.role == .host ? " · " + eclipseLocalized("You") : "")]
+        for index in 1..<max(1, count) {
+            people.append(eclipseLocalized("Client") + " \(index)" + (adapter.role == .client && index == 1 ? " · " + eclipseLocalized("You") : ""))
+        }
+        let menu = UIAlertController(title: eclipseLocalized("%lld watching", Int64(count)), message: people.joined(separator: "\n"), preferredStyle: .alert)
+        menu.addAction(UIAlertAction(title: eclipseLocalized("OK"), style: .cancel))
+        present(menu, animated: true)
+    }
+
+    func updateEclipseSyncPresence() {
+        let count = eclipseSyncAdapter?.participantCount ?? 0
+        eclipseSyncParticipantsButton.isHidden = count == 0 || eclipseSyncAdapter?.isActive != true
+        let icons = String(repeating: "●", count: min(count, 4)) + (count > 4 ? " +\(count - 4)" : "")
+        let title = icons + "  " + eclipseLocalized("%lld watching", Int64(count))
+        eclipseSyncParticipantsButton.setTitle(title, for: .normal)
+        eclipseSyncParticipantsButton.accessibilityLabel = title
+        eclipseSyncParticipantsButton.alpha = 1
+        videoContainer.bringSubviewToFront(eclipseSyncParticipantsButton)
     }
 
     func updateEclipseSyncButton() {
@@ -20410,11 +20466,10 @@ extension PlayerViewController: EclipseSyncPlayer {
     func eclipseSyncUpdateStatus(_ state: EclipseSyncConnectionState) {
         guard !isClosing else { return }
         configureWatchTogetherForCurrentMedia()
+        updateEclipseSyncPresence()
         if eclipseSyncAdapter?.isActive == true { updateEclipseSyncButton() }
         switch state {
-        case .active(let role, _):
-            showPlayerNotice(eclipseSyncAdapter?.statusText ?? "Eclipse Sync connected.")
-            if role == .host, presentedViewController == nil { presentEclipseSyncMenu() }
+        case .active: break
         case .mismatch, .closed, .failed, .rejected:
             updateEclipseSyncButton()
             showPlayerNotice(eclipseSyncAdapter?.statusText ?? "Eclipse Sync disconnected.")
