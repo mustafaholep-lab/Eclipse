@@ -62,6 +62,9 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
     private let systemPlayerViewController = AVPlayerViewController()
 #if os(iOS)
     private let playerSurfaceView = IOSAVPlayerSurfaceView()
+    private var pinchZoomedToFill = false
+    private var pinchSubtitleLayoutSignature: String?
+    private var pinchGesture: UIPinchGestureRecognizer?
     private var pictureInPictureController: AVPictureInPictureController?
     private var pictureInPicturePossibleObservation: NSKeyValueObservation?
 #endif
@@ -346,6 +349,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
             embeddedSubtitlesAllowed = mediaSelectionIntent.subtitlesEnabled
         }
         setupHoldGesture()
+        setupPinchGesture()
         setupDoubleTapGesture()
         setupPictureInPictureHandling()
         setupMediaControls()
@@ -727,6 +731,57 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         }
     }
 
+    private func setupPinchGesture() {
+        let gesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        gesture.delegate = self
+        view.addGestureRecognizer(gesture)
+        pinchGesture = gesture
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        guard !PlayerPlaybackLockSettings.isLocked(), gesture.state == .changed || gesture.state == .ended else { return }
+        let fill: Bool
+        if gesture.scale > 1.08 { fill = true }
+        else if gesture.scale < 0.92 { fill = false }
+        else { return }
+        guard fill != pinchZoomedToFill else { return }
+        pinchZoomedToFill = fill
+        pinchSubtitleLayoutSignature = nil
+        let transition = CATransition()
+        transition.type = .fade
+        transition.duration = 0.24
+        playerSurfaceView.playerLayer.add(transition, forKey: "video.fillTransition")
+        playerSurfaceView.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+        updatePinchSubtitleLayout()
+    }
+
+    private func updatePinchSubtitleLayout() {
+        guard let item = player?.currentItem else { return }
+        let appearance = PlayerSubtitleAppearance()
+        guard pinchZoomedToFill else { item.textStyleRules = appearance.avTextStyleRules; return }
+        let size = item.presentationSize
+        let viewport = playerSurfaceView.bounds.size
+        guard size.width > 0, size.height > 0, viewport.width > 0, viewport.height > 0 else { return }
+        let signature = "\(ObjectIdentifier(item))|\(size)|\(viewport)|\(view.safeAreaInsets)|\(appearance.fontSize)|\(appearance.verticalOffset)"
+        guard signature != pinchSubtitleLayoutSignature else { return }
+        pinchSubtitleLayoutSignature = signature
+        let scale = max(viewport.width / size.width, viewport.height / size.height)
+        let rendered = CGSize(width: size.width * scale, height: size.height * scale)
+        let insets = view.safeAreaInsets
+        let lineInset = insets.bottom + max(50, appearance.fontSize * 2)
+        let bottom = (rendered.height - viewport.height) / 2 + viewport.height - lineInset
+        var attributes = appearance.avTextStyleRules.first?.textMarkupAttributes ?? [:]
+        attributes[kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String] = max(0, min(100, bottom / rendered.height * 100))
+        attributes[kCMTextMarkupAttribute_TextPositionPercentageRelativeToWritingDirection as String] = 50
+        attributes[kCMTextMarkupAttribute_WritingDirectionSizePercentage as String] = max(1, min(100, (viewport.width - insets.left - insets.right - 32) / rendered.width * 100))
+        item.textStyleRules = AVTextStyleRule(textMarkupAttributes: attributes).map { [$0] } ?? appearance.avTextStyleRules
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if pinchZoomedToFill { updatePinchSubtitleLayout() }
+    }
+
     private func setupDoubleTapGesture() {
         let gesture = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
         gesture.numberOfTapsRequired = 2
@@ -734,6 +789,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         gesture.delegate = self
         view.addGestureRecognizer(gesture)
         doubleTapGesture = gesture
+        if let pinchGesture { gesture.require(toFail: pinchGesture) }
     }
 
     private func setupMediaControlsVisibilityGesture() {
@@ -760,6 +816,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         }
         view.addGestureRecognizer(gesture)
         mediaControlsTapGesture = gesture
+        if let pinchGesture { gesture.require(toFail: pinchGesture) }
     }
 
     @objc private func handleMediaControlsTouchDown(_ gesture: UILongPressGestureRecognizer) {
@@ -815,7 +872,10 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
-        true
+#if os(iOS)
+        if gestureRecognizer is UIPinchGestureRecognizer || otherGestureRecognizer is UIPinchGestureRecognizer { return false }
+#endif
+        return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -1375,19 +1435,19 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
 
     private func showCoordinatorFallbackFailureAlert(_ report: PlaybackFailureReport) {
         let alert = UIAlertController(
-            title: "Playback Failed in Both Players",
+            title: eclipseLocalized("Playback Failed in Both Players"),
             message: "AVPlayer could not start this stream after Molten failed. \(report.message)",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Retry AVPlayer", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry AVPlayer"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
         if onPlaybackStartupFailure != nil {
-            alert.addAction(UIAlertAction(title: "Try Another Source", style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: eclipseLocalized("Try Another Source"), style: .default) { [weak self] _ in
                 self?.dismissAndReportPlaybackFailure(report)
             })
         }
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeAVPlayer()
         })
         presentPlaybackFailureAlert(alert)
@@ -1395,14 +1455,14 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
 
     private func showManualPlaybackFailureAlert(_ report: PlaybackFailureReport) {
         let alert = UIAlertController(
-            title: "Playback Failed",
+            title: eclipseLocalized("Playback Failed"),
             message: "\(report.context.sourceName) could not start playback. \(report.message)",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeAVPlayer()
         })
         presentPlaybackFailureAlert(alert)
@@ -1660,6 +1720,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
                 self.currentPosition = position.isFinite ? max(0, position) : 0
                 self.currentDuration = duration.isFinite && duration > 0 ? duration : 0
 #if os(iOS)
+                if self.pinchZoomedToFill { self.updatePinchSubtitleLayout() }
                 self.mediaControlsController?.update(time: self.currentPosition)
                 self.updateNextEpisodeState(position: self.currentPosition, duration: self.currentDuration)
 #endif
@@ -1674,14 +1735,14 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
             return
         }
         let alert = UIAlertController(
-            title: "Playback Stopped",
+            title: eclipseLocalized("Playback Stopped"),
             message: message,
             preferredStyle: .alert
         )
         if let context = effectiveFailureContext(),
            let onAutomaticPlaybackFallback {
             let report = PlaybackFailureReport(context: context, message: message, isSourceFailure: false)
-            alert.addAction(UIAlertAction(title: "Try Other Player", style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: eclipseLocalized("Try Other Player"), style: .default) { [weak self] _ in
                 self?.persistCurrentProgressForAccountBoundary()
                 ProgressManager.shared.flushPendingSave()
                 self?.onAutomaticPlaybackFallback = nil
@@ -1689,10 +1750,10 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
                 onAutomaticPlaybackFallback(report)
             })
         }
-        alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Retry"), style: .default) { [weak self] _ in
             self?.retryPlaybackAfterFailure()
         })
-        alert.addAction(UIAlertAction(title: "Close", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: eclipseLocalized("Close"), style: .cancel) { [weak self] _ in
             self?.closeAVPlayer()
         })
         if presentedViewController == nil {
@@ -2045,7 +2106,7 @@ private extension NormalPlayer {
         let button = UIButton(type: .system)
         button.configuration = IOSAVPlayerControlStyle.configuration(
             imageName: "forward.end.fill",
-            title: "Next Episode",
+            title: eclipseLocalized("Next Episode"),
             imagePadding: 8
         )
         IOSAVPlayerControlStyle.applyShadow(to: button)
@@ -2361,7 +2422,7 @@ private extension NormalPlayer {
         return PlayerResolvedPlaybackRequest(
             url: fileURL,
             preset: PlayerPreset.presets.first
-                ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: []),
+                ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: []),
             headers: [:],
             subtitles: DownloadManager.shared.localSubtitleURL(for: download).map { [$0.absoluteString] },
             subtitleNames: nil,
@@ -2673,7 +2734,7 @@ extension NormalPlayer: UIAdaptivePresentationControllerDelegate {
         return PlayerResolvedPlaybackRequest(
             url: fileURL,
             preset: PlayerPreset.presets.first
-                ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: []),
+                ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: []),
             headers: [:],
             subtitles: DownloadManager.shared.localSubtitleURL(for: downloadItem).map { [$0.absoluteString] },
             subtitleNames: nil,
@@ -3640,7 +3701,7 @@ private final class IOSAVPlayerMediaControlsController {
             self?.showTemporarily()
             self?.onServices?()
         }
-        servicesButton.accessibilityHint = "Opens Services for the current media"
+        servicesButton.accessibilityHint = eclipseLocalized("Opens Services for the current media")
         servicesButton.accessibilityIdentifier = "AVPlayer.Services"
 
         configureChromeButton(
@@ -3650,7 +3711,7 @@ private final class IOSAVPlayerMediaControlsController {
         ) { [weak self] in
             self?.onEpisodeBrowser?()
         }
-        episodeBrowserButton.accessibilityHint = "Opens the episode browser for this show"
+        episodeBrowserButton.accessibilityHint = eclipseLocalized("Opens the episode browser for this show")
         episodeBrowserButton.accessibilityIdentifier = "AVPlayer.EpisodeBrowser"
         setEpisodeBrowserAvailable(false)
 
@@ -3702,7 +3763,7 @@ private final class IOSAVPlayerMediaControlsController {
             timeLabel.textColor = UIColor.white.withAlphaComponent(0.82)
             timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
             timeLabel.textAlignment = .center
-            timeLabel.text = "00:00"
+            timeLabel.text = eclipseLocalized("00:00")
         }
         timelineSlider.minimumValue = 0
         timelineSlider.maximumValue = 1
@@ -3714,7 +3775,7 @@ private final class IOSAVPlayerMediaControlsController {
             ),
             for: .normal
         )
-        timelineSlider.accessibilityLabel = "Playback position"
+        timelineSlider.accessibilityLabel = eclipseLocalized("Playback position")
         timelineSlider.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             self.onPlaybackIntentChange?()
@@ -3914,8 +3975,8 @@ private final class IOSAVPlayerMediaControlsController {
         airPlayRoutePickerView.tintColor = .white
         airPlayRoutePickerView.activeTintColor = .white
         airPlayRoutePickerView.prioritizesVideoDevices = true
-        airPlayRoutePickerView.accessibilityLabel = "AirPlay"
-        airPlayRoutePickerView.accessibilityHint = "Choose an AirPlay device"
+        airPlayRoutePickerView.accessibilityLabel = eclipseLocalized("AirPlay")
+        airPlayRoutePickerView.accessibilityHint = eclipseLocalized("Choose an AirPlay device")
         airPlayRoutePickerView.accessibilityIdentifier = "AVPlayer.AirPlay"
         airPlayRoutePickerContainer.addSubview(airPlayRoutePickerView)
         NSLayoutConstraint.activate([
@@ -4068,7 +4129,7 @@ private final class IOSAVPlayerMediaControlsController {
                 }
             }
             children.append(UIMenu(
-                title: "In Stream",
+                title: eclipseLocalized("In Stream"),
                 image: UIImage(systemName: "play.rectangle"),
                 options: .displayInline,
                 children: embedded
@@ -4099,7 +4160,7 @@ private final class IOSAVPlayerMediaControlsController {
             children.append(UIAction(title: title, attributes: .disabled) { _ in })
         }
         subtitleButton.menu = UIMenu(
-            title: "Subtitles",
+            title: eclipseLocalized("Subtitles"),
             image: UIImage(systemName: "captions.bubble"),
             children: children
         )
@@ -4109,7 +4170,7 @@ private final class IOSAVPlayerMediaControlsController {
         guard let group = audioGroup, !group.options.isEmpty else {
             let title = isLoadingMediaOptions ? "Loading audio tracks…" : "No alternate audio tracks available"
             audioButton.menu = UIMenu(
-                title: "Audio",
+                title: eclipseLocalized("Audio"),
                 image: UIImage(systemName: "speaker.wave.2"),
                 children: [UIAction(title: title, attributes: .disabled) { _ in }]
             )
@@ -4129,7 +4190,7 @@ private final class IOSAVPlayerMediaControlsController {
             }
         }
         audioButton.menu = UIMenu(
-            title: "Audio",
+            title: eclipseLocalized("Audio"),
             image: UIImage(systemName: "speaker.wave.2"),
             children: tracks
         )

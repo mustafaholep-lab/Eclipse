@@ -705,7 +705,7 @@ private struct ReaderExtensionCatalogSourceRow: View {
                 Text("\(source.name) — \(languageDisplayName)")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                Text("\(source.language.uppercased()) · \(source.mediaType.displayName) · v\(source.version)")
+                Text("\(source.language.uppercased(with: LocalizationManager.selectedLocale)) · \(source.mediaType.displayName) · v\(source.version)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if source.implementation == .unsupportedNative {
@@ -780,7 +780,7 @@ private struct ReaderExtensionInstalledSourceRow: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundColor(source.enabled ? .primary : .secondary)
-                Text("\(source.effectiveLanguage.uppercased()) · \(source.mediaType.displayName) · v\(source.version)")
+                Text("\(source.effectiveLanguage.uppercased(with: LocalizationManager.selectedLocale)) · \(source.mediaType.displayName) · v\(source.version)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if source.requiresReinstall {
@@ -1433,7 +1433,7 @@ private struct ReaderExtensionSourceTechnicalDetailsView: View {
             ReaderExtensionMetadataRow(label: "Source", value: source.sourceCodeURL?.absoluteString ?? source.baseURL.absoluteString)
             ReaderExtensionMetadataRow(label: "Version", value: source.version)
             ReaderExtensionMetadataRow(label: "Type", value: source.mediaType.displayName)
-            ReaderExtensionMetadataRow(label: "Language", value: source.effectiveLanguage.uppercased())
+            ReaderExtensionMetadataRow(label: "Language", value: source.effectiveLanguage.uppercased(with: LocalizationManager.selectedLocale))
             ReaderExtensionMetadataRow(label: "Implementation", value: source.implementation.displayName)
             ReaderExtensionMetadataRow(label: "Maturity", value: source.maturity.displayName)
             ReaderExtensionMetadataRow(label: "Installed", value: source.installedAt.formatted(date: .abbreviated, time: .shortened))

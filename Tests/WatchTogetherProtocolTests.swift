@@ -5,6 +5,14 @@ import XCTest
 
 final class WatchTogetherProtocolTests: XCTestCase {
 
+    @MainActor
+    func testParticipantNamesPreserveTurkishAndRemoveControlCharacters() {
+        XCTAssertEqual(WatchTogetherCoordinator.sanitizedParticipantName("  İpek\nÇağrı  "), "İpek Çağrı")
+        XCTAssertNil(WatchTogetherCoordinator.sanitizedParticipantName(" \n\t "))
+        XCTAssertNil(WatchTogetherCoordinator.sanitizedParticipantName(nil))
+        XCTAssertEqual(WatchTogetherCoordinator.sanitizedParticipantName(String(repeating: "ş", count: 100))?.count, 40)
+    }
+
     private let authorityA = UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000000") ?? UUID()
     private let authorityB = UUID(uuidString: "BBBBBBBB-0000-0000-0000-000000000000") ?? UUID()
 

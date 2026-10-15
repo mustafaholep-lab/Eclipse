@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ECA500012026101400000001 /* WatchTogetherParticipantsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA500022026101400000001 /* WatchTogetherParticipantsView.swift */; };
+		ECA200012026101400000001 /* HLSBackgroundTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA200022026101400000001 /* HLSBackgroundTransport.swift */; };
+		ECA260012026101500000001 /* DownloadBackgroundExecution.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA260022026101500000001 /* DownloadBackgroundExecution.swift */; };
+		ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA100022026101400000001 /* DisplayRefreshSettings.swift */; };
 		10777B4D23D74A269E19F9BB = {isa = PBXBuildFile; fileRef = EDC0129047994159938DA361; };
 		E7DC712FC94A42C8801125E2 = {isa = PBXBuildFile; fileRef = EDC0129047994159938DA361; };
 		4383B5EEDCDF4F73AE2142F6 = {isa = PBXBuildFile; fileRef = EDC0129047994159938DA361; };
@@ -807,6 +811,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		ECA500022026101400000001 /* WatchTogetherParticipantsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTogetherParticipantsView.swift; sourceTree = "<group>"; };
+		ECA200022026101400000001 /* HLSBackgroundTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLSBackgroundTransport.swift; sourceTree = "<group>"; };
+		ECA260022026101500000001 /* DownloadBackgroundExecution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadBackgroundExecution.swift; sourceTree = "<group>"; };
+		ECA100022026101400000001 /* DisplayRefreshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRefreshSettings.swift; sourceTree = "<group>"; };
 		81ECB804A2424540A60DFE91 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Eclipse/Views/TrackerCollectionView.swift"; sourceTree = SOURCE_ROOT; };
 		A5C900010000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeScheduleService.swift; sourceTree = "<group>"; };
 		A5C900010000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeScheduleFallbackTests.swift; sourceTree = "<group>"; };
@@ -1388,6 +1396,7 @@
 				13F315AF2EAD03F70025BD7A /* SubtitleLoader.swift */,
 				1324E7B52E940BD70036B5F5 /* PlayerViewController.swift */,
 				6BCFA99B6F2344E8850E02AD /* WatchTogetherCoordinator.swift */,
+				ECA500022026101400000001 /* WatchTogetherParticipantsView.swift */,
 				1324E7B42E940BD70036B5F5 /* MPVNativeRenderer.swift */,
 				SHDRLIBFILEREF0000000001 /* MPVUserShaderLibrary.swift */,
 				SCLRPOLFILEREF0000000001 /* MPVScalerPolicy.swift */,
@@ -1900,6 +1909,7 @@
 			children = (
 				129CC90B2EBA920A00D2D84B /* Bundle.swift */,
 				AD20000A2FE2000000AD200A /* Localization.swift */,
+				ECA100022026101400000001 /* DisplayRefreshSettings.swift */,
 				13F0728F2E4B2D9100EF90EB /* URLSession */,
 				13F0728D2E4B2D9100EF90EB /* UIImage */,
 				13F072912E4B2D9100EF90EB /* Color */,
@@ -2054,6 +2064,8 @@
 				DD1111102FB0000000DD1110 /* DownloadManager.swift */,
 				DLPATHFR000000000000000001 /* DownloadPathIdentityPolicy.swift */,
 				DD1111142FB0000000DD1114 /* HLSDownloader.swift */,
+				ECA200022026101400000001 /* HLSBackgroundTransport.swift */,
+				ECA260022026101500000001 /* DownloadBackgroundExecution.swift */,
 				AA5555502F10000000AA5550 /* CatalogManager.swift */,
 				PROFR0100000000000000001 /* ProfileManager.swift */,
 				PSSFR0100000000000000001 /* ProfileSettingsStore.swift */,
@@ -2276,6 +2288,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				tr,
 				Base,
 			);
 			mainGroup = 13F072522E4B2D3300EF90EB;
@@ -2520,6 +2533,7 @@
 				13F072BA2E4B2D9200EF90EB /* TMDBService.swift in Sources */,
 				13F072C22E4B2D9200EF90EB /* AniListService.swift in Sources */,
 				AD20000B2FE2000000AD200B /* Localization.swift in Sources */,
+				ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */,
 				13F187AD2E6F38CE00747F7E /* LibraryItem.swift in Sources */,
 				13F187B02E6F38CE00747F7E /* CreateCollectionView.swift in Sources */,
 				13F072A42E4B2D9200EF90EB /* ServicesView.swift in Sources */,
@@ -2711,6 +2725,8 @@
 				DD1111112FB0000000DD1111 /* DownloadManager.swift in Sources */,
 				DLPATHBF100000000000000001 /* DownloadPathIdentityPolicy.swift in Sources */,
 				DD1111152FB0000000DD1115 /* HLSDownloader.swift in Sources */,
+				ECA200012026101400000001 /* HLSBackgroundTransport.swift in Sources */,
+				ECA260012026101500000001 /* DownloadBackgroundExecution.swift in Sources */,
 				DD2222222FB0000000DD2222 /* DownloadsView.swift in Sources */,
 				DD4444442FB0000000DD4444 /* DownloadedShowDetailView.swift in Sources */,
 				AF00000000000000000000A1 /* AppHub.swift in Sources */,
@@ -2731,6 +2747,7 @@
 				13E1EDE32ED9E66000087629 /* readerSettingsView.swift in Sources */,
 				13F0725F2E4B2D3300EF90EB /* SoraApp.swift in Sources */,
 				AD20000B2FE2000000AD200B /* Localization.swift in Sources */,
+				ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */,
 				13F187AD2E6F38CE00747F7E /* LibraryItem.swift in Sources */,
 				13F187B02E6F38CE00747F7E /* CreateCollectionView.swift in Sources */,
 				13F072A42E4B2D9200EF90EB /* ServicesView.swift in Sources */,
@@ -2751,6 +2768,7 @@
 				13F072AB2E4B2D9200EF90EB /* Movie-Details.swift in Sources */,
 				1324E7BD2E940BD70036B5F5 /* PlayerViewController.swift in Sources */,
 				7BC72B40F59C41D6B2D8EB9B /* WatchTogetherCoordinator.swift in Sources */,
+				ECA500012026101400000001 /* WatchTogetherParticipantsView.swift in Sources */,
 				1324E7BE2E940BD70036B5F5 /* SampleBufferDisplayView.swift in Sources */,
 				13E1EDD32ED9E65F00087629 /* mangaModel.xcdatamodeld in Sources */,
 				13F0729B2E4B2D9200EF90EB /* ServicesEntity.swift in Sources */,
@@ -3240,7 +3258,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -3298,7 +3316,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;

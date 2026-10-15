@@ -6918,6 +6918,7 @@ struct MediaDetailContentView: View {
         guard let date else { return nil }
 
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
         return formatter.string(from: date)

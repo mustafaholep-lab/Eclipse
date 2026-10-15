@@ -396,7 +396,7 @@ struct ProfilePINEntryView: View {
 
     private var title: String {
         switch mode {
-        case .unlock, .authorize: return "Enter PIN"
+        case .unlock, .authorize: return eclipseLocalized("Enter PIN")
         case .set: return isConfirming ? "Confirm PIN" : "Choose a PIN"
         }
     }

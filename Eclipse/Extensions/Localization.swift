@@ -48,6 +48,24 @@ extension Bundle {
 final class LocalizationManager: NSObject, ObservableObject {
     static let shared = LocalizationManager()
 
+    static let appLanguageKey = "appLanguage"
+
+    static func selectedUICode(defaults: UserDefaults = .standard, preferredLanguages: [String] = Locale.preferredLanguages) -> String {
+        if let explicit = defaults.string(forKey: appLanguageKey), explicit != "system", !explicit.isEmpty {
+            return explicit
+        }
+        for language in preferredLanguages {
+            if language.hasPrefix("tr") { return "tr" }
+            let supported = Set(uiCodeByTMDBCode.values)
+            if supported.contains(language) { return language }
+            let base = String(language.split(separator: "-").first ?? "en")
+            if supported.contains(base) { return base }
+        }
+        return "en"
+    }
+
+    static var selectedLocale: Locale { Locale(identifier: selectedUICode()) }
+
     static let tmdbLanguageKey = "tmdbLanguage"
     static let defaultTMDBCode = "en-US"
 
@@ -72,14 +90,14 @@ final class LocalizationManager: NSObject, ObservableObject {
     private var observedStore: UserDefaults?
 
     private override init() {
-        let tmdbCode = ProfileSettingsStore.active.string(forKey: Self.tmdbLanguageKey) ?? Self.defaultTMDBCode
-        let uiCode = Self.uiCode(forTMDB: tmdbCode)
+        let uiCode = Self.selectedUICode()
 
         Bundle.setEclipseLanguage(uiCode)
         self.locale = Locale(identifier: uiCode)
         self.layoutDirection = Self.layoutDirection(forUICode: uiCode)
 
         super.init()
+        UserDefaults.standard.addObserver(self, forKeyPath: Self.appLanguageKey, options: [.new], context: nil)
 
         observedStore = ProfileSettingsStore.active
         observedStore?.addObserver(
@@ -97,11 +115,11 @@ final class LocalizationManager: NSObject, ObservableObject {
             observedStore = store
             store.addObserver(self, forKeyPath: Self.tmdbLanguageKey, options: [.new], context: nil)
         }
-        let tmdbCode = store.string(forKey: Self.tmdbLanguageKey) ?? Self.defaultTMDBCode
-        apply(uiCode: Self.uiCode(forTMDB: tmdbCode))
+        apply(uiCode: Self.selectedUICode())
     }
 
     deinit {
+        UserDefaults.standard.removeObserver(self, forKeyPath: Self.appLanguageKey)
         observedStore?.removeObserver(self, forKeyPath: Self.tmdbLanguageKey)
     }
 
@@ -120,12 +138,11 @@ final class LocalizationManager: NSObject, ObservableObject {
         change: [NSKeyValueChangeKey: Any]?,
         context: UnsafeMutableRawPointer?
     ) {
-        guard keyPath == Self.tmdbLanguageKey else {
+        guard keyPath == Self.tmdbLanguageKey || keyPath == Self.appLanguageKey else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
             return
         }
-        let tmdbCode = ProfileSettingsStore.active.string(forKey: Self.tmdbLanguageKey) ?? Self.defaultTMDBCode
-        apply(uiCode: Self.uiCode(forTMDB: tmdbCode))
+        apply(uiCode: Self.selectedUICode())
     }
 
     private func apply(uiCode: String) {
@@ -145,5 +162,26 @@ final class LocalizationManager: NSObject, ObservableObject {
         } else {
             DispatchQueue.main.async(execute: publish)
         }
+    }
+}
+
+/// Dynamic UIKit labels and formatted messages use the same bundle as SwiftUI.
+func eclipseLocalized(_ key: String, _ arguments: CVarArg...) -> String {
+    let format = NSLocalizedString(key, comment: "Eclipse interface")
+    return arguments.isEmpty ? format : String(format: format, locale: LocalizationManager.selectedLocale, arguments: arguments)
+}
+
+struct ApplicationLanguageSettingsView: View {
+    @AppStorage(LocalizationManager.appLanguageKey, store: .standard) private var language = "system"
+
+    var body: some View {
+        Form {
+            Picker("Language", selection: $language) {
+                Text("System").tag("system")
+                Text(verbatim: "Türkçe").tag("tr")
+                Text(verbatim: "English").tag("en")
+            }
+        }
+        .navigationTitle("Language")
     }
 }

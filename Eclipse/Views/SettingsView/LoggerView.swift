@@ -359,6 +359,7 @@ class LoggerManager: ObservableObject {
         var parsedLogs: [LogEntry] = []
 
         let dateFormatter = DateFormatter()
+        dateFormatter.locale = LocalizationManager.selectedLocale
         dateFormatter.dateFormat = "dd-MM HH:mm:ss"
 
         for section in logSections {
@@ -453,12 +454,14 @@ class LoggerManager: ObservableObject {
 extension DateFormatter {
     static let logFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         return formatter
     }()
 
     static let logTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()

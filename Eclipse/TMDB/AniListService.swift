@@ -178,9 +178,9 @@ enum AnimeMetadataRatingSource: String, Codable, Equatable {
 
     var label: String {
         switch self {
-        case .myAnimeList: return "MAL"
-        case .aniList: return "AniList"
-        case .tmdb: return "TMDB"
+        case .myAnimeList: return eclipseLocalized("MAL")
+        case .aniList: return eclipseLocalized("AniList")
+        case .tmdb: return eclipseLocalized("TMDB")
         }
     }
 }

@@ -754,7 +754,7 @@ struct PlaybackRequest {
         self.url = url
         self.preset = preset
             ?? PlayerPreset.presets.first
-            ?? PlayerPreset(id: .sdrRec709, title: "Default", summary: "", stream: nil, commands: [])
+            ?? PlayerPreset(id: .sdrRec709, title: eclipseLocalized("Default"), summary: "", stream: nil, commands: [])
         self.headers = Self.sanitizedHeaders(headers)
         self.subtitles = subtitles
         self.subtitleNames = subtitleNames

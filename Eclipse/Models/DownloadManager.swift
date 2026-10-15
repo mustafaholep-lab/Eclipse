@@ -666,12 +666,12 @@ enum AutoModeDownloadEnqueueResult {
 enum DownloadByteCountFormatter {
     private static let unitNames = ["bytes", "KB", "MB", "GB", "TB", "PB"]
     private static let unitBase = 1_000.0
-    private static let displayLocale = Locale(identifier: "en_US_POSIX")
+    private static var displayLocale: Locale { LocalizationManager.selectedLocale }
 
     static func string(fromByteCount byteCount: Int64) -> String {
         let nonnegativeByteCount = max(byteCount, 0)
         guard nonnegativeByteCount >= 1_000 else {
-            let unit = nonnegativeByteCount == 1 ? "byte" : "bytes"
+            let unit = eclipseLocalized(nonnegativeByteCount == 1 ? "byte" : "bytes")
             return "\(nonnegativeByteCount) \(unit)"
         }
 
@@ -1810,6 +1810,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private var scheduledQueueWakeDate: Date?
     private var isolatedDownloadsDirectory: URL?
     private var transportMayStartOverride: (() -> Bool)?
+    private var backgroundExecutionMayContinueOverride: (() -> Bool)?
     private var refreshSourceOverride: (@MainActor (DownloadItem) async -> RefreshedDownloadSource?)?
     private var transferStarterOverride: ((DownloadItem) -> Void)?
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -1871,6 +1872,9 @@ final class DownloadManager: NSObject, ObservableObject {
         if !fileManager.fileExists(atPath: dir.path) {
             try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+#if os(iOS)
+        try? fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: dir.path)
+#endif
         return dir
         #endif
     }
@@ -1887,12 +1891,14 @@ final class DownloadManager: NSObject, ObservableObject {
         admissionPreparation: (() -> Void)? = nil,
         admissionScopeGeneration: (() -> Int)? = nil,
         concurrencyLimit: @escaping () -> Int = { 2 },
-        hlsConcurrencyLimit: @escaping () -> Int = { 1 }
+        hlsConcurrencyLimit: @escaping () -> Int = { 1 },
+        backgroundExecutionMayContinue: (() -> Bool)? = nil
     ) {
         isolatedDownloadsDirectory = downloadsDirectory
         concurrencyLimitOverride = concurrencyLimit
         hlsConcurrencyLimitOverride = hlsConcurrencyLimit
         transportMayStartOverride = transportMayStart
+        backgroundExecutionMayContinueOverride = backgroundExecutionMayContinue
         refreshSourceOverride = refreshSource
         transferStarterOverride = transferStarter
         admissionPreparationOverride = admissionPreparation
@@ -1941,6 +1947,7 @@ final class DownloadManager: NSObject, ObservableObject {
         let config = URLSessionConfiguration.background(withIdentifier: "app.eclipse.soupy.downloads")
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
+        config.waitsForConnectivity = true
         #endif
         config.allowsCellularAccess = true
         config.httpMaximumConnectionsPerHost = 4
@@ -1956,6 +1963,11 @@ final class DownloadManager: NSObject, ObservableObject {
 #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
         persistenceLoadedDownloadIDs = Set(downloads.map(\.id))
         migrateLegacyStremioDownloadsIfNeeded(permitsOneLiveAttempt: false)
+#endif
+#if os(iOS)
+        HLSBackgroundTransport.shared.reconcile(downloadIDs: Set(downloads.filter {
+            $0.isHLS && !$0.claimsProtectedProviderTransport && ($0.status == .queued || $0.status == .downloading)
+        }.map(\.id)))
 #endif
         ensureDownloadPathReservations()
         migrateTrackedDownloadsToPublicLayout()
@@ -2427,12 +2439,59 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func applicationDidBecomeActive() {
+        // A previously requested download can resume automatically after launch;
+        // renew its execution grant before dispatching the restored queue.
+        beginUserInitiatedBackgroundDownloads()
         processQueue()
     }
 
     func applicationDidEnterBackground() {
+        if backgroundExecutionMayContinue { return }
 #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
         suspendProtectedProviderAttempts(message: "Waiting for app to reopen", processWhenPossible: false)
+#endif
+    }
+
+    private var backgroundExecutionMayContinue: Bool {
+        if let backgroundExecutionMayContinueOverride { return backgroundExecutionMayContinueOverride() }
+#if os(iOS)
+        return DownloadBackgroundExecution.mayContinue
+#else
+        return false
+#endif
+    }
+
+    private func beginUserInitiatedBackgroundDownloads() {
+#if os(iOS)
+        guard isolatedDownloadsDirectory == nil else { return }
+        let ids = Set(downloads.filter { $0.status == .queued || $0.status == .downloading }.map(\.id))
+        DownloadBackgroundExecution.begin(ids: ids, title: eclipseLocalized("Downloads"), subtitle: eclipseLocalized("Downloading"), ready: { [weak self] in
+            self?.processQueue()
+            self?.updateBackgroundDownloadProgress()
+        }, expired: { [weak self] ids in
+            guard let self else { return }
+            // Native direct transfers belong to URLSession and need no running
+            // process. Only checkpoint work that still needs our proxy/packager.
+            for item in self.downloads where ids.contains(item.id) &&
+                (item.claimsProtectedProviderTransport || item.isHLS) && item.status == .downloading {
+                self.pauseDownload(id: item.id)
+            }
+        })
+#endif
+    }
+
+    private func updateBackgroundDownloadProgress() {
+#if os(iOS)
+        guard isolatedDownloadsDirectory == nil else { return }
+        let update = { [weak self] in
+            guard let self else { return }
+            DownloadBackgroundExecution.update(self.downloads.map {
+                DownloadBackgroundProgress(id: $0.id, fraction: $0.progress,
+                    pending: $0.status == .queued || $0.status == .downloading,
+                    succeeded: $0.status == .completed)
+            })
+        }
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
 #endif
     }
 
@@ -3362,6 +3421,7 @@ final class DownloadManager: NSObject, ObservableObject {
         if let totalBytes { downloads[index].totalBytes = totalBytes }
         if let hlsResumeSegmentIndex { downloads[index].hlsResumeSegmentIndex = hlsResumeSegmentIndex }
         if let hlsResumeByteCount { downloads[index].hlsResumeByteCount = hlsResumeByteCount }
+        updateBackgroundDownloadProgress()
     }
 
     private func captureKidsPolicyDetails(forDownload id: String, tmdbId: Int, isMovie: Bool) {
@@ -3502,6 +3562,8 @@ final class DownloadManager: NSObject, ObservableObject {
             downloads[index].rateLimitRetryCount = nil
             downloads[index].error = nil
             mediaSourceRecoveryAttempts.removeValue(forKey: id)
+
+            beginUserInitiatedBackgroundDownloads()
 
             if downloads[index].isHLS && downloads[index].hlsResumeSegmentIndex == nil {
                 downloads[index].progress = 0
@@ -5373,7 +5435,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 if let delayReason = hlsStartDelayReason(for: item) {
                     setQueuedMessage(id: item.id, message: delayReason)
                     #if canImport(UIKit)
-                    if UIApplication.shared.applicationState == .active {
+                    if UIApplication.shared.applicationState == .active || backgroundExecutionMayContinue {
                         scheduleQueueWake(at: now.addingTimeInterval(30))
                     }
                     #else
@@ -5834,7 +5896,8 @@ final class DownloadManager: NSObject, ObservableObject {
                 return candidate
             },
             minimumRequestStartInterval: streamURLOverride == nil ? nil : 0,
-            enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS
+            enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS,
+            allowsBackgroundTransport: !item.claimsProtectedProviderTransport
         )
 
         downloader.onVariantResolved = { [weak self] variantURL, totalSegments in
@@ -6278,7 +6341,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private var protectedProviderTransportMayStart: Bool {
-        nuvioProtectedTransportMayStart
+        nuvioProtectedTransportMayStart || backgroundExecutionMayContinue
     }
 
     private static func protectedAuthorityState(
@@ -6796,11 +6859,13 @@ final class DownloadManager: NSObject, ObservableObject {
 #endif
 
     private func hlsStartDelayReason(for item: DownloadItem) -> String? {
-        #if canImport(UIKit)
-        if !backgroundHLSPipelineEnabled && UIApplication.shared.applicationState != .active {
+        #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
+        if item.claimsProtectedProviderTransport && !protectedProviderTransportMayStart {
             return "Waiting for app to reopen"
         }
+        #endif
 
+        #if canImport(UIKit)
         let device = UIDevice.current
         if device.batteryState == .unplugged && device.batteryLevel >= 0 && device.batteryLevel < 0.15 {
             return "Paused for low battery"
@@ -8690,6 +8755,9 @@ final class DownloadManager: NSObject, ObservableObject {
                     }
                     if progressRevision != downloadProgressRevision { saveDownloads() }
                     persistenceError = nil
+                    if admittedItem.status == .queued || admittedItem.status == .downloading {
+                        beginUserInitiatedBackgroundDownloads()
+                    }
                     onCommitted(admittedItem)
                     return true
                 } catch {
@@ -8743,6 +8811,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func saveDownloads() {
+        updateBackgroundDownloadProgress()
         guard !metadataLoadFailed else { return }
         let admissionEpoch = currentDownloadAdmissionEpoch()
         let raw = downloads
@@ -9512,8 +9581,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
                 if let resumeData { self.storeResumeData(resumeData, id: downloadId) }
                 self.activeTasks.removeValue(forKey: downloadId)
-                if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled,
-                   resumeData != nil {
+                if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled {
                     self.activeTasks.removeValue(forKey: downloadId)
 #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
                     if let item = self.downloads.first(where: { $0.id == downloadId }),
@@ -9544,8 +9612,12 @@ extension DownloadManager: URLSessionDownloadDelegate {
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         DispatchQueue.main.async {
-            self.backgroundCompletionHandler?()
-            self.backgroundCompletionHandler = nil
+            self.accessQueue.async(flags: .barrier) {
+                DispatchQueue.main.async {
+                    self.backgroundCompletionHandler?()
+                    self.backgroundCompletionHandler = nil
+                }
+            }
         }
     }
 

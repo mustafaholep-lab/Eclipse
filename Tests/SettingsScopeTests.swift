@@ -5,6 +5,37 @@ import XCTest
 
 final class SettingsScopeTests: XCTestCase {
 
+    func testDisplayRefreshDefaultsAndUnsupportedScreenFallback() throws {
+        let name = "DisplayRefresh.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: defaults, maximum: 120), 120)
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: defaults, maximum: 60), 60)
+        defaults.set(60, forKey: DisplayRefreshSettings.storageKey)
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: defaults, maximum: 120), 60)
+        let reopened = try XCTUnwrap(UserDefaults(suiteName: name))
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: reopened, maximum: 120), 60)
+        defaults.set(120, forKey: DisplayRefreshSettings.storageKey)
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: defaults, maximum: 60), 60)
+    }
+
+    func testUILanguageUsesDeviceDefaultAndPersistentOverride() throws {
+        let name = "UILanguage.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: defaults, preferredLanguages: ["tr-TR"]), "tr")
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: defaults, preferredLanguages: ["en-US"]), "en")
+        defaults.set("en", forKey: LocalizationManager.appLanguageKey)
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: defaults, preferredLanguages: ["tr-TR"]), "en")
+        let reopened = try XCTUnwrap(UserDefaults(suiteName: name))
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: reopened, preferredLanguages: ["tr-TR"]), "en")
+        defaults.set("system", forKey: LocalizationManager.appLanguageKey)
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: defaults, preferredLanguages: ["tr-TR"]), "tr")
+        XCTAssertEqual("i ı ç ğ ö ş ü".uppercased(with: Locale(identifier: "tr")), "İ I Ç Ğ Ö Ş Ü")
+        XCTAssertEqual(EclipseSettingsRegistry.explicitScope(for: "appLanguage"), .device)
+        XCTAssertEqual(EclipseSettingsRegistry.explicitScope(for: "displayRefreshRate"), .device)
+    }
+
     func testPlaybackAndLibraryPreferencesKeepTheirDeclaredScopeAndTransportBounds() {
         let booleanKeys = ["autoplayNextEpisodeEnabled", "rememberPlaybackSelectionEnabled",
                            "trackerDeepLibraryEnabled", "downloadSkipFillerEnabled"]

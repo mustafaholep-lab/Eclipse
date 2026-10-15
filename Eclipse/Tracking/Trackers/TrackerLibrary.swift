@@ -22,10 +22,10 @@ enum TrackerLibrarySource: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .local: return "My Library"
-        case .anilist: return "AniList"
-        case .myAnimeList: return "MAL"
-        case .trakt: return "Trakt"
+        case .local: return eclipseLocalized("My Library")
+        case .anilist: return eclipseLocalized("AniList")
+        case .myAnimeList: return eclipseLocalized("MAL")
+        case .trakt: return eclipseLocalized("Trakt")
         }
     }
     var service: TrackerService? {
@@ -47,10 +47,10 @@ enum TrackerLibraryKind: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .anime: return "Anime"
-        case .manga: return "Manga"
-        case .movie: return "Movies"
-        case .show: return "Shows"
+        case .anime: return eclipseLocalized("Anime")
+        case .manga: return eclipseLocalized("Manga")
+        case .movie: return eclipseLocalized("Movies")
+        case .show: return eclipseLocalized("Shows")
         }
     }
     var isManga: Bool { self == .manga }

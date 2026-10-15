@@ -817,15 +817,15 @@ private enum BrowseSort: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .popularity:
-            return "Most Popular"
+            return eclipseLocalized("Most Popular")
         case .newest:
-            return "Newest"
+            return eclipseLocalized("Newest")
         case .oldest:
-            return "Oldest"
+            return eclipseLocalized("Oldest")
         case .rank:
-            return "Rank"
+            return eclipseLocalized("Rank")
         case .title:
-            return "Title A-Z"
+            return eclipseLocalized("Title A-Z")
         }
     }
 
@@ -864,15 +864,15 @@ enum BrowseAgeRating: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "Any Age Rating"
+            return eclipseLocalized("Any Age Rating")
         case .general:
-            return "All Ages"
+            return eclipseLocalized("All Ages")
         case .teen:
-            return "Up to 14+"
+            return eclipseLocalized("Up to 14+")
         case .mature:
-            return "Up to 17+"
+            return eclipseLocalized("Up to 17+")
         case .adult:
-            return "18+ Only"
+            return eclipseLocalized("18+ Only")
         }
     }
 

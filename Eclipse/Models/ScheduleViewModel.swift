@@ -17,11 +17,11 @@ enum ScheduleMode: String, CaseIterable, Identifiable, Sendable {
     var displayName: String {
         switch self {
         case .anime:
-            return "Anime"
+            return eclipseLocalized("Anime")
         case .western:
-            return "Western"
+            return eclipseLocalized("Western")
         case .combined:
-            return "Combined"
+            return eclipseLocalized("Combined")
         }
     }
 
@@ -61,13 +61,13 @@ enum ScheduleWindow: Int, CaseIterable, Identifiable, Sendable {
     var description: String {
         switch self {
         case .sevenDays:
-            return "Default · Fastest loading"
+            return eclipseLocalized("Default · Fastest loading")
         case .fourteenDays:
-            return "Two weeks of upcoming episodes"
+            return eclipseLocalized("Two weeks of upcoming episodes")
         case .twentyOneDays:
-            return "Three weeks · More schedule data"
+            return eclipseLocalized("Three weeks · More schedule data")
         case .thirtyDays:
-            return "Longest range · Heaviest loading"
+            return eclipseLocalized("Longest range · Heaviest loading")
         }
     }
 
@@ -116,9 +116,9 @@ enum ScheduleSource: Hashable, Sendable {
     var displayName: String {
         switch self {
         case .anime:
-            return "Anime"
+            return eclipseLocalized("Anime")
         case .western:
-            return "Western"
+            return eclipseLocalized("Western")
         }
     }
 }

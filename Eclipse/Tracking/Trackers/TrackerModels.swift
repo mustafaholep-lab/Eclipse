@@ -15,11 +15,11 @@ enum TrackerService: String, Codable, CaseIterable {
     var displayName: String {
         switch self {
         case .anilist:
-            return "AniList"
+            return eclipseLocalized("AniList")
         case .myAnimeList:
-            return "MyAnimeList"
+            return eclipseLocalized("MyAnimeList")
         case .trakt:
-            return "Trakt"
+            return eclipseLocalized("Trakt")
         }
     }
 
@@ -85,9 +85,9 @@ struct TrackerImportState: Identifiable, Equatable {
 
     var title: String {
         switch phase {
-        case .running: return "Importing Library"
+        case .running: return eclipseLocalized("Importing Library")
         case .finished(let summary): return summary.hasSkippedItems ? "Import Finished with Skipped Items" : "Import Complete"
-        case .failed: return "Import Could Not Finish"
+        case .failed: return eclipseLocalized("Import Could Not Finish")
         }
     }
 
@@ -406,17 +406,17 @@ enum TrackerSyncToolAction: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .fillEclipseFromAniList:
-            return "Fill Eclipse From AniList"
+            return eclipseLocalized("Fill Eclipse From AniList")
         case .fillEclipseFromMAL:
-            return "Fill Eclipse From MAL"
+            return eclipseLocalized("Fill Eclipse From MAL")
         case .pushEclipseToAniList:
-            return "Push Eclipse To AniList"
+            return eclipseLocalized("Push Eclipse To AniList")
         case .pushEclipseToMAL:
-            return "Push Eclipse To MAL"
+            return eclipseLocalized("Push Eclipse To MAL")
         case .portAniListToMAL:
-            return "Port AniList To MAL"
+            return eclipseLocalized("Port AniList To MAL")
         case .portMALToAniList:
-            return "Port MAL To AniList"
+            return eclipseLocalized("Port MAL To AniList")
         }
     }
 

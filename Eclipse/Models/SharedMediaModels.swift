@@ -227,8 +227,8 @@ enum LocalNotificationMediaSource: String, Codable, CaseIterable, Identifiable, 
 
     var displayName: String {
         switch self {
-        case .anime: return "Anime"
-        case .western: return "Western"
+        case .anime: return eclipseLocalized("Anime")
+        case .western: return eclipseLocalized("Western")
         }
     }
 }

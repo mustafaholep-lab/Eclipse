@@ -544,6 +544,18 @@ struct SettingsView: View {
 
                 GlassSection(header: "Basic") {
                     VStack(spacing: 0) {
+                        NavigationLink(destination: ApplicationLanguageSettingsView()) {
+                            GlassSettingsRow(icon: "globe", iconColor: .blue, title: "Language")
+                        }
+                        .buttonStyle(.plain)
+                        GlassDivider()
+#if os(iOS)
+                        NavigationLink(destination: DisplayRefreshSettingsView()) {
+                            GlassSettingsRow(icon: "speedometer", iconColor: .cyan, title: "Display Refresh Rate")
+                        }
+                        .buttonStyle(.plain)
+                        GlassDivider()
+#endif
                         NavigationLink(destination: settingsSearchableContent(PerformanceModeSettingsView())) {
                             GlassSettingsRow(icon: "bolt.fill", iconColor: .yellow, title: "Performance Mode") {
                                 HStack(spacing: 4) {
@@ -1332,7 +1344,7 @@ private struct WatchTogetherSettingsView: View {
                 GlassSection(header: "Privacy & Security") {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("SharePlay messages are limited to people in the Apple group session.", systemImage: "lock.shield.fill")
-                        Label("SharePlay displays the title; sync messages contain only play, pause, seek, and an opaque media identifier.", systemImage: "arrow.left.arrow.right")
+                        Label("SharePlay displays the title; sync messages contain only play, pause, seek, an opaque media identifier, and your Eclipse profile name.", systemImage: "arrow.left.arrow.right")
                         Label("Stream URLs, request headers, cookies, subtitles, and provider credentials never leave your device.", systemImage: "eye.slash.fill")
                     }
                     .font(.subheadline)
@@ -2235,6 +2247,7 @@ private struct NotificationHistorySettingsRow: View {
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter
@@ -2307,6 +2320,7 @@ private struct NotificationEpisodeReminderSettingsRow: View {
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter

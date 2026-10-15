@@ -10,17 +10,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-ios:
     name: Build and test iOS
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Validate immutable MPVKit revision
         env:
-          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION }}
+          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION || '5d163c6e405483e4979b2b7260c3d969611de667' }}
         run: |
           set -euo pipefail
 
@@ -32,11 +36,11 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: Soupy-dev/MPVKit
-          ref: ${{ vars.MPVKIT_SOURCE_REVISION }}
+          ref: ${{ vars.MPVKIT_SOURCE_REVISION || '5d163c6e405483e4979b2b7260c3d969611de667' }}
           path: MPVKit
       - name: Verify immutable MPVKit checkout
         env:
-          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION }}
+          MPVKIT_SOURCE_REVISION: ${{ vars.MPVKIT_SOURCE_REVISION || '5d163c6e405483e4979b2b7260c3d969611de667' }}
         run: test "$(git -C MPVKit rev-parse HEAD)" = "$MPVKIT_SOURCE_REVISION"
       - name: Expose sibling MPVKit package
         run: ln -sfn "$GITHUB_WORKSPACE/MPVKit" "$GITHUB_WORKSPACE/../MPVKit"
@@ -52,7 +56,7 @@ jobs:
           # credentials or publish an installable app before the owner deliberately runs a
           # distribution workflow after the App Store release is live.
           test ! -e Build.local.xcconfig
-          xcodebuild build \
+          xcodebuild build -jobs 1 \
             -project Eclipse.xcodeproj \
             -scheme Eclipse \
             -configuration Release \
@@ -63,6 +67,9 @@ jobs:
             -skipPackagePluginValidation \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             ENABLE_USER_SCRIPT_SANDBOXING=NO
 
       - name: Select iOS simulator
@@ -108,7 +115,7 @@ jobs:
             exit 0
           fi
 
-          xcodebuild test \
+          xcodebuild test -jobs 1 \
             -project Eclipse.xcodeproj \
             -scheme Eclipse \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
@@ -118,4 +125,7 @@ jobs:
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO

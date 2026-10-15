@@ -378,10 +378,10 @@ enum EpisodeNotificationLeadTime: Int, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .atAirtime: return "At airtime"
-        case .fifteenMinutes: return "15 minutes before"
-        case .oneHour: return "1 hour before"
-        case .oneDay: return "1 day before"
+        case .atAirtime: return eclipseLocalized("At airtime")
+        case .fifteenMinutes: return eclipseLocalized("15 minutes before")
+        case .oneHour: return eclipseLocalized("1 hour before")
+        case .oneDay: return eclipseLocalized("1 day before")
         }
     }
 }
@@ -395,9 +395,9 @@ enum SeasonNotificationLeadTime: Int, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .atPremiere: return "On premiere day"
-        case .oneDay: return "1 day before"
-        case .oneWeek: return "1 week before"
+        case .atPremiere: return eclipseLocalized("On premiere day")
+        case .oneDay: return eclipseLocalized("1 day before")
+        case .oneWeek: return eclipseLocalized("1 week before")
         }
     }
 }

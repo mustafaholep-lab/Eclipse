@@ -7334,6 +7334,34 @@ final class AutoModeQualitySelectionTests: XCTestCase {
         XCTAssertTrue(label.contains("HEVC"))
     }
 
+    func testMultilineTorrentioLabelIncludesReleaseQualityAndSize() throws {
+        let payload: [String: Any] = [
+            "url": "https://example.com/movie.mkv",
+            "name": "TB+\nTorrentio",
+            "title": "Movie.2024.2160p.BluRay.REMUX.HEVC\n💾 20 GB",
+            "behaviorHints": ["videoSize": 20_000_000_000]
+        ]
+        let stream = try JSONDecoder().decode(StremioStream.self, from: JSONSerialization.data(withJSONObject: payload))
+        let label = AutoModeStreamSelection.stremioStreamLabel(for: stream)
+        XCTAssertTrue(label.contains("TB+ Torrentio"))
+        XCTAssertFalse(label.contains("\n"))
+        XCTAssertTrue(label.contains("4K"))
+        XCTAssertTrue(label.uppercased().contains("BLURAY"))
+        XCTAssertTrue(label.contains("20 GB"))
+    }
+
+    func testFilenameOnlyReleaseStillDisplaysQualityAndSize() throws {
+        let payload: [String: Any] = [
+            "url": "https://example.com/movie.mkv", "name": "TB+",
+            "behaviorHints": ["filename": "Movie.2160p.BluRay.HEVC.mkv", "videoSize": 20_000_000_000]
+        ]
+        let stream = try JSONDecoder().decode(StremioStream.self, from: JSONSerialization.data(withJSONObject: payload))
+        let label = AutoModeStreamSelection.stremioStreamLabel(for: stream)
+        XCTAssertTrue(label.contains("4K"))
+        XCTAssertTrue(label.uppercased().contains("BLURAY"))
+        XCTAssertTrue(label.contains("GB"))
+    }
+
     func testOrdinaryAddonReleaseMetadataAndHeadersRemainAvailable() throws {
         for name in ["Torrentio RD+", "Comet RD"] {
             let payload: [String: Any] = [

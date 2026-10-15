@@ -59,7 +59,7 @@ struct KanzenCatalogBuilderView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundColor(hasRoom ? .primary : .secondary)
-                Text("\(source.effectiveLanguage.uppercased()) \u{00b7} \(source.mediaType == .manga ? "Manga" : "Web Novel")")
+                Text("\(source.effectiveLanguage.uppercased(with: LocalizationManager.selectedLocale)) \u{00b7} \(source.mediaType == .manga ? "Manga" : "Web Novel")")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if !hasRoom {

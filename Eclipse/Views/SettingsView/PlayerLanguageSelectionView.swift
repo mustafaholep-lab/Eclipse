@@ -67,7 +67,7 @@ struct PlayerLanguageSelectionView: View {
 #Preview {
     NavigationView {
         PlayerLanguageSelectionView(
-            title: "Default Subtitle Language",
+            title: eclipseLocalized("Default Subtitle Language"),
             selectedLanguage: .constant("eng")
         )
     }

@@ -240,7 +240,7 @@ final class KidsPlaybackGateHostViewController: UIViewController {
         view.addSubview(messageLabel)
 
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.setTitle("Close", for: .normal)
+        closeButton.setTitle(eclipseLocalized("Close"), for: .normal)
         closeButton.setTitleColor(.white, for: .normal)
         closeButton.isHidden = true
         closeButton.addTarget(self, action: #selector(handleClose), for: .primaryActionTriggered)

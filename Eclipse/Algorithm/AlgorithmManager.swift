@@ -15,11 +15,11 @@ enum SimilarityAlgorithm: String, CaseIterable, Hashable, Sendable {
     var displayName: String {
         switch self {
         case .hybrid:
-            return "Hybrid"
+            return eclipseLocalized("Hybrid")
         case .jaroWinkler:
-            return "Jaro-Winkler Similarity"
+            return eclipseLocalized("Jaro-Winkler Similarity")
         case .levenshtein:
-            return "Levenshtein Distance"
+            return eclipseLocalized("Levenshtein Distance")
         }
     }
 

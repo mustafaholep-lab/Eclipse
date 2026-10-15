@@ -57,8 +57,16 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
+        #if os(iOS)
+        if identifier == HLSBackgroundTransport.identifier {
+            HLSBackgroundTransport.shared.handleBackgroundEvents(completion: completionHandler)
+            return
+        }
+#endif
         if identifier == "app.eclipse.soupy.downloads" {
             DownloadManager.shared.backgroundCompletionHandler = completionHandler
+        } else {
+            completionHandler()
         }
     }
 }
@@ -281,6 +289,7 @@ struct SoraApp: App {
             ))
 #if os(iOS)
             .modifier(EclipseWindowSceneScopeModifier())
+            .modifier(DisplayRefreshPresentation())
 #endif
             .environment(\.eclipseStartupOverlayVisible, showSplash && !hideSplashScreen)
 #if !os(tvOS)
@@ -379,7 +388,11 @@ struct SoraApp: App {
                 }
             }
             .onChange(of: scenePhase) { newPhase in
+                if newPhase == .background {
+                    Task { @MainActor in WatchTogetherCoordinator.shared.applicationDidEnterBackground() }
+                }
                 if newPhase == .active {
+                    Task { @MainActor in WatchTogetherCoordinator.shared.applicationDidBecomeActive() }
                     trackerManager.checkForExpiredTrackerSessions()
                     MediaStateSyncBootstrap.syncOnActivation()
                     ExperimentalCloudSyncManager.shared.syncOnActivationIfNeeded(reason: "active")

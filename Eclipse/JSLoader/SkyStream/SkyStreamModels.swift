@@ -1428,12 +1428,13 @@ public struct SkyStreamStreamRecord: Codable, Sendable, Hashable, Identifiable {
 
     public var id: String {
 
-        var components = [
+        let qualityText: String = quality.map { String($0) } ?? ""
+        var components: [String] = [
             url,
             source ?? "",
             name ?? "",
             qualityLabel ?? "",
-            quality.map(String.init) ?? "",
+            qualityText,
             mediaType ?? "",
             referer ?? "",
             drmKeyID ?? "",

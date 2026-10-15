@@ -10,9 +10,9 @@ private enum TVCardDensity: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .spacious: return "Spacious"
-        case .standard: return "Standard"
-        case .compact: return "Compact"
+        case .spacious: return eclipseLocalized("Spacious")
+        case .standard: return eclipseLocalized("Standard")
+        case .compact: return eclipseLocalized("Compact")
         }
     }
 
@@ -177,7 +177,7 @@ struct HomeLayoutView: View {
             settingRow(title: "Hero Behavior", description: "When the banner changes.") {
                 Picker("", selection: heroBehaviorBinding) {
                     ForEach(HeroBannerBehavior.selectableCases) { behavior in
-                        Text(behavior.displayName).tag(behavior.rawValue)
+                        Text(LocalizedStringKey(behavior.displayName)).tag(behavior.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
@@ -356,7 +356,7 @@ private struct CatalogLayoutEditorView: View {
                 Section {
                     Picker("Orientation", selection: orientationBinding) {
                         ForEach(CatalogOrientationOverride.allCases) { option in
-                            Text(option.displayName).tag(option)
+                            Text(LocalizedStringKey(option.displayName)).tag(option)
                         }
                     }
                     .pickerStyle(.menu)

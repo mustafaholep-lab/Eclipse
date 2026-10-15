@@ -121,6 +121,8 @@ final class HLSDownloader: @unchecked Sendable {
     private var rateLimitCountByHost: [String: Int] = [:]
     private let requestStartInterval: TimeInterval
     private let session: URLSession
+    private let usesBackgroundTransport: Bool
+    private let backgroundTransportOwnerID = UUID()
     #if canImport(UIKit)
     private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     #elseif os(macOS)
@@ -146,7 +148,13 @@ final class HLSDownloader: @unchecked Sendable {
          canonicalResumeURL: @escaping (URL) -> URL? = { $0 },
          minimumRequestStartInterval: TimeInterval? = nil,
          enforcesConservativeDiskCapacityReserve: Bool = false,
-         sessionConfiguration: URLSessionConfiguration? = nil) {
+         sessionConfiguration: URLSessionConfiguration? = nil,
+         allowsBackgroundTransport: Bool = false) {
+        #if os(iOS)
+        self.usesBackgroundTransport = allowsBackgroundTransport && sessionConfiguration == nil
+#else
+        self.usesBackgroundTransport = false
+#endif
         self.streamURL = streamURL
         self.headers = headers
         self.destinationURL = destinationURL
@@ -186,6 +194,11 @@ final class HLSDownloader: @unchecked Sendable {
         didFinish = false
         stateLock.unlock()
 
+        #if os(iOS)
+        if usesBackgroundTransport {
+            HLSBackgroundTransport.shared.begin(downloadID: downloadId, ownerID: backgroundTransportOwnerID)
+        }
+        #endif
         beginBackgroundTask()
 
         stateLock.lock()
@@ -349,6 +362,9 @@ final class HLSDownloader: @unchecked Sendable {
         stateLock.unlock()
 
         task?.cancel()
+#if os(iOS)
+        if usesBackgroundTransport { HLSBackgroundTransport.shared.cancel(downloadID: downloadId, ownerID: backgroundTransportOwnerID) }
+#endif
         if retiresIdleSession { session.invalidateAndCancel() }
         endBackgroundTask()
     }
@@ -371,7 +387,9 @@ final class HLSDownloader: @unchecked Sendable {
         guard backgroundTaskId == .invalid else { return }
         backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "HLSDownload-\(downloadId)") { [weak self] in
 
-            self?.cancel(reason: .backgroundTimeExpired)
+            guard let self else { return }
+            if self.usesBackgroundTransport || DownloadBackgroundExecution.mayContinue { self.endBackgroundTask() }
+            else { self.cancel(reason: .backgroundTimeExpired) }
         }
         #elseif os(macOS)
         stateLock.lock()
@@ -402,7 +420,7 @@ final class HLSDownloader: @unchecked Sendable {
 
     private static let maximumPlaylistBytes = 5 * 1024 * 1024
     private static let maximumEncryptionKeyBytes = 64 * 1024
-    private static let maximumMediaObjectBytes = 128 * 1024 * 1024
+    static let maximumMediaObjectBytes = 128 * 1024 * 1024
     private static let minimumRequestStartInterval: TimeInterval = 0.15
     private static let maximumRetryAfterSeconds: TimeInterval = 30
     private static let minimumFreeCapacityReserve: Int64 = 512 * 1024 * 1024
@@ -434,10 +452,17 @@ final class HLSDownloader: @unchecked Sendable {
         #if DEBUG
         onBeforeRequestStartForTesting?(url)
         #endif
-        let (data, response) = try await session.boundedData(
-            for: request,
-            maximumResponseBytes: maximumResponseBytes
-        )
+        let data: Data
+        let response: URLResponse
+#if os(iOS)
+        if usesBackgroundTransport {
+            (data, response) = try await HLSBackgroundTransport.shared.download(for: request, downloadID: downloadId, ownerID: backgroundTransportOwnerID, limit: maximumResponseBytes)
+        } else {
+            (data, response) = try await session.boundedData(for: request, maximumResponseBytes: maximumResponseBytes)
+        }
+#else
+        (data, response) = try await session.boundedData(for: request, maximumResponseBytes: maximumResponseBytes)
+#endif
         try checkCancelled()
 
         if let httpResponse = response as? HTTPURLResponse {
@@ -765,6 +790,9 @@ final class HLSDownloader: @unchecked Sendable {
             fileHandle = try FileHandle(forWritingTo: partialURL)
         }
 
+#if os(iOS)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: partialURL.path)
+#endif
         defer {
             try? fileHandle.close()
 
@@ -788,6 +816,19 @@ final class HLSDownloader: @unchecked Sendable {
 
             let totalSegments = segments.count
             let startIndex = isResuming ? resumeFromSegment : 0
+
+#if os(iOS)
+            if usesBackgroundTransport {
+                let requests = segments.dropFirst(startIndex).map { url -> URLRequest in
+                    var request = URLRequest(url: url)
+                    let requestHeaders = CloudflareBypassManager.shared.headersByApplyingCachedBypass(headers, for: url)
+                    for (key, value) in requestHeaders { request.setValue(value, forHTTPHeaderField: key) }
+                    return request
+                }
+                HLSBackgroundTransport.shared.prefetch(requests, downloadID: downloadId, ownerID: backgroundTransportOwnerID,
+                    limit: Self.maximumMediaObjectBytes, interval: requestStartInterval)
+            }
+#endif
 
             for index in startIndex..<totalSegments {
                 try checkCancelled()
@@ -1037,6 +1078,11 @@ final class HLSDownloader: @unchecked Sendable {
         didFinish = true
         stateLock.unlock()
 
+        #if os(iOS)
+        if usesBackgroundTransport {
+            HLSBackgroundTransport.shared.finishedProcessing(downloadID: downloadId, ownerID: backgroundTransportOwnerID)
+        }
+        #endif
         onCompletion?(result)
     }
 

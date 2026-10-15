@@ -2,6 +2,14 @@ import Combine
 import CryptoKit
 import Foundation
 import GroupActivities
+
+struct WatchTogetherParticipantSnapshot: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+    let isLocal: Bool
+    let isReconnecting: Bool
+}
+
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -153,7 +161,7 @@ struct EclipseWatchTogetherActivity: GroupActivity, Codable, Sendable {
             var metadata = GroupActivityMetadata()
             metadata.type = .watchTogether
             metadata.title = title
-            metadata.subtitle = "Watch together in Eclipse"
+            metadata.subtitle = eclipseLocalized("Watch Together")
             return metadata
         }
     }
@@ -195,7 +203,11 @@ protocol WatchTogetherPlaybackDelegate: AnyObject {
 }
 
 @MainActor
-final class WatchTogetherCoordinator {
+final class WatchTogetherCoordinator: ObservableObject {
+    @Published private(set) var visibleParticipants: [WatchTogetherParticipantSnapshot] = []
+    private var participantNames: [UUID: String] = [:]
+    private var participantDepartureTimes: [UUID: Date] = [:]
+    private var participantGraceTask: Task<Void, Never>?
     static let shared = WatchTogetherCoordinator()
 
     private enum MessageReason: String, Codable, Sendable {
@@ -223,6 +235,7 @@ final class WatchTogetherCoordinator {
         let controlAuthorityID: UUID?
         let targetMedia: WatchTogetherMediaDescriptor?
         let state: WatchTogetherSharedState?
+        var displayName: String? = nil
         var echoInstanceID: UUID?
         var echoSentAt: TimeInterval?
         var echoReceivedAt: TimeInterval?
@@ -298,6 +311,10 @@ final class WatchTogetherCoordinator {
     private var peerTransitionNoticeTask: Task<Void, Never>?
     private var pendingDisabledSession: GroupSession<EclipseWatchTogetherActivity>?
     private var profileObservationInstalled = false
+    private var foregroundSyncTask: Task<Void, Never>?
+    private var needsForegroundSeek = false
+    private var interruptedMediaIdentifier: String?
+    private var resumeHostAfterLifecyclePause = false
 
     private init() {}
 
@@ -310,6 +327,48 @@ final class WatchTogetherCoordinator {
                 guard !Task.isCancelled else { return }
                 self?.configure(session)
             }
+        }
+    }
+
+    func applicationDidEnterBackground() {
+#if os(iOS)
+        guard UIApplication.shared.applicationState == .background else { return }
+#endif
+        // Keep the GroupSession and messenger owned by this app-wide coordinator.
+        // AVAudioSession/PiP owns background execution while playback is running.
+        foregroundSyncTask?.cancel()
+        resumeHostAfterLifecyclePause = isLocalStateAuthority && currentSharedState?.isPlaying == true
+        needsForegroundSeek = true
+    }
+
+    func applicationDidBecomeActive() {
+        start()
+        foregroundSyncTask?.cancel()
+        guard let session else { return } // Apple supplies replacement sessions through sessions().
+        needsForegroundSeek = true
+        foregroundSyncTask = Task { [weak self, weak session] in
+            for delay in [0, 500_000_000, 1_000_000_000, 2_000_000_000] as [UInt64] {
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                guard let self, let session, self.session?.id == session.id else { return }
+                guard session.state == .joined else { continue }
+                self.sendHello()
+                self.requestCurrentState()
+                if self.isLocalStateAuthority { self.sendState(reason: .snapshot) }
+            }
+        }
+    }
+
+    func playbackDidReturnToForeground(_ sender: any WatchTogetherPlaybackDelegate) {
+        guard playbackDelegate === sender, isAttachedToCurrentActivity else { return }
+        if isLocalStateAuthority, resumeHostAfterLifecyclePause,
+           currentSharedState?.pausedByLifecycle == true {
+            resumeHostAfterLifecyclePause = false
+            sendState(reason: .play, forcedPlayingState: true, advancesRevision: true)
+            if let state = currentSharedState { applySharedState(state, to: sender, forceSeek: true) }
+        } else {
+            resumeHostAfterLifecyclePause = false
+            needsForegroundSeek = true
+            requestCurrentState()
         }
     }
 
@@ -565,6 +624,10 @@ final class WatchTogetherCoordinator {
         return isLocalStateAuthority ? .authority : .follower
     }
 
+    func shouldContinuePlaybackInBackground(from sender: any WatchTogetherPlaybackDelegate) -> Bool {
+        playbackDelegate === sender && isAttachedToCurrentActivity
+    }
+
     func currentAcceptedState(for sender: any WatchTogetherPlaybackDelegate) -> WatchTogetherSharedState? {
         guard playbackDelegate === sender,
               isAttachedToCurrentActivity else {
@@ -727,7 +790,7 @@ final class WatchTogetherCoordinator {
             return .rejected
         }
         guard let targetIdentifier = Self.mediaIdentifier(for: targetMedia) else {
-            sender.watchTogetherShowNotice("Watch Together could not create an exact identity for the next episode.")
+            sender.watchTogetherShowNotice(eclipseLocalized("Watch Together could not create an exact identity for the next episode."))
             return .rejected
         }
 
@@ -884,6 +947,7 @@ final class WatchTogetherCoordinator {
             declinePendingDisabledSession()
         }
 
+        let isRestoringMedia = interruptedMediaIdentifier == newSession.activity.mediaIdentifier
         activationTimeoutTask?.cancel()
         activationTimeoutTask = nil
         if let session, session.id != newSession.id {
@@ -892,6 +956,7 @@ final class WatchTogetherCoordinator {
         clearSession(leaveCurrent: false)
 
         session = newSession
+        needsForegroundSeek = isRestoringMedia
         let activitySeedState = validatedState(newSession.activity.initialState)
             ?? bootstrapState(for: newSession.activity)
         let isOriginator = newSession.activity.originatorInstanceID == senderInstanceID
@@ -941,7 +1006,19 @@ final class WatchTogetherCoordinator {
                     self.notifyConnectionState()
                 case .invalidated(let error):
                     Logger.shared.log("WatchTogether: session invalidated: \(error.localizedDescription)", type: "Player")
+                    let mediaIdentifier = self.currentSharedState?.mediaIdentifier ?? newSession.activity.mediaIdentifier
+                    let recentParticipants = self.visibleParticipants
                     self.clearSession(leaveCurrent: false)
+                    self.visibleParticipants = recentParticipants.map {
+                        WatchTogetherParticipantSnapshot(id: $0.id, name: $0.name, isLocal: $0.isLocal, isReconnecting: true)
+                    }
+                    self.participantGraceTask = Task { [weak self] in
+                        do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                        guard let self, self.session == nil else { return }
+                        self.visibleParticipants.removeAll()
+                    }
+                    self.interruptedMediaIdentifier = mediaIdentifier
+                    self.playbackDelegate?.watchTogetherShowNotice(NSLocalizedString("SharePlay was interrupted. Playback will sync when SharePlay restores the session.", comment: "SharePlay recovery"))
                 @unknown default:
                     self.clearSession(leaveCurrent: false)
                 }
@@ -951,6 +1028,7 @@ final class WatchTogetherCoordinator {
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak newSession] _ in
                 guard let self, let newSession, self.session?.id == newSession.id else { return }
+                self.updateVisibleParticipants()
                 self.reconcileStateAuthority(in: newSession)
                 self.sendHello()
                 self.requestCurrentState()
@@ -1215,6 +1293,7 @@ final class WatchTogetherCoordinator {
                 pendingClockEchoByInstanceID.removeValue(forKey: echo.key)
             }
         }
+        outboundMessage.displayName = Self.sanitizedParticipantName(ProfileManager.shared.activeProfile?.name)
         outboundMessages.append(OutboundMessage(message: outboundMessage, participants: participants))
         drainOutboundMessagesIfNeeded()
     }
@@ -1258,6 +1337,10 @@ final class WatchTogetherCoordinator {
         let lastSequence = lastSequenceBySender[senderKey] ?? 0
         guard message.sequence > lastSequence else { return }
         lastSequenceBySender[senderKey] = message.sequence
+        if let name = Self.sanitizedParticipantName(message.displayName) {
+            participantNames[context.source.id] = name
+            updateVisibleParticipants()
+        }
         participantIDByInstanceID[message.senderInstanceID] = context.source.id
         recordClockEvidence(from: message)
 
@@ -1387,7 +1470,7 @@ final class WatchTogetherCoordinator {
         )
         acceptLocalState(state)
         send(message(reason: .pause, state: state))
-        playbackDelegate?.watchTogetherShowNotice("The next episode didn't start in time, so playback controls were released for everyone.")
+        playbackDelegate?.watchTogetherShowNotice(eclipseLocalized("The next episode didn't start in time, so playback controls were released for everyone."))
         Logger.shared.log("WatchTogether: released an expired media transition revision=\(revision)", type: "Player")
     }
 
@@ -1426,7 +1509,7 @@ final class WatchTogetherCoordinator {
         if state.isStalled == true {
             if lastNoticedStallStateRevision != state.stateRevision {
                 lastNoticedStallStateRevision = state.stateRevision
-                delegate.watchTogetherShowNotice("Waiting for the host's stream to buffer...")
+                delegate.watchTogetherShowNotice(eclipseLocalized("Waiting for the host's stream to buffer..."))
             }
         } else {
             lastNoticedStallStateRevision = nil
@@ -1434,7 +1517,7 @@ final class WatchTogetherCoordinator {
         if !state.isPlaying, state.pausedByLifecycle == true {
             if lastNoticedLifecyclePauseRevision != state.stateRevision {
                 lastNoticedLifecyclePauseRevision = state.stateRevision
-                delegate.watchTogetherShowNotice("The host stepped away, so playback is paused. Tap play to keep watching.")
+                delegate.watchTogetherShowNotice(eclipseLocalized("The host stepped away, so playback is paused. Tap play to keep watching."))
             }
         } else if state.isPlaying {
             lastNoticedLifecyclePauseRevision = nil
@@ -1580,7 +1663,8 @@ final class WatchTogetherCoordinator {
         if pendingJoinRequest?.media == state.media {
             pendingJoinRequest = nil
         }
-        let forceSeek = reason == .seek || reason == .nextEpisode
+        let forceSeek = needsForegroundSeek || reason == .seek || reason == .nextEpisode
+        needsForegroundSeek = false
         applySharedState(state, to: delegate, forceSeek: forceSeek)
         presentStateNotices(for: state, to: delegate)
         notifyConnectionState()
@@ -1981,6 +2065,44 @@ final class WatchTogetherCoordinator {
         return true
     }
 
+    static func sanitizedParticipantName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        let safe = name.components(separatedBy: .controlCharacters).joined(separator: " ")
+            .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return safe.isEmpty ? nil : String(safe.prefix(40))
+    }
+
+    private func updateVisibleParticipants() {
+        guard let session else { visibleParticipants = []; return }
+        let now = Date()
+        let activeIDs = Set(session.activeParticipants.map(\.id))
+        for person in visibleParticipants where !activeIDs.contains(person.id) {
+            if participantDepartureTimes[person.id] == nil { participantDepartureTimes[person.id] = now }
+        }
+        for id in activeIDs { participantDepartureTimes.removeValue(forKey: id) }
+        let retained = visibleParticipants.filter { person in
+            !activeIDs.contains(person.id) && now.timeIntervalSince(participantDepartureTimes[person.id] ?? now) < 5
+        }.map { WatchTogetherParticipantSnapshot(id: $0.id, name: $0.name, isLocal: $0.isLocal, isReconnecting: true) }
+        let active = session.activeParticipants.sorted(by: participantSort).map { participant in
+            let isLocal = participant == session.localParticipant
+            let fallback = String(format: NSLocalizedString("Participant %@", comment: "Anonymous SharePlay participant"), String(participant.id.uuidString.prefix(4)))
+            return WatchTogetherParticipantSnapshot(id: participant.id,
+                name: isLocal ? (Self.sanitizedParticipantName(ProfileManager.shared.activeProfile?.name) ?? NSLocalizedString("You", comment: "Local participant")) : (participantNames[participant.id] ?? fallback),
+                isLocal: isLocal, isReconnecting: false)
+        }
+        visibleParticipants = active + retained
+        participantGraceTask?.cancel()
+        if !retained.isEmpty {
+            participantGraceTask = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                self?.updateVisibleParticipants()
+            }
+        }
+        let retainedIDs = Set(visibleParticipants.map(\.id))
+        participantNames = participantNames.filter { retainedIDs.contains($0.key) }
+        participantDepartureTimes = participantDepartureTimes.filter { retainedIDs.contains($0.key) }
+    }
+
     private func notifyConnectionState() {
         guard let delegate = playbackDelegate else { return }
         guard let session, session.state == .joined else {
@@ -2006,6 +2128,16 @@ final class WatchTogetherCoordinator {
         if leaveCurrent {
             session?.leave()
         }
+        foregroundSyncTask?.cancel()
+        foregroundSyncTask = nil
+        interruptedMediaIdentifier = nil
+        resumeHostAfterLifecyclePause = false
+        needsForegroundSeek = false
+        participantGraceTask?.cancel()
+        participantGraceTask = nil
+        participantNames.removeAll()
+        participantDepartureTimes.removeAll()
+        visibleParticipants.removeAll()
         stateCancellable?.cancel()
         participantsCancellable?.cancel()
         messageTask?.cancel()
@@ -2066,7 +2198,7 @@ final class WatchTogetherCoordinator {
             }
             guard let self, self.session == nil else { return }
             self.notifyConnectionState()
-            self.playbackDelegate?.watchTogetherShowNotice("SharePlay did not create a local session. Try Watch Together again.")
+            self.playbackDelegate?.watchTogetherShowNotice(eclipseLocalized("SharePlay did not create a local session. Try Watch Together again."))
         }
     }
 
