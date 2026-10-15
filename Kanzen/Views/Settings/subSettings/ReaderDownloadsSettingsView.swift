@@ -415,7 +415,7 @@ struct ReaderDownloadedTitleDetailView: View {
     }
 
     private var isNovel: Bool {
-        title.format?.uppercased().contains("NOVEL") == true
+        title.format?.uppercased(with: LocalizationManager.selectedLocale).contains("NOVEL") == true
     }
 
     var body: some View {

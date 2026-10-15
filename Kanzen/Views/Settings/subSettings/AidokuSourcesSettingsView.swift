@@ -680,7 +680,7 @@ struct ReaderExtensionCatalogSearchIndex: Sendable {
            !localized.isEmpty {
             return localized
         }
-        return rawValue.uppercased()
+        return rawValue.uppercased(with: LocalizationManager.selectedLocale)
     }
 
     private static func canonicalPreferredLanguageCodes(_ identifiers: [String]) -> [String] {
@@ -849,7 +849,7 @@ private struct ReaderExtensionCatalogSourceRow: View {
                 Text("\(source.name) — \(languageDisplayName)")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                Text("\(source.language.uppercased()) · \(source.mediaType.displayName) · v\(source.version)")
+                Text("\(source.language.uppercased(with: LocalizationManager.selectedLocale)) · \(source.mediaType.displayName) · v\(source.version)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if source.implementation == .unsupportedNative {
@@ -924,7 +924,7 @@ private struct ReaderExtensionInstalledSourceRow: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundColor(source.enabled ? .primary : .secondary)
-                Text("\(source.effectiveLanguage.uppercased()) · \(source.mediaType.displayName) · v\(source.version)")
+                Text("\(source.effectiveLanguage.uppercased(with: LocalizationManager.selectedLocale)) · \(source.mediaType.displayName) · v\(source.version)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if source.requiresReinstall {
@@ -1577,7 +1577,7 @@ private struct ReaderExtensionSourceTechnicalDetailsView: View {
             ReaderExtensionMetadataRow(label: "Source", value: source.sourceCodeURL?.absoluteString ?? source.baseURL.absoluteString)
             ReaderExtensionMetadataRow(label: "Version", value: source.version)
             ReaderExtensionMetadataRow(label: "Type", value: source.mediaType.displayName)
-            ReaderExtensionMetadataRow(label: "Language", value: source.effectiveLanguage.uppercased())
+            ReaderExtensionMetadataRow(label: "Language", value: source.effectiveLanguage.uppercased(with: LocalizationManager.selectedLocale))
             ReaderExtensionMetadataRow(label: "Implementation", value: source.implementation.displayName)
             ReaderExtensionMetadataRow(label: "Maturity", value: source.maturity.displayName)
             ReaderExtensionMetadataRow(label: "Installed", value: source.installedAt.formatted(date: .abbreviated, time: .shortened))
@@ -3253,7 +3253,7 @@ enum ReaderExtensionSignInRequestTranslator {
             approvedDomains: approvedDomains
         )
         guard let method = ReaderExtensionNetworkRequest.Method(
-            rawValue: (request.httpMethod ?? "GET").uppercased()
+            rawValue: (request.httpMethod ?? "GET").uppercased(with: LocalizationManager.selectedLocale)
         ) else { throw ReaderExtensionError.insecureURL }
         let translatedHeaders = translatedBrowserHeaders(
             request.allHTTPHeaderFields ?? [:],
@@ -3779,7 +3779,7 @@ final class ReaderExtensionSignInSchemeHandler: NSObject, WKURLSchemeHandler, @u
     ) -> Bool {
         guard let expectedURL,
               request.url?.absoluteString == expectedURL.absoluteString,
-              (request.httpMethod ?? "GET").uppercased() == "GET",
+              (request.httpMethod ?? "GET").uppercased(with: LocalizationManager.selectedLocale) == "GET",
               request.httpBody == nil,
               request.httpBodyStream == nil else {
             return false

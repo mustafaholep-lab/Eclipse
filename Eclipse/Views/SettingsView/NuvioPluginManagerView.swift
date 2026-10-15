@@ -634,7 +634,7 @@ struct NuvioRepositoryDetailView: View {
             .map { $0 == "tv" ? "TV" : $0.capitalized }
         if !types.isEmpty { parts.append(types.joined(separator: ", ")) }
         if !scraper.contentLanguage.isEmpty {
-            parts.append(scraper.contentLanguage.prefix(4).joined(separator: "/").uppercased())
+            parts.append(scraper.contentLanguage.prefix(4).joined(separator: "/").uppercased(with: LocalizationManager.selectedLocale))
         }
         return parts.joined(separator: " · ")
     }

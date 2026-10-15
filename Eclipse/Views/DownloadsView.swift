@@ -935,10 +935,11 @@ struct DownloadsView: View {
 
     private static func completedDateString(from date: Date) -> String {
         let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "Just now" }
-        if interval < 3600 { return "\(Int(interval / 60))m ago" }
-        if interval < 86400 { return "\(Int(interval / 3600))h ago" }
+        if interval < 60 { return eclipseLocalized("Just now") }
+        if interval < 3600 { return eclipseLocalized("%lld minutes ago", Int64(interval / 60)) }
+        if interval < 86400 { return eclipseLocalized("%lld hours ago", Int64(interval / 3600)) }
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.doesRelativeDateFormatting = true
         formatter.dateStyle = .medium
         formatter.timeStyle = .short

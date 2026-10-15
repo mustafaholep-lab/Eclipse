@@ -1297,6 +1297,7 @@ struct ScheduleView: View {
         }
 
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateFormat = "EEE"
         formatter.timeZone = calendar.timeZone
         return formatter.string(from: date)
@@ -1304,6 +1305,7 @@ struct ScheduleView: View {
 
     private func dayNumber(_ date: Date) -> String {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateFormat = "d"
         formatter.timeZone = scheduleCalendar.timeZone
         return formatter.string(from: date)
@@ -1320,6 +1322,7 @@ struct ScheduleView: View {
             return "Tomorrow"
         } else {
             let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
             formatter.dateFormat = "EEEE, MMM d"
             formatter.timeZone = showLocalScheduleTime ? .current : TimeZone(secondsFromGMT: 0)
             return formatter.string(from: date)
@@ -1328,6 +1331,7 @@ struct ScheduleView: View {
 
     private func formattedTime(_ date: Date) -> String {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.timeStyle = .short
         formatter.dateStyle = .none
         formatter.timeZone = showLocalScheduleTime ? .current : TimeZone(secondsFromGMT: 0)
