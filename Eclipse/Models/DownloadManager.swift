@@ -5432,7 +5432,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 if let delayReason = hlsStartDelayReason(for: item) {
                     setQueuedMessage(id: item.id, message: delayReason)
                     #if canImport(UIKit)
-                    if UIApplication.shared.applicationState == .active {
+                    if UIApplication.shared.applicationState == .active || backgroundExecutionMayContinue {
                         scheduleQueueWake(at: now.addingTimeInterval(30))
                     }
                     #else
@@ -6856,11 +6856,13 @@ final class DownloadManager: NSObject, ObservableObject {
 #endif
 
     private func hlsStartDelayReason(for item: DownloadItem) -> String? {
-        #if canImport(UIKit)
-        if item.claimsProtectedProviderTransport && UIApplication.shared.applicationState != .active {
+        #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
+        if item.claimsProtectedProviderTransport && !protectedProviderTransportMayStart {
             return "Waiting for app to reopen"
         }
+        #endif
 
+        #if canImport(UIKit)
         let device = UIDevice.current
         if device.batteryState == .unplugged && device.batteryLevel >= 0 && device.batteryLevel < 0.15 {
             return "Paused for low battery"

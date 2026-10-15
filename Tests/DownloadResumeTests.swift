@@ -255,6 +255,25 @@ final class DownloadResumeTests: XCTestCase {
     }
 
     @MainActor
+    func testGrantedBackgroundExecutionCanStartQueuedProtectedHLS() async throws {
+        let fixture = try DownloadLifecycleFixture(isHLS: true)
+        defer { fixture.cleanUp() }
+        fixture.isActive = false
+        fixture.manager.applicationDidBecomeActive()
+        await fixture.settle()
+        XCTAssertEqual(fixture.manager.downloads.first?.status, .queued)
+        XCTAssertTrue(fixture.startedURLs.isEmpty)
+
+        fixture.mayContinueInBackground = true
+        let started = expectation(description: "Queued protected HLS starts with background execution")
+        fixture.onStart = { _ in started.fulfill() }
+        fixture.manager.applicationDidBecomeActive()
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertEqual(fixture.manager.downloads.first?.status, .downloading)
+        XCTAssertEqual(fixture.startedURLs, [fixture.item.streamURL])
+    }
+
+    @MainActor
     func testGrantedBackgroundExecutionKeepsProtectedTransferUntilExpiration() async throws {
         let fixture = try DownloadLifecycleFixture()
         defer { fixture.cleanUp() }
@@ -984,7 +1003,7 @@ private final class DownloadLifecycleFixture {
         backgroundExecutionMayContinue: { [weak self] in self?.mayContinueInBackground == true }
     )
 
-    init(needsRefresh: Bool = false) throws {
+    init(needsRefresh: Bool = false, isHLS: Bool = false) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let sourceID = "service:download-lifecycle-fixture"
@@ -993,11 +1012,11 @@ private final class DownloadLifecycleFixture {
             id: DownloadManager.downloadID(tmdbId: tmdbID, isMovie: false, seasonNumber: 1, episodeNumber: 1),
             tmdbId: tmdbID, isMovie: false, title: "Lifecycle fixture", displayTitle: "Episode 1",
             posterURL: nil, seasonNumber: 1, episodeNumber: 1, episodeName: nil,
-            streamURL: needsRefresh ? "" : "https://cdn.example/initial.mp4", headers: [:],
+            streamURL: needsRefresh ? "" : "https://cdn.example/initial.\(isHLS ? "m3u8" : "mp4")", headers: [:],
             subtitleURL: nil, serviceBaseURL: "https://animepahe.example",
             lastSourceId: sourceID,
             lastContentReference: .service(sourceID: sourceID, href: "https://animepahe.example/episode"),
-            protectedProviderKind: .service, protectedTransportKind: .direct,
+            protectedProviderKind: .service, protectedTransportKind: isHLS ? .hls : .direct,
             protectedOwnerProfileID: ProfileManager.shared.activeProfileID,
             status: .queued, progress: 0, totalBytes: 0, downloadedBytes: 0,
             localFileName: nil, subtitleFileName: nil, error: nil, dateAdded: Date(), dateCompleted: nil,
