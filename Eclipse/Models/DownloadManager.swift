@@ -1810,6 +1810,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private var scheduledQueueWakeDate: Date?
     private var isolatedDownloadsDirectory: URL?
     private var transportMayStartOverride: (() -> Bool)?
+    private var backgroundExecutionMayContinueOverride: (() -> Bool)?
     private var refreshSourceOverride: (@MainActor (DownloadItem) async -> RefreshedDownloadSource?)?
     private var transferStarterOverride: ((DownloadItem) -> Void)?
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -1871,6 +1872,9 @@ final class DownloadManager: NSObject, ObservableObject {
         if !fileManager.fileExists(atPath: dir.path) {
             try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+#if os(iOS)
+        try? fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: dir.path)
+#endif
         return dir
         #endif
     }
@@ -1887,12 +1891,14 @@ final class DownloadManager: NSObject, ObservableObject {
         admissionPreparation: (() -> Void)? = nil,
         admissionScopeGeneration: (() -> Int)? = nil,
         concurrencyLimit: @escaping () -> Int = { 2 },
-        hlsConcurrencyLimit: @escaping () -> Int = { 1 }
+        hlsConcurrencyLimit: @escaping () -> Int = { 1 },
+        backgroundExecutionMayContinue: (() -> Bool)? = nil
     ) {
         isolatedDownloadsDirectory = downloadsDirectory
         concurrencyLimitOverride = concurrencyLimit
         hlsConcurrencyLimitOverride = hlsConcurrencyLimit
         transportMayStartOverride = transportMayStart
+        backgroundExecutionMayContinueOverride = backgroundExecutionMayContinue
         refreshSourceOverride = refreshSource
         transferStarterOverride = transferStarter
         admissionPreparationOverride = admissionPreparation
@@ -2437,8 +2443,52 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func applicationDidEnterBackground() {
+        if backgroundExecutionMayContinue { return }
 #if (os(iOS) && !targetEnvironment(macCatalyst)) || os(macOS)
         suspendProtectedProviderAttempts(message: "Waiting for app to reopen", processWhenPossible: false)
+#endif
+    }
+
+    private var backgroundExecutionMayContinue: Bool {
+        if let backgroundExecutionMayContinueOverride { return backgroundExecutionMayContinueOverride() }
+#if os(iOS)
+        return DownloadBackgroundExecution.mayContinue
+#else
+        return false
+#endif
+    }
+
+    private func beginUserInitiatedBackgroundDownloads() {
+#if os(iOS)
+        guard isolatedDownloadsDirectory == nil else { return }
+        let ids = Set(downloads.filter { $0.status == .queued || $0.status == .downloading }.map(\.id))
+        DownloadBackgroundExecution.begin(ids: ids, title: eclipseLocalized("Downloads"), subtitle: eclipseLocalized("Downloading"), ready: { [weak self] in
+            self?.processQueue()
+            self?.updateBackgroundDownloadProgress()
+        }, expired: { [weak self] ids in
+            guard let self else { return }
+            // Native direct transfers belong to URLSession and need no running
+            // process. Only checkpoint work that still needs our proxy/packager.
+            for item in self.downloads where ids.contains(item.id) &&
+                (item.claimsProtectedProviderTransport || item.isHLS) && item.status == .downloading {
+                self.pauseDownload(id: item.id)
+            }
+        })
+#endif
+    }
+
+    private func updateBackgroundDownloadProgress() {
+#if os(iOS)
+        guard isolatedDownloadsDirectory == nil else { return }
+        let update = { [weak self] in
+            guard let self else { return }
+            DownloadBackgroundExecution.update(self.downloads.map {
+                DownloadBackgroundProgress(id: $0.id, fraction: $0.progress,
+                    pending: $0.status == .queued || $0.status == .downloading,
+                    succeeded: $0.status == .completed)
+            })
+        }
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
 #endif
     }
 
@@ -3368,6 +3418,7 @@ final class DownloadManager: NSObject, ObservableObject {
         if let totalBytes { downloads[index].totalBytes = totalBytes }
         if let hlsResumeSegmentIndex { downloads[index].hlsResumeSegmentIndex = hlsResumeSegmentIndex }
         if let hlsResumeByteCount { downloads[index].hlsResumeByteCount = hlsResumeByteCount }
+        updateBackgroundDownloadProgress()
     }
 
     private func captureKidsPolicyDetails(forDownload id: String, tmdbId: Int, isMovie: Bool) {
@@ -3508,6 +3559,8 @@ final class DownloadManager: NSObject, ObservableObject {
             downloads[index].rateLimitRetryCount = nil
             downloads[index].error = nil
             mediaSourceRecoveryAttempts.removeValue(forKey: id)
+
+            beginUserInitiatedBackgroundDownloads()
 
             if downloads[index].isHLS && downloads[index].hlsResumeSegmentIndex == nil {
                 downloads[index].progress = 0
@@ -6285,7 +6338,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private var protectedProviderTransportMayStart: Bool {
-        nuvioProtectedTransportMayStart
+        nuvioProtectedTransportMayStart || backgroundExecutionMayContinue
     }
 
     private static func protectedAuthorityState(
@@ -8697,6 +8750,9 @@ final class DownloadManager: NSObject, ObservableObject {
                     }
                     if progressRevision != downloadProgressRevision { saveDownloads() }
                     persistenceError = nil
+                    if admittedItem.status == .queued || admittedItem.status == .downloading {
+                        beginUserInitiatedBackgroundDownloads()
+                    }
                     onCommitted(admittedItem)
                     return true
                 } catch {
@@ -8750,6 +8806,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func saveDownloads() {
+        updateBackgroundDownloadProgress()
         guard !metadataLoadFailed else { return }
         let admissionEpoch = currentDownloadAdmissionEpoch()
         let raw = downloads

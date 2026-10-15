@@ -255,6 +255,28 @@ final class DownloadResumeTests: XCTestCase {
     }
 
     @MainActor
+    func testGrantedBackgroundExecutionKeepsProtectedTransferUntilExpiration() async throws {
+        let fixture = try DownloadLifecycleFixture()
+        defer { fixture.cleanUp() }
+        fixture.mayContinueInBackground = true
+        let started = expectation(description: "Protected transfer starts")
+        fixture.onStart = { _ in started.fulfill() }
+        fixture.manager.applicationDidBecomeActive()
+        await fulfillment(of: [started], timeout: 3)
+
+        fixture.isActive = false
+        fixture.manager.applicationDidEnterBackground()
+        XCTAssertEqual(fixture.manager.downloads.first?.status, .downloading)
+        XCTAssertEqual(fixture.manager.downloads.first?.streamURL, fixture.item.streamURL)
+        XCTAssertEqual(fixture.startedURLs.count, 1)
+
+        fixture.mayContinueInBackground = false
+        fixture.manager.applicationDidEnterBackground()
+        XCTAssertEqual(fixture.manager.downloads.first?.status, .queued)
+        XCTAssertEqual(fixture.manager.downloads.first?.streamURL, "")
+    }
+
+    @MainActor
     func testBackgroundReturnDiscardsOldRefreshWithoutBlockingTheNewAttempt() async throws {
         let fixture = try DownloadLifecycleFixture()
         defer { fixture.cleanUp() }
@@ -937,6 +959,7 @@ private final class DownloadLifecycleFixture {
     let root: URL
     let item: DownloadItem
     var isActive = true
+    var mayContinueInBackground = false
     var onStart: ((DownloadItem) -> Void)?
     var onRefresh: (() -> Void)?
     var startedURLs: [String] = []
@@ -957,7 +980,8 @@ private final class DownloadLifecycleFixture {
         transferStarter: { [weak self] item in
             self?.startedURLs.append(item.streamURL)
             self?.onStart?(item)
-        }
+        },
+        backgroundExecutionMayContinue: { [weak self] in self?.mayContinueInBackground == true }
     )
 
     init(needsRefresh: Bool = false) throws {

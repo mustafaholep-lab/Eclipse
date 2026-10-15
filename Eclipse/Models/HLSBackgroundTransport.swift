@@ -21,6 +21,8 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
         var cancellation: CancellationFlag? = nil
     }
     private var flights: [String: Flight] = [:]
+    private var owners: [String: UUID] = [:]
+    private var invalidatedTaskIDs = Set<Int>()
     private let directory: URL
 
     private final class CancellationFlag: @unchecked Sendable {
@@ -35,6 +37,7 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
             .appendingPathComponent("HLSBackgroundResponses", isDirectory: true)
         super.init()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: directory.path)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var root = directory
@@ -43,6 +46,7 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
         configuration.allowsCellularAccess = true
+        configuration.waitsForConnectivity = true
         configuration.httpMaximumConnectionsPerHost = 4
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         session.getAllTasks { tasks in
@@ -68,7 +72,38 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
         key.count == 129 && key.allSatisfy { $0 == "." || "0123456789abcdef".contains($0) }
     }
 
-    func download(for request: URLRequest, downloadID: String, limit: Int) async throws -> (Data, URLResponse) {
+    func begin(downloadID: String, ownerID: UUID) {
+        queue.async {
+            let claim = { self.owners[Self.digest(downloadID) + "."] = ownerID }
+            if self.restoring { self.waiting.append(claim) } else { claim() }
+        }
+    }
+
+    /// Submit media work before suspension; a suspended Swift worker cannot
+    /// enqueue the next segment after awaiting the previous one.
+    func prefetch(_ requests: [URLRequest], downloadID: String, ownerID: UUID, limit: Int, interval: TimeInterval) {
+        guard requests.count <= 8_192 else { return }
+        queue.async {
+            let enqueue = {
+                let prefix = Self.digest(downloadID) + "."
+                guard self.owners[prefix] == ownerID else { return }
+                for (index, request) in requests.enumerated() {
+                    guard let url = request.url else { continue }
+                    let key = prefix + Self.digest(url.absoluteString)
+                    guard self.flights[key] == nil,
+                          !FileManager.default.fileExists(atPath: self.directory.appendingPathComponent(key).path) else { continue }
+                    let task = self.session.downloadTask(with: request)
+                    task.taskDescription = key
+                    task.earliestBeginDate = Date().addingTimeInterval(Double(index) * max(interval, 0))
+                    self.flights[key] = Flight(task: task, limit: limit)
+                    task.resume()
+                }
+            }
+            if self.restoring { self.waiting.append(enqueue) } else { enqueue() }
+        }
+    }
+
+    func download(for request: URLRequest, downloadID: String, ownerID: UUID, limit: Int) async throws -> (Data, URLResponse) {
         guard let url = request.url else { throw URLError(.badURL) }
         let key = Self.digest(downloadID) + "." + Self.digest(url.absoluteString)
         let cancellation = CancellationFlag()
@@ -78,6 +113,9 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
                 queue.async {
                     let begin = {
                         guard !cancellation.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                        guard self.owners[Self.digest(downloadID) + "."] == ownerID else {
+                            continuation.resume(throwing: CancellationError()); return
+                        }
                         if let result = self.cachedResponse(key: key, limit: limit) {
                             continuation.resume(with: result)
                             return
@@ -111,18 +149,22 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
                 // attempt that happens to request the same URL.
                 guard let flight = self.flights[key], flight.cancellation === cancellation else { return }
                 self.flights.removeValue(forKey: key)
+                self.invalidatedTaskIDs.insert(flight.task.taskIdentifier)
                 flight.task.cancel()
                 flight.continuation?.resume(throwing: CancellationError())
             }
         }
     }
 
-    func cancel(downloadID: String) {
+    func cancel(downloadID: String, ownerID: UUID) {
         let prefix = Self.digest(downloadID) + "."
         queue.async {
             let cancel = {
+                guard self.owners[prefix] == ownerID else { return }
+                self.owners.removeValue(forKey: prefix)
                 for key in self.flights.keys.filter({ $0.hasPrefix(prefix) }) {
                     let flight = self.flights.removeValue(forKey: key)
+                    if let flight { self.invalidatedTaskIDs.insert(flight.task.taskIdentifier) }
                     flight?.task.cancel()
                     flight?.continuation?.resume(throwing: CancellationError())
                 }
@@ -133,8 +175,8 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
         }
     }
 
-    func finishedProcessing(downloadID: String) {
-        queue.async { self.removeResponses(prefix: Self.digest(downloadID) + "."); self.finishEvents() }
+    func finishedProcessing(downloadID: String, ownerID: UUID) {
+        cancel(downloadID: downloadID, ownerID: ownerID)
     }
 
     func handleBackgroundEvents(completion: @escaping () -> Void) {
@@ -147,6 +189,7 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
             let reconcile = {
                 for key in self.flights.keys.filter({ key in !prefixes.contains(String(key.prefix(65))) }) {
                     let flight = self.flights.removeValue(forKey: key)
+                    if let flight { self.invalidatedTaskIDs.insert(flight.task.taskIdentifier) }
                     flight?.task.cancel()
                     flight?.continuation?.resume(throwing: CancellationError())
                 }
@@ -192,6 +235,7 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
         guard let key = downloadTask.taskDescription, Self.validKey(key) else { return }
         // URLSession deletes its temporary URL after this delegate method returns.
         queue.sync {
+            guard !invalidatedTaskIDs.contains(downloadTask.taskIdentifier) else { return }
             if let flight = flights[key], flight.task.taskIdentifier != downloadTask.taskIdentifier { return }
             do {
                 guard let response = downloadTask.response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
@@ -202,6 +246,7 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
                 let body = directory.appendingPathComponent(key)
                 try? FileManager.default.removeItem(at: body)
                 try FileManager.default.moveItem(at: location, to: body)
+                try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: body.path)
                 let archived = try NSKeyedArchiver.archivedData(withRootObject: response, requiringSecureCoding: true)
                 try archived.write(to: directory.appendingPathComponent(key + ".response"), options: .atomic)
                 if let flight = flights.removeValue(forKey: key), let continuation = flight.continuation {
@@ -220,13 +265,16 @@ final class HLSBackgroundTransport: NSObject, URLSessionDownloadDelegate, @unche
             guard let flight = self.flights[key], flight.task.taskIdentifier == downloadTask.taskIdentifier,
                   totalBytesWritten > flight.limit else { return }
             self.flights.removeValue(forKey: key)?.continuation?.resume(throwing: URLError(.dataLengthExceedsMaximum))
+            self.invalidatedTaskIDs.insert(downloadTask.taskIdentifier)
             flight.task.cancel()
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error, let key = task.taskDescription else { return }
+        guard let key = task.taskDescription else { return }
         queue.async {
+            self.invalidatedTaskIDs.remove(task.taskIdentifier)
+            guard let error else { return }
             guard self.flights[key]?.task.taskIdentifier == task.taskIdentifier else { return }
             self.flights.removeValue(forKey: key)?.continuation?.resume(throwing: error)
         }

@@ -22,6 +22,10 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
+      - name: Select current stable Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
+        with:
+          xcode-version: latest-stable
       - name: Parse changed Swift sources with the iOS SDK
         run: |
           set -euo pipefail
@@ -55,3 +59,6 @@ jobs:
           xcrun swiftc -typecheck -swift-version 5 \
             -target arm64-apple-ios15.0-simulator -sdk "$sdk" \
             Eclipse/Models/HLSBackgroundTransport.swift "$RUNNER_TEMP/hls-limit-stub.swift"
+          xcrun swiftc -typecheck -swift-version 5 \
+            -target arm64-apple-ios15.0-simulator -sdk "$sdk" \
+            Eclipse/Models/DownloadBackgroundExecution.swift
