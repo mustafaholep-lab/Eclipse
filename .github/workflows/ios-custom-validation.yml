@@ -1,0 +1,48 @@
+name: Custom Eclipse source and relay validation
+on:
+  push:
+    branches: [feat/custom-eclipse-lifecycle]
+  pull_request:
+    branches: [stremio-playback-fix-v6-animesub-subtitles]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: custom-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  resources-and-relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+      - run: python3 tools/verify_custom_ios.py
+      - name: Validate relay and backward compatibility
+        working-directory: tools/eclipse-sync-server
+        run: |
+          npm ci --ignore-scripts
+          npm run check
+          npm test
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
+        with:
+          xcode-version: latest-stable
+      - name: Check Swift changes on the custom base
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          python3 - "$sdk" <<'PY'
+          import subprocess, sys
+          paths = subprocess.check_output(['git', 'diff', '--name-only', '-z', '1189cacac52da32656c3beb6f60103ce859c286b...HEAD']).decode().split('\0')
+          for path in paths:
+              if path.endswith('.swift'):
+                  subprocess.run(['xcrun', 'swiftc', '-frontend', '-parse', '-target', 'arm64-apple-ios15.0-simulator', '-sdk', sys.argv[1], '-D', 'ECLIPSE_MPVKIT_MOLTENVK_INLINE_RENDERER', '-D', 'ECLIPSE_MPVKIT_SAMPLE_BUFFER_PIP_BRIDGE', path], check=True)
+          PY
+          plutil -lint Eclipse.xcodeproj/project.pbxproj
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios15.0-simulator -sdk "$sdk" Eclipse/Extensions/DisplayRefreshSettings.swift
