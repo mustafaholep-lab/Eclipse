@@ -1873,6 +1873,14 @@ final class DownloadManager: NSObject, ObservableObject {
         cleanOrphanedFiles()
 
         resumeInterruptedDownloads()
+#if os(iOS)
+        if isolatedDownloadsDirectory == nil {
+            HLSBackgroundTransport.shared.reconcile(downloadIDs: Set(downloads.filter {
+                $0.isHLS && !$0.claimsProtectedProviderTransport && $0.providerTransportKind != .skyStreamHLS
+                    && ($0.status == .queued || $0.status == .downloading || $0.status == .paused)
+            }.map(\.id)))
+        }
+#endif
     }
 
     deinit {
@@ -2172,7 +2180,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     let challengeURL = diagnosticURL ?? rawChallengeURL
                     await CloudflareBypassManager.shared.flagPendingVerification(for: challengeURL)
                     Logger.shared.log(
-                        "Auto Mode download hit Cloudflare wall host=\(challengeURL.host ?? "unknown") — routing to verification",
+                        "Auto Mode download hit Cloudflare wall host=\(challengeURL.host ?? "unknown") â€” routing to verification",
                         type: "Download"
                     )
                     return .cloudflareChallenge(url: challengeURL)
@@ -5294,7 +5302,7 @@ final class DownloadManager: NSObject, ObservableObject {
             },
             minimumRequestStartInterval: streamURLOverride == nil ? nil : 0,
             enforcesConservativeDiskCapacityReserve: item.providerTransportKind == .skyStreamHLS,
-            allowsBackgroundTransport: !item.claimsProtectedProviderTransport
+            allowsBackgroundTransport: !item.claimsProtectedProviderTransport && streamURLOverride == nil
         )
 
         downloader.onVariantResolved = { [weak self] variantURL, totalSegments in
@@ -5360,6 +5368,7 @@ final class DownloadManager: NSObject, ObservableObject {
             if let index = self.downloads.firstIndex(where: { $0.id == item.id }),
                self.downloads[index].status == .downloading {
                 self.downloads[index].progress = progress
+                self.updateBackgroundDownloadProgress()
             }
         }
 
@@ -8671,6 +8680,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             self.downloads[index].progress = expectedBytes > 0 ? min(Double(completedBytes) / Double(expectedBytes), 1) : 0
             self.downloads[index].downloadedBytes = completedBytes
             self.downloads[index].totalBytes = max(expectedBytes, 0)
+            self.updateBackgroundDownloadProgress()
             if responseWasSuccessful && totalBytesWritten > 0 {
                 self.downloads[index].rateLimitRetryCount = nil
             }
