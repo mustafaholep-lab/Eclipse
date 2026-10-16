@@ -723,22 +723,14 @@ class StremioAddonManager: ObservableObject {
         )
         guard !active.isEmpty else { return [] }
 
-        async let resolvedIMDbIDTask = resolveIMDbID(
+        let (resolvedIMDbID, effectivePlaybackContext) = await resolveSubtitleLookupIdentity(
             tmdbId: tmdbId,
-            providedIMDbID: imdbId,
-            type: type
-        )
-        async let effectivePlaybackContextTask = Self.enrichedPlaybackContextForKitsuIfNeeded(
-            playbackContext,
-            addons: active,
+            imdbId: imdbId,
             type: type,
+            playbackContext: playbackContext,
+            addons: active,
             titleCandidates: titleCandidates,
-            expectedYear: expectedYear,
-            resourceName: "subtitles"
-        )
-        let (resolvedIMDbID, effectivePlaybackContext) = await (
-            resolvedIMDbIDTask,
-            effectivePlaybackContextTask
+            expectedYear: expectedYear
         )
         var effectiveQuery = query ?? SubtitleQuery(
             mediaKind: type == "movie" ? .movie : (isAnimeRequest ? .anime : .series),
@@ -813,6 +805,34 @@ class StremioAddonManager: ObservableObject {
         }
 
         return Self.dedupeSubtitleResults(results)
+    }
+
+    /// Runs both lookups concurrently in a frame of their own. As `async let`
+    /// children of `fetchSubtitlesFromAddons` they stayed allocated until that
+    /// function returned, past the task group created after them.
+    private func resolveSubtitleLookupIdentity(
+        tmdbId: Int,
+        imdbId: String?,
+        type: String,
+        playbackContext: EpisodePlaybackContext?,
+        addons: [StremioAddon],
+        titleCandidates: [String],
+        expectedYear: Int?
+    ) async -> (String?, EpisodePlaybackContext?) {
+        async let resolvedIMDbID = resolveIMDbID(
+            tmdbId: tmdbId,
+            providedIMDbID: imdbId,
+            type: type
+        )
+        async let effectivePlaybackContext = Self.enrichedPlaybackContextForKitsuIfNeeded(
+            playbackContext,
+            addons: addons,
+            type: type,
+            titleCandidates: titleCandidates,
+            expectedYear: expectedYear,
+            resourceName: "subtitles"
+        )
+        return await (resolvedIMDbID, effectivePlaybackContext)
     }
 
     func fetchCatalogItems(for catalog: Catalog, tmdbService: TMDBService, limit: Int = 15) async -> [TMDBSearchResult] {
