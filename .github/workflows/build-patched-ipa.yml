@@ -199,6 +199,25 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # A device crash report from this IPA is only readable with the dSYMs of
+      # this exact archive, so keep them next to it.
+      - name: Package debug symbols
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="$RUNNER_TEMP/EclipsePatched.xcarchive"
+          DSYM_ZIP="$GITHUB_WORKSPACE/build/Eclipse-Custom-6.0.1-dSYMs.zip"
+          test -d "$ARCHIVE_PATH/dSYMs"
+          (cd "$ARCHIVE_PATH" && zip -qry "$DSYM_ZIP" dSYMs)
+          echo "DSYM_ZIP=$DSYM_ZIP" >> "$GITHUB_ENV"
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Eclipse-Custom-6.0.1-${{ github.run_number }}-dSYMs
+          path: ${{ env.DSYM_ZIP }}
+          if-no-files-found: error
+          retention-days: 30
+
   full-tests:
     runs-on: macos-15
     timeout-minutes: 180
