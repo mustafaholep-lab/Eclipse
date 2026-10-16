@@ -4176,6 +4176,9 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         bindPlaybackWindowSceneIfAvailable(source: "view-did-load")
         beginMediaStatePlaybackLeaseIfNeeded()
         view.backgroundColor = .black
+        view.accessibilityIdentifier = "player.mpv"
+        closeButton.accessibilityIdentifier = "player.close"
+        Logger.shared.log("player viewDidLoad engine=mpv", type: "StreamFlow")
         let initialURLSummary = initialURL.map(playbackURLSummary) ?? "nil"
         logMPV("viewDidLoad initialURL={\(initialURLSummary)} preset=\(initialPreset?.id.rawValue ?? "nil") mediaInfo=\(String(describing: mediaInfo))")
         logVLCUI("viewDidLoad initialURL={\(initialURLSummary)} preset=\(initialPreset?.id.rawValue ?? "nil") mediaInfo=\(String(describing: mediaInfo))", type: "Stream")

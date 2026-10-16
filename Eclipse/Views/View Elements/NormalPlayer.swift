@@ -277,6 +277,7 @@ final class NormalPlayer: UIViewController, AVPlayerViewControllerDelegate, AVPi
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        view.accessibilityIdentifier = "player.avplayer"
 #if os(iOS)
         playerSurfaceView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(playerSurfaceView)

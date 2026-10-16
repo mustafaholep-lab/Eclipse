@@ -176,6 +176,11 @@ struct ContentView: View {
             }
         }
         .onAppear {
+#if (DEBUG || ECLIPSE_UI_TEST_HOOKS) && os(iOS)
+            if EclipseUITestHooks.initialTab == "search" {
+                selectedTab = .search
+            }
+#endif
             updatePerformanceSurface()
             publishScenePhase(scenePhase)
             presentUpdateAlertIfNeeded()
@@ -677,6 +682,11 @@ struct ExperimentalContentView: View {
             }
         }
         .onAppear {
+#if (DEBUG || ECLIPSE_UI_TEST_HOOKS) && os(iOS)
+            if EclipseUITestHooks.initialTab == "search" {
+                selectedTab = .search
+            }
+#endif
             updatePerformanceSurface()
             publishScenePhase(scenePhase)
             presentUpdateAlertIfNeeded()

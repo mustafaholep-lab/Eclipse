@@ -2164,8 +2164,11 @@ struct ModulesSearchResultsSheet: View {
                 let streams = plan.stremioStreams
                 if !streams.isEmpty {
                     let sourceLimit = min(visibleLimit, Self.maxVisibleStremioStreamsPerAddon)
-                    ForEach(Array(streams.prefix(sourceLimit).enumerated()), id: \.offset) { _, stream in
+                    ForEach(Array(streams.prefix(sourceLimit).enumerated()), id: \.offset) { index, stream in
                         stremioStyleStreamRow(stream: stream, addon: addon)
+#if !os(tvOS)
+                            .accessibilityIdentifier("services.stremioStyle.stream.\(index)")
+#endif
                     }
                 } else if visibleLimit > 0, let outcome = plan.stremioFailureOutcome {
                     stremioOutcomeRow(outcome)
@@ -7321,6 +7324,7 @@ struct ModulesSearchResultsSheet: View {
         .buttonStyle(TVGlassRowButtonStyle())
 #else
         .buttonStyle(PlainButtonStyle())
+        .accessibilityIdentifier("services.stremio.addon.\(addon.manifest.name)")
 #endif
     }
 
@@ -7473,6 +7477,10 @@ struct ModulesSearchResultsSheet: View {
         let selection = pendingMobileStremioSelection
         pendingMobileStremioSelection = nil
         viewModel.pendingPlaybackAutoMode = false
+        Logger.shared.log(
+            "picker dismissed selected=\(selection != nil) sheetActive=\(isSheetActive) authority=\(selection?.authority.isCurrent ?? false)",
+            type: "StreamFlow"
+        )
         guard let selection, isSheetActive, selection.authority.isCurrent,
               forcedWatchTogetherMediaIsCurrent() else { return }
         playStremioStream(selection.stream, addon: selection.addon, autoModeLaunch: selection.autoMode)
@@ -7489,6 +7497,10 @@ struct ModulesSearchResultsSheet: View {
                         let streams = filteredStremioStreams(options, addon: addon)
                         ForEach(Array(streams.prefix(Self.maxVisibleStremioStreamsPerAddon))) { stream in
                             Button {
+                                Logger.shared.log(
+                                    "picker tap container=\(Self.streamFlowContainer(stream)) replacing=\(pendingMobileStremioSelection != nil) visible=\(streams.count)",
+                                    type: "StreamFlow"
+                                )
                                 pendingMobileStremioSelection = (stream, addon, viewModel.pendingPlaybackAutoMode, .capture())
                                 viewModel.showingStremioStreamPicker = false
                             } label: {
@@ -7599,6 +7611,14 @@ struct ModulesSearchResultsSheet: View {
 
     private func stremioStreamLabel(for stream: StremioStream) -> String {
         AutoModeStreamSelection.stremioStreamLabel(for: stream)
+    }
+
+    /// File container for diagnostics only; the stream URL itself may carry a
+    /// debrid key, so it never reaches the log.
+    static func streamFlowContainer(_ stream: StremioStream) -> String {
+        let name = stream.behaviorHints?.filename ?? stream.url.flatMap { URL(string: $0)?.lastPathComponent } ?? ""
+        let container = (name as NSString).pathExtension.lowercased()
+        return container.isEmpty || container.count > 5 ? "unknown" : container
     }
 
     private func smartPlayerMetadata(for stream: StremioStream) -> String {
@@ -9402,6 +9422,10 @@ struct ModulesSearchResultsSheet: View {
                 Logger.shared.log("ServicesResultsSheet: no presenter for coordinated playback", type: "Error")
                 return
             }
+            Logger.shared.log(
+                "player handoff presenter=\(type(of: topmostVC)) presenting=\(topmostVC.presentedViewController.map { "\(type(of: $0))" } ?? "none") dismissing=\(topmostVC.isBeingDismissed) inWindow=\(topmostVC.viewIfLoaded?.window != nil) source=\(launchContext.sourceKind)",
+                type: "StreamFlow"
+            )
             PlaybackCoordinator.shared.present(
                 request,
                 from: topmostVC,

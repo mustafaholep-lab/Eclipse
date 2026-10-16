@@ -117,6 +117,9 @@ struct SoraApp: App {
 #endif
 
     init() {
+#if (DEBUG || ECLIPSE_UI_TEST_HOOKS) && os(iOS)
+        EclipseUITestHooks.prepareLaunchState()
+#endif
 
         OnboardingState.bootstrapIfNeeded()
         _ = AppPerformanceRuntimeContext.shared
@@ -143,6 +146,11 @@ struct SoraApp: App {
             CacheManager.shared.checkAndAutoClearIfNeeded()
         }
         _ = DownloadManager.shared
+#if (DEBUG || ECLIPSE_UI_TEST_HOOKS) && os(iOS)
+        Task { @MainActor in
+            await EclipseUITestHooks.installRequestedAddon()
+        }
+#endif
 #if !os(tvOS)
         // ReaderDownloadManager runs migration recovery synchronously before it
         // loads the mutable queue. If another Reader store is quarantined, the
@@ -572,6 +580,61 @@ enum EclipseDebugAutoplay {
             type: "Plugin"
         )
         host.present(controller, animated: false)
+    }
+}
+#endif
+
+#if (DEBUG || ECLIPSE_UI_TEST_HOOKS) && os(iOS)
+/// Launch preparation for the iPhone stream-flow UI test. It is inert unless the
+/// runner sets ECLIPSE_UI_TEST=1 and is never compiled into the shipped IPA.
+enum EclipseUITestHooks {
+    private static var environment: [String: String] { ProcessInfo.processInfo.environment }
+
+    static var isActive: Bool { environment["ECLIPSE_UI_TEST"] == "1" }
+
+    static var initialTab: String? {
+        guard isActive else { return nil }
+        return environment["ECLIPSE_UI_TEST_INITIAL_TAB"]
+    }
+
+    static func prepareLaunchState() {
+        guard isActive else { return }
+        let standard = UserDefaults.standard
+        standard.set(true, forKey: OnboardingState.completedKey)
+        standard.set(true, forKey: OnboardingState.appHubNoticeSeenKey)
+        standard.set(true, forKey: "hideSplashScreen")
+        standard.set(false, forKey: "githubReleaseAutoCheckEnabled")
+        if let language = environment["ECLIPSE_UI_TEST_APP_LANGUAGE"], !language.isEmpty {
+            standard.set(language, forKey: LocalizationManager.appLanguageKey)
+        }
+        let services = ProfileSettingsStore.services
+        if let autoMode = environment["ECLIPSE_UI_TEST_AUTO_MODE"] {
+            services.set(autoMode == "1", forKey: AutoModeSettings.enabledKey)
+        }
+        if let stremioStyle = environment["ECLIPSE_UI_TEST_STREMIO_STYLE"] {
+            services.set(stremioStyle == "1", forKey: ServicesSheetPresentationSettings.stremioStyleEnabledKey)
+        }
+        if let engine = environment["ECLIPSE_UI_TEST_PLAYER"].flatMap(PlaybackEngine.init(rawValue:)) {
+            PlaybackEngine.setSelected(engine)
+        }
+    }
+
+    @MainActor
+    static func installRequestedAddon() async {
+        guard isActive,
+              let url = environment["ECLIPSE_UI_TEST_STREMIO_ADDON"],
+              !url.isEmpty else { return }
+        let manager = StremioAddonManager.shared
+        let configuredURL = StremioClient.normalizedConfiguredURL(from: url)
+        guard !manager.addons.contains(where: {
+            StremioClient.normalizedConfiguredURL(from: $0.configuredURL) == configuredURL
+        }) else { return }
+        do {
+            _ = try await manager.addAddon(from: url)
+            Logger.shared.log("UI test addon installed", type: "StreamFlow")
+        } catch {
+            Logger.shared.log("UI test addon install failed: \(error.localizedDescription)", type: "StreamFlow")
+        }
     }
 }
 #endif
