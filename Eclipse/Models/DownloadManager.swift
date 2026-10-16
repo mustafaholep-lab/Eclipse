@@ -2182,7 +2182,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     let challengeURL = diagnosticURL ?? rawChallengeURL
                     await CloudflareBypassManager.shared.flagPendingVerification(for: challengeURL)
                     Logger.shared.log(
-                        "Auto Mode download hit Cloudflare wall host=\(challengeURL.host ?? "unknown") â€” routing to verification",
+                        "Auto Mode download hit Cloudflare wall host=\(challengeURL.host ?? "unknown") — routing to verification",
                         type: "Download"
                     )
                     return .cloudflareChallenge(url: challengeURL)
