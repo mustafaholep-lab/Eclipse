@@ -176,7 +176,14 @@ final class StreamSelectionFlowUITests: XCTestCase {
     private func openStreamPicker(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)[Self.addonRow]
         XCTAssertTrue(row.waitForExistence(timeout: 90), "Torrentio row never appeared in the source sheet")
-        row.tap()
+        // The row is a plain-style button whose centre is an empty Spacer, which
+        // does not take touches; tap its title like a person would.
+        let title = row.staticTexts.firstMatch
+        if title.exists, title.isHittable {
+            title.tap()
+        } else {
+            row.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.5)).tap()
+        }
         guard streamRow(app, index: 0).waitForExistence(timeout: 20) else {
             attachHierarchy(app, name: "stream picker missing")
             XCTFail("Stream picker never opened")
