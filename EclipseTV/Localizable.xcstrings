@@ -4840,7 +4840,7 @@
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld yayın%@"
+            "value": "%lld yayın"
           }
         }
       }

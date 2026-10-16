@@ -41,7 +41,19 @@ def argument_types(text):
             kind = conversion
         assert types.setdefault(index, kind) == kind, f'argument {index} is read as two types in {text!r}'
     assert len(styles) < 2, f'mixes positional and sequential arguments: {text!r}'
-    return types
+    return types, styles == {True}
+def compatible(actual, expected, positional):
+    """Same type at every position the translation reads.
+
+    A translation may leave out an argument it does not need, such as the
+    English plural suffix after a Turkish numeral, when the omitted arguments
+    come last or the translation addresses arguments by position; otherwise a
+    later specifier would read the skipped argument's value.
+    """
+    if any(expected.get(index) != kind for index, kind in actual.items()):
+        return False
+    omitted = set(expected) - set(actual)
+    return not omitted or positional or min(omitted) > max(actual, default=0)
 def units(value):
     if 'stringUnit' in value:
         yield value['stringUnit']
@@ -51,12 +63,12 @@ def units(value):
 def verify_catalog(path, data):
     for key, entry in data['strings'].items():
         assert 'tr' in entry.get('localizations', {}), key
-        expected = argument_types(key)
+        expected, _ = argument_types(key)
         for unit in units(entry['localizations']['tr']):
             assert unit['state'] == 'translated', key
             assert '\ufffd' not in unit['value'], key
-            actual = argument_types(unit['value'])
-            assert actual == expected, f'{path}: {key!r} -> {unit["value"]!r} reads {actual}, key passes {expected}'
+            actual, positional = argument_types(unit['value'])
+            assert compatible(actual, expected, positional), f'{path}: {key!r} -> {unit["value"]!r} reads {actual}, key passes {expected}'
 verify_catalog('Eclipse/Localizable.xcstrings', catalog)
 verify_catalog('EclipseTV/Localizable.xcstrings', json.loads((root / 'EclipseTV/Localizable.xcstrings').read_text(encoding='utf-8')))
 info = plistlib.loads((root / 'Eclipse/Info.plist').read_bytes())
