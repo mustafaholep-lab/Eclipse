@@ -7248,6 +7248,7 @@ struct ModulesSearchResultsSheet: View {
                 viewModel.showingStremioPlayAlert = true
 #endif
             } else {
+                Logger.shared.log("addon row tap streams=\(streams.count) opens picker", type: "StreamFlow")
                 viewModel.stremioStreamOptions = streams
                 viewModel.selectedStremioAddon = addon
                 viewModel.showingStremioStreamPicker = true
@@ -7541,6 +7542,12 @@ struct ModulesSearchResultsSheet: View {
             }
         }
         .navigationViewStyle(.stack)
+        .onAppear {
+            Logger.shared.log(
+                "picker appeared options=\(viewModel.stremioStreamOptions?.count ?? -1) addon=\(viewModel.selectedStremioAddon != nil)",
+                type: "StreamFlow"
+            )
+        }
     }
 #endif
 

@@ -100,9 +100,39 @@ final class StreamSelectionFlowUITests: XCTestCase {
         expectPlayer(app, step: "Auto Mode", timeout: 120)
     }
 
+    /// "Choose another source" inside the player presents the source sheet over
+    /// the playing video and hands the new stream to the same player.
+    func test07_ChangeSourceFromInsidePlayer() {
+        let app = launch(playerServicesButton: true)
+        openMovieDetail(app)
+        openSourceSheet(app)
+        openStreamPicker(app)
+        pickStream(app, index: 1)
+        expectPlayer(app, step: "stream before in-player change (mp4)")
+
+        let services = app.buttons["player.services"]
+        var opened = false
+        for _ in 0..<3 where !opened {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            if services.waitForExistence(timeout: 3), services.isHittable {
+                services.tap()
+                opened = true
+            }
+        }
+        XCTAssertTrue(opened, "Player source button never became tappable")
+        openStreamPicker(app)
+        pickStream(app, index: 0)
+        settle(app, seconds: 4, step: "in-player source change handoff")
+        expectPlayer(app, step: "stream after in-player change (mkv)")
+    }
+
     // MARK: - Steps
 
-    private func launch(autoMode: Bool = false, stremioStyle: Bool = false) -> XCUIApplication {
+    private func launch(
+        autoMode: Bool = false,
+        stremioStyle: Bool = false,
+        playerServicesButton: Bool = false
+    ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = [
             "ECLIPSE_UI_TEST": "1",
@@ -110,7 +140,8 @@ final class StreamSelectionFlowUITests: XCTestCase {
             "ECLIPSE_UI_TEST_STREMIO_ADDON": addonURL,
             "ECLIPSE_UI_TEST_APP_LANGUAGE": language,
             "ECLIPSE_UI_TEST_AUTO_MODE": autoMode ? "1" : "0",
-            "ECLIPSE_UI_TEST_STREMIO_STYLE": stremioStyle ? "1" : "0"
+            "ECLIPSE_UI_TEST_STREMIO_STYLE": stremioStyle ? "1" : "0",
+            "ECLIPSE_UI_TEST_PLAYER_SERVICES_BUTTON": playerServicesButton ? "1" : "0"
         ]
         app.launchArguments += [
             "-AppleLanguages", "(\(language))",
@@ -146,12 +177,16 @@ final class StreamSelectionFlowUITests: XCTestCase {
         let row = app.descendants(matching: .any)[Self.addonRow]
         XCTAssertTrue(row.waitForExistence(timeout: 90), "Torrentio row never appeared in the source sheet")
         row.tap()
-        XCTAssertTrue(streamRow(app, index: 0).waitForExistence(timeout: 20), "Stream picker never opened")
+        guard streamRow(app, index: 0).waitForExistence(timeout: 20) else {
+            attachHierarchy(app, name: "stream picker missing")
+            XCTFail("Stream picker never opened")
+            return
+        }
         assertAlive(app, step: "stream picker")
     }
 
     private func streamRow(_ app: XCUIApplication, index: Int) -> XCUIElement {
-        app.buttons
+        app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "streamPicker.stremio."))
             .element(boundBy: index)
     }
@@ -229,6 +264,14 @@ final class StreamSelectionFlowUITests: XCTestCase {
     private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
         return XCTWaiter.wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func attachHierarchy(_ app: XCUIApplication, name: String) {
+        attachScreenshot(app, name: name)
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = "\(name) – accessibility tree"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func attachScreenshot(_ app: XCUIApplication, name: String) {

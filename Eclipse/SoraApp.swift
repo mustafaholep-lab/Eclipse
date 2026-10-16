@@ -617,6 +617,9 @@ enum EclipseUITestHooks {
         if let engine = environment["ECLIPSE_UI_TEST_PLAYER"].flatMap(PlaybackEngine.init(rawValue:)) {
             PlaybackEngine.setSelected(engine)
         }
+        if let servicesButton = environment["ECLIPSE_UI_TEST_PLAYER_SERVICES_BUTTON"] {
+            ProfileSettingsStore.active.set(servicesButton == "1", forKey: PlayerServicesButtonSettings.key)
+        }
     }
 
     @MainActor

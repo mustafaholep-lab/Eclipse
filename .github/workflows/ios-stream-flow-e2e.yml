@@ -228,6 +228,12 @@ jobs:
           for bundle in "$OUT"/*.xcresult; do
             [ -d "$bundle" ] || continue
             xcrun xcresulttool get test-results tests --path "$bundle" > "${bundle%.xcresult}-tests.json" 2>/dev/null || true
+            # Screenshots, accessibility trees and XCTest crash logs as plain
+            # files; the raw bundle is zstd-packed and hundreds of megabytes.
+            if xcrun xcresulttool export attachments --path "$bundle" --output-path "${bundle%.xcresult}-attachments"; then
+              find "${bundle%.xcresult}-attachments" \( -name '*.mp4' -o -name '*.mov' \) -size +20M -delete || true
+              rm -rf "$bundle"
+            fi
           done
           ls -R "$OUT/DiagnosticReports" || true
           for report in "$OUT"/DiagnosticReports/*; do
@@ -237,7 +243,8 @@ jobs:
             echo "::endgroup::"
           done
           if [ -n "${TMDB_API_KEY:-}" ]; then
-            grep -rlF "$TMDB_API_KEY" "$OUT" 2>/dev/null | while read -r leaked; do
+            # grep exits 1 when nothing matches, which is the expected case.
+            { grep -rlF "$TMDB_API_KEY" "$OUT" 2>/dev/null || true; } | while read -r leaked; do
               echo "Removing artifact file that contains the TMDB key: ${leaked#$OUT/}"
               rm -f "$leaked"
             done

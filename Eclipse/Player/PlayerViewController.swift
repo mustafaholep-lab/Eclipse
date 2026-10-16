@@ -4178,6 +4178,7 @@ final class PlayerViewController: UIViewController, UIGestureRecognizerDelegate 
         view.backgroundColor = .black
         view.accessibilityIdentifier = "player.mpv"
         closeButton.accessibilityIdentifier = "player.close"
+        servicesButton.accessibilityIdentifier = "player.services"
         Logger.shared.log("player viewDidLoad engine=mpv", type: "StreamFlow")
         let initialURLSummary = initialURL.map(playbackURLSummary) ?? "nil"
         logMPV("viewDidLoad initialURL={\(initialURLSummary)} preset=\(initialPreset?.id.rawValue ?? "nil") mediaInfo=\(String(describing: mediaInfo))")
