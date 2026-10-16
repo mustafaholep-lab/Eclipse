@@ -773,7 +773,8 @@ class StremioAddonManager: ObservableObject {
         await withTaskGroup(of: (StremioAddon, [StremioSubtitle], String).self) { group in
             var nextIndex = 0
 
-            while nextIndex < active.count && nextIndex < maxConcurrent {
+            // diag(C): every child is added before iteration starts.
+            while nextIndex < active.count && nextIndex < max(maxConcurrent, active.count) {
                 let addon = active[nextIndex]
                 group.addTask {
                     let outcome = await StremioAddonSubtitleProvider(addon: addon).searchRawOutcome(searchQuery)
