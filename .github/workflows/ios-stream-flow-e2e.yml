@@ -10,7 +10,7 @@ on:
   push:
     branches:
       - feat/custom-eclipse-lifecycle
-      - diag/stream-flow-e2e
+      - "diag/**"
     paths:
       - "Eclipse/**"
       - "EclipseUITests/**"

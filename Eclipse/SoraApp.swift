@@ -624,19 +624,20 @@ enum EclipseUITestHooks {
 
     @MainActor
     static func installRequestedAddon() async {
-        guard isActive,
-              let url = environment["ECLIPSE_UI_TEST_STREMIO_ADDON"],
-              !url.isEmpty else { return }
+        guard isActive, let list = environment["ECLIPSE_UI_TEST_STREMIO_ADDON"] else { return }
         let manager = StremioAddonManager.shared
-        let configuredURL = StremioClient.normalizedConfiguredURL(from: url)
-        guard !manager.addons.contains(where: {
-            StremioClient.normalizedConfiguredURL(from: $0.configuredURL) == configuredURL
-        }) else { return }
-        do {
-            _ = try await manager.addAddon(from: url)
-            Logger.shared.log("UI test addon installed", type: "StreamFlow")
-        } catch {
-            Logger.shared.log("UI test addon install failed: \(error.localizedDescription)", type: "StreamFlow")
+        // Installed in order, which becomes the addons' sort order.
+        for url in list.split(separator: ",").map(String.init) where !url.isEmpty {
+            let configuredURL = StremioClient.normalizedConfiguredURL(from: url)
+            guard !manager.addons.contains(where: {
+                StremioClient.normalizedConfiguredURL(from: $0.configuredURL) == configuredURL
+            }) else { continue }
+            do {
+                let addon = try await manager.addAddon(from: url)
+                Logger.shared.log("UI test addon installed name=\(addon.manifest.name)", type: "StreamFlow")
+            } catch {
+                Logger.shared.log("UI test addon install failed: \(error.localizedDescription)", type: "StreamFlow")
+            }
         }
     }
 }

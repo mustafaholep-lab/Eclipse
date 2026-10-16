@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
@@ -56,6 +57,21 @@ STREAMS = [
      "Multi Audio"),
 ]
 
+# Subtitle addons as installed on the crashing iPhone (installed=4, active
+# subtitle addons=3). Timings follow its log: AltyaziDB and OpenSubtitles answer
+# at once, AnimeSub+ needs about two seconds per request and finds nothing, so it
+# is the last child task to finish while playback has already started.
+SUBTITLE_ADDONS = {
+    "animesub": {"name": "AnimeSub+", "delay": 2.0, "count": 0},
+    "altyazidb": {"name": "AltyaziDB Subtitles", "delay": 0.1, "count": 16},
+    "opensubtitles": {"name": "OpenSubtitles v3", "delay": 0.3, "count": 98},
+}
+
+SUBTITLE_FILE = (
+    "1\n00:00:01,000 --> 00:00:04,000\nEclipse altyazı testi\n\n"
+    "2\n00:00:05,000 --> 00:00:09,000\nIkinci satir\n"
+)
+
 MEDIA_TYPES = {
     ".mp4": "video/mp4",
     ".mkv": "video/x-matroska",
@@ -78,8 +94,10 @@ def manifest():
 
 
 def streams(base):
+    # Real Torrentio behaviorHints carry bingeGroup and filename; the size is
+    # only part of the title line.
     result = []
-    for info_hash, _media, filename, size, name, title in STREAMS:
+    for info_hash, _media, filename, _size, name, title in STREAMS:
         result.append({
             "name": name,
             "title": title,
@@ -87,10 +105,31 @@ def streams(base):
             "behaviorHints": {
                 "bingeGroup": "torrentio|" + name.split("\n", 1)[-1].replace(" ", ""),
                 "filename": filename,
-                "videoSize": size,
             },
         })
     return {"streams": result}
+
+
+def subtitle_manifest(slug):
+    return {
+        "id": f"org.eclipse.e2e.{slug}",
+        "version": "0.0.1",
+        "name": SUBTITLE_ADDONS[slug]["name"],
+        "description": "Local subtitle addon fixture for Eclipse UI tests",
+        "resources": ["subtitles"],
+        "types": ["movie", "series"],
+        "idPrefixes": ["tt"],
+        "catalogs": [],
+    }
+
+
+def subtitles(base, slug):
+    spec = SUBTITLE_ADDONS[slug]
+    languages = ["tur", "eng", "spa", "fre", "ger"]
+    return {"subtitles": [
+        {"id": f"{slug}-{index}", "url": f"{base}/subs/files/{slug}-{index}.srt", "lang": languages[index % len(languages)]}
+        for index in range(spec["count"])
+    ]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -126,6 +165,22 @@ class Handler(BaseHTTPRequestHandler):
         base = f"http://127.0.0.1:{self.server.server_address[1]}"
         if path == "/manifest.json":
             return self._send_json(manifest())
+        match = re.fullmatch(r"/subs/([a-z]+)/manifest\.json", path)
+        if match and match.group(1) in SUBTITLE_ADDONS:
+            return self._send_json(subtitle_manifest(match.group(1)))
+        match = re.fullmatch(r"/subs/([a-z]+)/subtitles/[a-z]+/[^/]+(?:/[^/]*)?\.json", path)
+        if match and match.group(1) in SUBTITLE_ADDONS:
+            time.sleep(SUBTITLE_ADDONS[match.group(1)]["delay"])
+            return self._send_json(subtitles(base, match.group(1)))
+        if re.fullmatch(r"/subs/files/[a-z]+-\d+\.srt", path):
+            body = SUBTITLE_FILE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-subrip; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
         if re.fullmatch(rf"/stream/movie/{IMDB_ID}(?::[^/]*)?\.json", path):
             return self._send_json(streams(base))
         if path.startswith("/stream/"):

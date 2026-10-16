@@ -100,6 +100,21 @@ final class StreamSelectionFlowUITests: XCTestCase {
         expectPlayer(app, step: "Auto Mode", timeout: 120)
     }
 
+    /// The crashing iPhone (iOS 18.7.9) had three subtitle addons. Playback
+    /// started, AltyaziDB and OpenSubtitles answered at once, and the app
+    /// aborted inside Swift concurrency right after the slow, empty AnimeSub+
+    /// search finished. This replays those addons and timings.
+    func test08_PlaybackSurvivesSubtitleAddonSearch() {
+        let app = launch(subtitleAddons: true)
+        openMovieDetail(app)
+        openSourceSheet(app)
+        openStreamPicker(app)
+        pickStream(app, index: 0)
+        expectPlayer(app, step: "stream with three subtitle addons")
+        settle(app, seconds: 20, step: "subtitle addon search after playback start")
+        attachScreenshot(app, name: "player-after-subtitle-search")
+    }
+
     /// "Choose another source" inside the player presents the source sheet over
     /// the playing video and hands the new stream to the same player.
     func test07_ChangeSourceFromInsidePlayer() {
@@ -131,13 +146,18 @@ final class StreamSelectionFlowUITests: XCTestCase {
     private func launch(
         autoMode: Bool = false,
         stremioStyle: Bool = false,
-        playerServicesButton: Bool = false
+        playerServicesButton: Bool = false,
+        subtitleAddons: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
+        let base = addonURL.replacingOccurrences(of: "/manifest.json", with: "")
+        let addons = [addonURL] + (subtitleAddons
+            ? ["animesub", "altyazidb", "opensubtitles"].map { "\(base)/subs/\($0)/manifest.json" }
+            : [])
         app.launchEnvironment = [
             "ECLIPSE_UI_TEST": "1",
             "ECLIPSE_UI_TEST_INITIAL_TAB": "search",
-            "ECLIPSE_UI_TEST_STREMIO_ADDON": addonURL,
+            "ECLIPSE_UI_TEST_STREMIO_ADDON": addons.joined(separator: ","),
             "ECLIPSE_UI_TEST_APP_LANGUAGE": language,
             "ECLIPSE_UI_TEST_AUTO_MODE": autoMode ? "1" : "0",
             "ECLIPSE_UI_TEST_STREMIO_STYLE": stremioStyle ? "1" : "0",
