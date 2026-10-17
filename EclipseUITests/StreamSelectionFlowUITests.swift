@@ -112,6 +112,12 @@ final class StreamSelectionFlowUITests: XCTestCase {
         pickStream(app, index: 0)
         expectPlayer(app, step: "stream with three subtitle addons")
         settle(app, seconds: 20, step: "subtitle addon search after playback start")
+        revealPlayerControls(app)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["player.mpv"].exists
+                || app.descendants(matching: .any)["player.avplayer"].exists,
+            "Player disappeared after subtitle addon searches completed"
+        )
         attachScreenshot(app, name: "player-after-subtitle-search")
     }
 
@@ -136,11 +142,7 @@ final class StreamSelectionFlowUITests: XCTestCase {
             } else {
                 // Centre taps control play/pause and intentionally do not reveal
                 // the controls. Tap the video outside that central gesture area.
-                let surface = app.descendants(matching: .any).matching(NSPredicate(
-                    format: "identifier IN %@", ["player.mpv", "player.avplayer"]
-                )).firstMatch
-                XCTAssertTrue(surface.exists, "Player closed before source selection")
-                surface.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.4)).tap()
+                revealPlayerControls(app)
                 if services.waitForExistence(timeout: 3), services.isHittable {
                     services.tap()
                     opened = true
@@ -283,6 +285,13 @@ final class StreamSelectionFlowUITests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func revealPlayerControls(_ app: XCUIApplication) {
+        assertAlive(app, step: "revealing player controls")
+        // With chrome hidden the GPU surface may have no accessible children;
+        // use the window coordinate rather than requiring its AX node first.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.4)).tap()
+    }
 
     private func tap(_ element: XCUIElement, _ name: String) {
         XCTAssertTrue(element.waitForExistence(timeout: 30), "\(name) missing")
