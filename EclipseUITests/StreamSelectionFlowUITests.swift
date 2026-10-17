@@ -134,20 +134,29 @@ final class StreamSelectionFlowUITests: XCTestCase {
         let services = app.buttons.matching(NSPredicate(
             format: "identifier IN %@", ["player.services", "AVPlayer.Services"]
         )).firstMatch
+        let addon = app.descendants(matching: .any)[Self.addonRow]
+        let windowFrame = app.frame
         var opened = false
-        for _ in 0..<3 where !opened {
-            if services.exists, services.isHittable {
-                services.tap()
-                opened = true
-            } else {
+        for _ in 0..<4 where !opened {
+            if addon.exists { opened = true; break }
+            var snapshot = try? services.snapshot()
+            if snapshot == nil || snapshot?.frame.isEmpty == true {
                 // Centre taps control play/pause and intentionally do not reveal
                 // the controls. Tap the video outside that central gesture area.
                 revealPlayerControls(app)
-                if services.waitForExistence(timeout: 3), services.isHittable {
-                    services.tap()
-                    opened = true
-                }
+                _ = services.waitForExistence(timeout: 3)
+                snapshot = try? services.snapshot()
             }
+            if let frame = snapshot?.frame, !frame.isEmpty {
+                // Chrome can auto-hide between an AX query and element.tap().
+                // Use the captured frame, then verify the sheet really opened;
+                // a missed coordinate is retried rather than failing a stale query.
+                app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                    dx: frame.midX - windowFrame.minX,
+                    dy: frame.midY - windowFrame.minY
+                )).tap()
+            }
+            opened = addon.waitForExistence(timeout: 5)
         }
         if !opened { attachHierarchy(app, name: "in-player source button missing") }
         XCTAssertTrue(opened, "Player source button never became tappable")
