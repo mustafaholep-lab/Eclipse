@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { WebSocket, WebSocketServer } from 'ws';
 import { MAX_MESSAGE_BYTES, sameMedia, validateCommand, validRoom } from './protocol.js';
@@ -13,6 +13,7 @@ export function readConfig(env = process.env) {
   }
   return {
     port: number('PORT', 8787, 0, 65535), host: env.HOST || '0.0.0.0',
+    hostReconnectGrace: number('HOST_RECONNECT_GRACE', 90, 1, 300),
     roomIdleTimeout: number('ROOM_IDLE_TIMEOUT', 120, 1, 3600),
     maxRooms: number('MAX_ROOMS', 1000, 1, 10000),
     maxClientsPerRoom: number('MAX_CLIENTS_PER_ROOM', 1, 1, 16),
@@ -67,6 +68,12 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
   function notify(room, type, except) {
     for (const peer of [room.host, ...room.clients]) if (peer !== except) send(peer, type, membership(room));
   }
+  function presence(room) {
+    for (const peer of [room.host, ...room.clients]) if (peer.supportsResume) {
+      send(peer, 'presence', { ...membership(room), count: 1 + room.clients.size,
+        hostConnected: room.hostDisconnectedAt == null });
+    }
+  }
   function closeRoom(room, reason) {
     if (rooms.get(room.code) !== room) return;
     rooms.delete(room.code);
@@ -81,8 +88,12 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
     const room = peer.room;
     peer.room = null;
     if (!room) return;
-    if (room.host === peer) closeRoom(room, reason);
-    else if (room.clients.delete(peer)) notify(room, 'participant_left', peer);
+    if (room.host === peer) {
+      if (reason === 'host_disconnected' && peer.supportsResume && room.resumeToken) {
+        room.hostDisconnectedAt ??= monotonic();
+        presence(room);
+      } else closeRoom(room, reason);
+    } else if (room.clients.delete(peer)) { notify(room, 'participant_left', peer); presence(room); }
   }
   function handle(peer, message, receivedAt) {
     switch (message.type) {
@@ -100,9 +111,30 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
         }
         if (!code) { reject(peer, 'rate_limited', false); break; }
         const room = { code, sessionID: randomUUID(), host: peer, clients: new Set(), media: message.media,
-          state: null, lastHostActivity: monotonic() };
+          state: null, lastHostActivity: monotonic(), hostDisconnectedAt: null,
+          resumeToken: peer.supportsResume ? randomBytes(32).toString('hex') : null };
         peer.room = room; rooms.set(code, room);
         send(peer, 'room_created', membership(room));
+        if (room.resumeToken) send(peer, 'resume_ticket', { ...membership(room), token: room.resumeToken });
+        presence(room);
+        break;
+      }
+      case 'resume_room': {
+        const room = rooms.get(message.room);
+        if (!peer.supportsResume || peer.room || !room || room.sessionID !== message.sessionID
+          || !room.resumeToken || room.hostDisconnectedAt == null
+          || monotonic() - room.hostDisconnectedAt >= config.hostReconnectGrace
+          || room.host.ws.readyState === WebSocket.OPEN
+          || !timingSafeEqual(Buffer.from(room.resumeToken, 'hex'), Buffer.from(message.token, 'hex'))
+          || !sameMedia(room.media, message.media)) {
+          reject(peer, 'room_not_found', false); break;
+        }
+        room.host = peer; peer.room = room; room.hostDisconnectedAt = null;
+        room.lastHostActivity = monotonic();
+        room.resumeToken = randomBytes(32).toString('hex');
+        send(peer, 'room_resumed', membership(room));
+        send(peer, 'resume_ticket', { ...membership(room), token: room.resumeToken });
+        presence(room);
         break;
       }
       case 'join_room': {
@@ -118,6 +150,7 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
         // Same-connection rejoin requests a fresh heartbeat too, especially if cached state is old.
         if (rejoin) send(room.host, 'participant_joined', membership(room));
         else notify(room, 'participant_joined', peer);
+        presence(room);
         break;
       }
       case 'leave_room':
@@ -142,7 +175,9 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
   function sweep() {
     const now = monotonic();
     for (const room of rooms.values()) {
-      if (room.host.ws.readyState !== WebSocket.OPEN) closeRoom(room, 'host_disconnected');
+      if (room.hostDisconnectedAt != null) {
+        if (now - room.hostDisconnectedAt >= config.hostReconnectGrace) closeRoom(room, 'host_disconnected');
+      } else if (room.host.ws.readyState !== WebSocket.OPEN) leave(room.host);
       else if (now - room.lastHostActivity >= config.roomIdleTimeout) closeRoom(room, 'expired');
     }
     for (const peer of peers.values()) if (!peer.room && now - peer.connectedAt >= 30) peer.ws.terminate();
@@ -171,7 +206,7 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
       deny('429 Too Many Requests'); return;
     }
     wss.handleUpgrade(request, socket, head, ws => {
-      const peer = { ws, ip, room: null, strikes: 0, alive: true, connectedAt: now,
+      const peer = { supportsResume: ws.protocol === 'eclipse-sync.v2', ws, ip, room: null, strikes: 0, alive: true, connectedAt: now,
         messages: new Bucket(30, 10, now), joins: new Bucket(6, 0.1, now) };
       peers.set(ws, peer); ip.active++;
       ws.on('error', () => {}); // ws closes invalid frames/UTF-8 and oversized messages itself (1009).
@@ -194,7 +229,7 @@ export function createRelay({ config = readConfig(), epoch = () => Date.now() / 
         let command;
         try { command = validateCommand(JSON.parse(data.toString('utf8')), receivedAt); }
         catch { reject(peer); return; }
-        if (['create_room', 'join_room'].includes(command.type) && (!peer.joins.take(time) || !ip.joins.take(time))) {
+        if (['create_room', 'join_room', 'resume_room'].includes(command.type) && (!peer.joins.take(time) || !ip.joins.take(time))) {
           rateLimited(peer); return;
         }
         handle(peer, command, receivedAt);

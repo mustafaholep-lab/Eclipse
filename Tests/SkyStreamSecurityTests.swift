@@ -7289,6 +7289,21 @@ final class SkyStreamPackageValidatorTests: XCTestCase {
 }
 
 final class AutoModeQualitySelectionTests: XCTestCase {
+    func testTorrentioLabelPreservesSizeQualityAndFlattensProviderName() throws {
+        for field in ["title", "description", "filename"] {
+            var payload: [String: Any] = ["name": "TB+\nTorrentio", "url": "https://example.com/video.mkv"]
+            let release = "Movie.2160p.BluRay.HEVC\n20 GB"
+            if field == "filename" { payload["behaviorHints"] = ["filename": release] }
+            else { payload[field] = release }
+            let stream = try JSONDecoder().decode(StremioStream.self, from: JSONSerialization.data(withJSONObject: payload))
+            let label = AutoModeStreamSelection.stremioStreamLabel(for: stream)
+            XCTAssertTrue(label.contains("TB+ Torrentio"))
+            XCTAssertFalse(label.contains("\n"))
+            XCTAssertTrue(label.contains("4K"))
+            XCTAssertTrue(label.contains("BluRay"))
+            XCTAssertTrue(label.contains("20 GB"))
+        }
+    }
     func testFixedQualityRecognizes4KAsAnExact2160Target() {
         XCTAssertTrue(AutoModeQualityPreference.quality2160.startsWhenExactTargetArrives)
         XCTAssertFalse(AutoModeQualityPreference.highest.startsWhenExactTargetArrives)

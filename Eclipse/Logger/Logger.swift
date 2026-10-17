@@ -581,7 +581,9 @@ class Logger: @unchecked Sendable {
 
     private static func isCrashDiagnosticType(_ type: String) -> Bool {
         switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "vlcplayback", "vlcproxy":
+        case "vlcplayback", "vlcproxy", "streamflow":
+            // StreamFlow breadcrumbs mark detail → picker → player handoffs, so
+            // they reach disk before a crash can drop the async write queue.
             return true
         default:
             return false

@@ -10,6 +10,7 @@ const CONTEXT_FIELDS = ['localSeasonNumber', 'localEpisodeNumber', 'anilistMedia
 const STATE_FIELDS = ['room', 'sessionID', 'media', 'mediaId', 'playing', 'position', 'rate', 'sequence', 'sentAt', 'stalled', 'reason'];
 const COMMAND_FIELDS = {
   create_room: ['media'], join_room: ['room', 'media'], leave_room: ['room', 'sessionID'],
+  resume_room: ['room', 'sessionID', 'token', 'media'],
   host_state: ['state'], ping: ['id', 'sentAt'],
 };
 
@@ -127,6 +128,11 @@ export function validateCommand(value, serverNow) {
     case 'create_room': command.media = validateMedia(value.media); break;
     case 'join_room':
       requireValid(validRoom(value.room)); command.room = value.room; command.media = validateMedia(value.media); break;
+    case 'resume_room':
+      requireValid(validRoom(value.room) && validUUID(value.sessionID)
+        && typeof value.token === 'string' && /^[0-9a-f]{64}$/.test(value.token));
+      command.room = value.room; command.sessionID = value.sessionID.toLowerCase();
+      command.token = value.token; command.media = validateMedia(value.media); break;
     case 'leave_room':
       requireValid(validRoom(value.room) && validUUID(value.sessionID));
       command.room = value.room; command.sessionID = value.sessionID.toLowerCase(); break;

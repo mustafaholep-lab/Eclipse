@@ -6,6 +6,7 @@ on:
     branches:
       - stremio-playback-fix-v6-animesub-subtitles
       - a2-smart-subtitles
+      - feat/custom-eclipse-lifecycle
     paths:
       - "Eclipse/**"
       - "Eclipse.xcodeproj/**"
@@ -27,7 +28,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 90
 
     steps:
@@ -65,7 +66,7 @@ jobs:
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
-          ECLIPSE_RELEASE_VERSION = 6.0.0
+          ECLIPSE_RELEASE_VERSION = 6.0.2
           ECLIPSE_SYNC_SERVER_URL = wss:/$()/eclipse-sync.onrender.com
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =
@@ -94,10 +95,10 @@ jobs:
             -skipMacroValidation
           echo "SOURCE_PACKAGES_DIR=$SOURCE_PACKAGES_DIR" >> "$GITHUB_ENV"
 
-      - name: Test subtitles, SharePlay and Eclipse Sync
+      - name: Test custom playback, downloads and Eclipse Sync
         run: |
           set -euo pipefail
-          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; import re; cands=[(tuple(int(x) for x in re.findall(r"iOS-([0-9-]+)", rt)[0].split("-")), d["udid"]) for rt, group in devices.items() if "iOS-" in rt for d in group if "iPhone" in d["name"]]; print(max(cands)[1] if cands else "")')"
           test -n "$SIMULATOR_ID"
           xcodebuild test \
             -jobs 1 \
@@ -119,10 +120,16 @@ jobs:
             -only-testing:Tests/EclipseSyncCoordinatorTests \
             -only-testing:Tests/EclipseSyncTransportTests \
             -only-testing:Tests/EclipseSyncPlayerIntegrationTests \
+            -only-testing:Tests/SettingsScopeTests \
+            -only-testing:Tests/DownloadResumeTests \
+            -only-testing:Tests/AutoModeQualitySelectionTests \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
             -skipPackagePluginValidation \
             -skipMacroValidation \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Build unsigned archive
@@ -160,6 +167,9 @@ jobs:
           APP_PATH="$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :ECLIPSE_SYNC_SERVER_URL' "$APP_PATH/Info.plist")" = 'wss://eclipse-sync.onrender.com'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = 'app.Eclipse.Soupy.Patched'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :EclipseSourceRevision' "$APP_PATH/Info.plist")" = "$GITHUB_SHA"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CADisableMinimumFrameDurationOnPhone' "$APP_PATH/Info.plist")" = 'true'
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
       - name: Package unsigned IPA
@@ -167,7 +177,7 @@ jobs:
           set -euo pipefail
           PACKAGE_ROOT="$RUNNER_TEMP/unsigned-ipa"
           OUTPUT_DIR="$GITHUB_WORKSPACE/build"
-          IPA_PATH="$OUTPUT_DIR/Eclipse-v6-AnimeSub-unsigned.ipa"
+          IPA_PATH="$OUTPUT_DIR/Eclipse-Custom-6.0.2-unsigned.ipa"
 
           rm -rf "$PACKAGE_ROOT" "$OUTPUT_DIR"
           mkdir -p "$PACKAGE_ROOT/Payload" "$OUTPUT_DIR"
@@ -184,13 +194,32 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: Eclipse-v6-AnimeSub-unsigned
+          name: Eclipse-Custom-6.0.2-${{ github.run_number }}
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
           retention-days: 7
 
+      # A device crash report from this IPA is only readable with the dSYMs of
+      # this exact archive, so keep them next to it.
+      - name: Package debug symbols
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="$RUNNER_TEMP/EclipsePatched.xcarchive"
+          DSYM_ZIP="$GITHUB_WORKSPACE/build/Eclipse-Custom-6.0.2-dSYMs.zip"
+          test -d "$ARCHIVE_PATH/dSYMs"
+          (cd "$ARCHIVE_PATH" && zip -qry "$DSYM_ZIP" dSYMs)
+          echo "DSYM_ZIP=$DSYM_ZIP" >> "$GITHUB_ENV"
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Eclipse-Custom-6.0.2-${{ github.run_number }}-dSYMs
+          path: ${{ env.DSYM_ZIP }}
+          if-no-files-found: error
+          retention-days: 30
+
   full-tests:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 180
 
     steps:
@@ -225,7 +254,7 @@ jobs:
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
-          ECLIPSE_RELEASE_VERSION = 6.0.0
+          ECLIPSE_RELEASE_VERSION = 6.0.2
           ECLIPSE_SYNC_SERVER_URL = wss:/$()/eclipse-sync.onrender.com
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =
@@ -256,7 +285,7 @@ jobs:
       - name: Build complete unit suite for testing
         run: |
           set -euo pipefail
-          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next((d["udid"] for group in devices.values() for d in group if "iPhone" in d["name"]), ""))')"
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; import re; cands=[(tuple(int(x) for x in re.findall(r"iOS-([0-9-]+)", rt)[0].split("-")), d["udid"]) for rt, group in devices.items() if "iOS-" in rt for d in group if "iPhone" in d["name"]]; print(max(cands)[1] if cands else "")')"
           test -n "$SIMULATOR_ID"
           DERIVED_DATA_PATH="$RUNNER_TEMP/FullSuiteDerivedData"
           xcodebuild build-for-testing \
@@ -272,6 +301,9 @@ jobs:
             -disableAutomaticPackageResolution \
             -skipPackagePluginValidation \
             -skipMacroValidation \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_ENABLE_BATCH_MODE=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO
           XCTESTRUN_PATH="$(find "$DERIVED_DATA_PATH/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)"
           test -n "$XCTESTRUN_PATH"

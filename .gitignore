@@ -138,6 +138,8 @@ iOSInjectionProject/
 # because CI invokes it after creating the iOS archive.
 /scripts/*
 !/scripts/validate-ios-privacy-manifest.sh
+# The iPhone stream-flow UI test workflow serves its fixture addon from here.
+!/scripts/e2e/
 /MPVKit
 
 # Claude Cowork session working area (scripts/logs, never shipped)

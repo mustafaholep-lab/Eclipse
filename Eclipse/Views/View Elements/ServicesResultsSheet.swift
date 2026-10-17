@@ -1028,6 +1028,9 @@ struct ModulesSearchResultsSheet: View {
     @State private var serviceStreamExtractionRequest: JSCallbackDeadline<ServiceStreamExtractionResult>?
     @State private var serviceStreamExtractionGeneration: UUID?
     @State private var showManualPicker = false
+#if os(iOS)
+    @State private var pendingMobileStremioSelection: (stream: StremioStream, addon: StremioAddon, autoMode: Bool, authority: ProviderPlaybackScopeAuthority)?
+#endif
     @State private var sheetHostController: UIViewController?
 #if os(tvOS)
     @State private var pendingTVStremioSelection: TVStremioSelection?
@@ -2161,8 +2164,11 @@ struct ModulesSearchResultsSheet: View {
                 let streams = plan.stremioStreams
                 if !streams.isEmpty {
                     let sourceLimit = min(visibleLimit, Self.maxVisibleStremioStreamsPerAddon)
-                    ForEach(Array(streams.prefix(sourceLimit).enumerated()), id: \.offset) { _, stream in
+                    ForEach(Array(streams.prefix(sourceLimit).enumerated()), id: \.offset) { index, stream in
                         stremioStyleStreamRow(stream: stream, addon: addon)
+#if !os(tvOS)
+                            .accessibilityIdentifier("services.stremioStyle.stream.\(index)")
+#endif
                     }
                 } else if visibleLimit > 0, let outcome = plan.stremioFailureOutcome {
                     stremioOutcomeRow(outcome)
@@ -6505,6 +6511,10 @@ struct ModulesSearchResultsSheet: View {
         .sheet(isPresented: $viewModel.showingStremioStreamPicker, onDismiss: completeTVStremioSelection) {
             tvStremioStreamPicker
         }
+#elseif os(iOS)
+        .sheet(isPresented: $viewModel.showingStremioStreamPicker, onDismiss: completeMobileStremioSelection) {
+            mobileStremioStreamPicker
+        }
 #else
         .adaptiveConfirmationDialog("Select Stream", isPresented: $viewModel.showingStremioStreamPicker, titleVisibility: .visible) {
             stremioStreamPickerContent
@@ -7238,6 +7248,7 @@ struct ModulesSearchResultsSheet: View {
                 viewModel.showingStremioPlayAlert = true
 #endif
             } else {
+                Logger.shared.log("addon row tap streams=\(streams.count) opens picker", type: "StreamFlow")
                 viewModel.stremioStreamOptions = streams
                 viewModel.selectedStremioAddon = addon
                 viewModel.showingStremioStreamPicker = true
@@ -7314,6 +7325,7 @@ struct ModulesSearchResultsSheet: View {
         .buttonStyle(TVGlassRowButtonStyle())
 #else
         .buttonStyle(PlainButtonStyle())
+        .accessibilityIdentifier("services.stremio.addon.\(addon.manifest.name)")
 #endif
     }
 
@@ -7461,6 +7473,84 @@ struct ModulesSearchResultsSheet: View {
     }
 #endif
 
+#if os(iOS)
+    private func completeMobileStremioSelection() {
+        let selection = pendingMobileStremioSelection
+        pendingMobileStremioSelection = nil
+        viewModel.pendingPlaybackAutoMode = false
+        Logger.shared.log(
+            "picker dismissed selected=\(selection != nil) sheetActive=\(isSheetActive) authority=\(selection?.authority.isCurrent ?? false)",
+            type: "StreamFlow"
+        )
+        guard let selection, isSheetActive, selection.authority.isCurrent,
+              forcedWatchTogetherMediaIsCurrent() else { return }
+        playStremioStream(selection.stream, addon: selection.addon, autoModeLaunch: selection.autoMode)
+    }
+
+    private var mobileStremioStreamPicker: some View {
+        NavigationView {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if let addon = viewModel.selectedStremioAddon,
+                       let options = viewModel.stremioStreamOptions {
+                        Text(addon.manifest.name)
+                            .font(.headline)
+                        let streams = filteredStremioStreams(options, addon: addon)
+                        ForEach(Array(streams.prefix(Self.maxVisibleStremioStreamsPerAddon))) { stream in
+                            Button {
+                                Logger.shared.log(
+                                    "picker tap container=\(Self.streamFlowContainer(stream)) replacing=\(pendingMobileStremioSelection != nil) visible=\(streams.count)",
+                                    type: "StreamFlow"
+                                )
+                                pendingMobileStremioSelection = (stream, addon, viewModel.pendingPlaybackAutoMode, .capture())
+                                viewModel.showingStremioStreamPicker = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(stremioStreamLabel(for: stream))
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                    if let details = stremioStyleDetails(for: stream, headline: stremioStreamLabel(for: stream)) {
+                                        Text(verbatim: details)
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                                .background(Color.secondary.opacity(0.1))
+                                .cornerRadius(12)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("streamPicker.stremio.\(stream.id)")
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Select Stream")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        pendingMobileStremioSelection = nil
+                        viewModel.showingStremioStreamPicker = false
+                        viewModel.pendingPlaybackAutoMode = false
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .onAppear {
+            Logger.shared.log(
+                "picker appeared options=\(viewModel.stremioStreamOptions?.count ?? -1) addon=\(viewModel.selectedStremioAddon != nil)",
+                type: "StreamFlow"
+            )
+        }
+    }
+#endif
+
     @ViewBuilder
     private var stremioStreamPickerContent: some View {
         if let addon = viewModel.selectedStremioAddon,
@@ -7528,6 +7618,14 @@ struct ModulesSearchResultsSheet: View {
 
     private func stremioStreamLabel(for stream: StremioStream) -> String {
         AutoModeStreamSelection.stremioStreamLabel(for: stream)
+    }
+
+    /// File container for diagnostics only; the stream URL itself may carry a
+    /// debrid key, so it never reaches the log.
+    static func streamFlowContainer(_ stream: StremioStream) -> String {
+        let name = stream.behaviorHints?.filename ?? stream.url.flatMap { URL(string: $0)?.lastPathComponent } ?? ""
+        let container = (name as NSString).pathExtension.lowercased()
+        return container.isEmpty || container.count > 5 ? "unknown" : container
     }
 
     private func smartPlayerMetadata(for stream: StremioStream) -> String {
@@ -9331,6 +9429,10 @@ struct ModulesSearchResultsSheet: View {
                 Logger.shared.log("ServicesResultsSheet: no presenter for coordinated playback", type: "Error")
                 return
             }
+            Logger.shared.log(
+                "player handoff presenter=\(type(of: topmostVC)) presenting=\(topmostVC.presentedViewController.map { "\(type(of: $0))" } ?? "none") dismissing=\(topmostVC.isBeingDismissed) inWindow=\(topmostVC.viewIfLoaded?.window != nil) source=\(launchContext.sourceKind)",
+                type: "StreamFlow"
+            )
             PlaybackCoordinator.shared.present(
                 request,
                 from: topmostVC,

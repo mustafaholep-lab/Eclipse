@@ -719,7 +719,7 @@ final class WatchTogetherCoordinator {
             return .rejected
         }
         guard let targetIdentifier = Self.mediaIdentifier(for: targetMedia) else {
-            sender.watchTogetherShowNotice("Watch Together could not create an exact identity for the next episode.")
+            sender.watchTogetherShowNotice(eclipseLocalized("Watch Together could not create an exact identity for the next episode."))
             return .rejected
         }
 
@@ -1383,7 +1383,7 @@ final class WatchTogetherCoordinator {
         )
         acceptLocalState(state)
         send(message(reason: .pause, state: state))
-        playbackDelegate?.watchTogetherShowNotice("The next episode didn't start in time, so playback controls were released for everyone.")
+        playbackDelegate?.watchTogetherShowNotice(eclipseLocalized("The next episode didn't start in time, so playback controls were released for everyone."))
         Logger.shared.log("WatchTogether: released an expired media transition revision=\(revision)", type: "Player")
     }
 
@@ -1422,7 +1422,7 @@ final class WatchTogetherCoordinator {
         if state.isStalled == true {
             if lastNoticedStallStateRevision != state.stateRevision {
                 lastNoticedStallStateRevision = state.stateRevision
-                delegate.watchTogetherShowNotice("Waiting for the host's stream to buffer...")
+                delegate.watchTogetherShowNotice(eclipseLocalized("Waiting for the host's stream to buffer..."))
             }
         } else {
             lastNoticedStallStateRevision = nil
@@ -1430,7 +1430,7 @@ final class WatchTogetherCoordinator {
         if !state.isPlaying, state.pausedByLifecycle == true {
             if lastNoticedLifecyclePauseRevision != state.stateRevision {
                 lastNoticedLifecyclePauseRevision = state.stateRevision
-                delegate.watchTogetherShowNotice("The host stepped away, so playback is paused. Tap play to keep watching.")
+                delegate.watchTogetherShowNotice(eclipseLocalized("The host stepped away, so playback is paused. Tap play to keep watching."))
             }
         } else if state.isPlaying {
             lastNoticedLifecyclePauseRevision = nil
@@ -2058,7 +2058,7 @@ final class WatchTogetherCoordinator {
             }
             guard let self, self.session == nil else { return }
             self.notifyConnectionState()
-            self.playbackDelegate?.watchTogetherShowNotice("SharePlay did not create a local session. Try Watch Together again.")
+            self.playbackDelegate?.watchTogetherShowNotice(eclipseLocalized("SharePlay did not create a local session. Try Watch Together again."))
         }
     }
 

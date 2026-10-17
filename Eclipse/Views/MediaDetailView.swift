@@ -1021,6 +1021,10 @@ struct MediaDetailContentView: View {
         }
 #endif
         .onAppear {
+            Logger.shared.log(
+                "detail appear kind=\(searchResult.isMovie ? "movie" : "tv") tmdb=\(searchResult.id) loaded=\(hasLoadedContent)",
+                type: "StreamFlow"
+            )
             if !hasLoadedContent {
                 loadMediaDetails()
             } else {
@@ -1324,6 +1328,7 @@ struct MediaDetailContentView: View {
         }
         .onChangeComp(of: hasLoadedContent) { _, loaded in
             if loaded {
+                Logger.shared.log("detail content loaded tmdb=\(searchResult.id)", type: "StreamFlow")
                 startWatchTogetherPlaybackIfReady()
                 Task { await applyInitialNotificationSelectionIfNeeded() }
             }
@@ -2646,6 +2651,8 @@ struct MediaDetailContentView: View {
 #if os(tvOS)
             .focused($tvDetailFocus, equals: .play)
             .accessibilityIdentifier("tv.detail.play")
+#else
+            .accessibilityIdentifier("detail.play")
 #endif
 
             Button(action: {
@@ -2767,6 +2774,7 @@ struct MediaDetailContentView: View {
 #else
             .buttonStyle(PlainButtonStyle())
             .disabled(!canUseMainPlayButton)
+            .accessibilityIdentifier("detail.play")
 #endif
 
             HStack(spacing: isTvOS ? 44 : (isIPad ? 30 : 22)) {
@@ -6277,6 +6285,7 @@ struct MediaDetailContentView: View {
         guard let date else { return nil }
 
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
         return formatter.string(from: date)

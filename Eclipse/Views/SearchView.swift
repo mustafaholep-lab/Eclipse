@@ -2281,6 +2281,7 @@ struct SearchBarEclipse: View {
     var body: some View {
         HStack {
             TextField(LocalizedStringKey("Search Placeholder"), text: $text)
+                .accessibilityIdentifier("search.field")
                 .submitLabel(.search)
                 .onSubmit(onSearchButtonClicked)
                 .padding(7)

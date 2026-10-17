@@ -5,6 +5,24 @@ import XCTest
 
 final class SettingsScopeTests: XCTestCase {
 
+    func testDisplayAndLanguagePreferencesRemainOnDeviceAndSurviveReload() throws {
+        let name = "LocalDisplayLanguage.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertTrue(EclipseSettingsRegistry.deviceKeys.contains("appLanguage"))
+        XCTAssertTrue(EclipseSettingsRegistry.deviceKeys.contains("displayRefreshRate"))
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: defaults, maximum: 120), 120)
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: defaults, maximum: 60), 60)
+        defaults.set(60, forKey: DisplayRefreshSettings.storageKey)
+        defaults.set("tr", forKey: LocalizationManager.appLanguageKey)
+        let reopened = try XCTUnwrap(UserDefaults(suiteName: name))
+        XCTAssertEqual(DisplayRefreshSettings.requestedRate(defaults: reopened, maximum: 120), 60)
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: reopened, preferredLanguages: ["en-US"]), "tr")
+        defaults.set("system", forKey: LocalizationManager.appLanguageKey)
+        XCTAssertEqual(LocalizationManager.selectedUICode(defaults: defaults, preferredLanguages: ["tr-TR"]), "tr")
+        XCTAssertEqual("iı".uppercased(with: Locale(identifier: "tr")), "İI")
+    }
+
     func testExplicitKeySetsAreDisjoint() {
         let device = EclipseSettingsRegistry.deviceKeys
         let services = EclipseSettingsRegistry.servicesKeys

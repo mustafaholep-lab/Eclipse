@@ -37,6 +37,7 @@ struct SearchResultCard: View {
         .buttonStyle(TVMediaCardButtonStyle())
 #else
         .buttonStyle(PlainButtonStyle())
+        .accessibilityIdentifier("search.result.\(result.stableIdentity)")
 #endif
     }
 

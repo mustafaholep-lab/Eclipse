@@ -36,6 +36,11 @@ protocol EclipseSyncPlaybackDelegate: AnyObject {
     var eclipseSyncSnapshot: EclipseSyncPlaybackSnapshot? { get }
     func eclipseSyncApply(_ command: EclipseSyncPlaybackCommand)
     func eclipseSyncConnectionChanged(_ state: EclipseSyncConnectionState)
+    func eclipseSyncPresenceChanged(count: Int, hostConnected: Bool)
+}
+
+extension EclipseSyncPlaybackDelegate {
+    func eclipseSyncPresenceChanged(count: Int, hostConnected: Bool) {}
 }
 
 @MainActor
@@ -48,6 +53,9 @@ final class EclipseSyncCoordinator {
     private(set) var sessionID: UUID?
     private(set) var latestState: EclipseSyncState?
     private(set) var isApplyingRemoteState = false
+    private(set) var participantCount = 0
+    private(set) var hostConnected = true
+    private var resumeToken: String?
     private weak var playback: (any EclipseSyncPlaybackDelegate)?
     private let transport: any EclipseSyncTransport
     private let now: () -> TimeInterval
@@ -61,6 +69,8 @@ final class EclipseSyncCoordinator {
     private var membershipConfirmed = false
     private var lastHeartbeatAt = -Double.infinity
     private var lastPingAt = -Double.infinity
+    private var lastPongAt = -Double.infinity
+    private var pendingPresence: (count: Int, online: Bool, deadline: TimeInterval)?
     private var openedAt: Double?
     private var joinedAt: Double?
     private var lastFreshStateAt: Double?
@@ -150,7 +160,12 @@ final class EclipseSyncCoordinator {
 
     /// Kept deterministic for tests; the production timer calls this twice a second.
     func tick() {
+        if let pending = pendingPresence, now() >= pending.deadline {
+            pendingPresence = nil
+            updatePresence(count: pending.count, hostConnected: pending.online)
+        }
         guard role != nil, reconnectTask == nil else { return }
+        if openedAt != nil, now() - lastPongAt > 25 { connectionLost(.connection); return }
         if let openedAt, !membershipConfirmed || clock.offset == nil, now() - openedAt > 15 {
             connectionLost(.connection)
             return
@@ -158,7 +173,7 @@ final class EclipseSyncCoordinator {
         if openedAt != nil, now() - lastPingAt >= 10 { ping() }
         guard membershipConfirmed else { return }
         if role == .host, now() - lastHeartbeatAt >= 2 { publishHostState(.heartbeat) }
-        if role == .client, let receivedAt = lastFreshStateAt ?? joinedAt, now() - receivedAt > 10 {
+        if role == .client, hostConnected, let receivedAt = lastFreshStateAt ?? joinedAt, now() - receivedAt > 10 {
             requestSnapshot()
             if now() - receivedAt > 20 { connectionLost(.connection) }
         }
@@ -169,11 +184,14 @@ final class EclipseSyncCoordinator {
         switch event {
         case .opened:
             openedAt = now()
+            lastPongAt = now()
             clock = EclipseSyncClock()
             pendingPings.removeAll()
             ping()
             guard let media else { terminate(.failed); return }
-            if role == .host { enqueue(.createRoom(media: media)) }
+            if role == .host, let room, let sessionID, let resumeToken {
+                enqueue(.resumeRoom(room: room, sessionID: sessionID, token: resumeToken, media: media))
+            } else if role == .host { enqueue(.createRoom(media: media)) }
             else if let room { enqueue(.joinRoom(room: room, media: media)) }
             log("connected")
         case .message(let message): receive(message)
@@ -186,11 +204,26 @@ final class EclipseSyncCoordinator {
         case .pong(let id, let clientSent, let received, let sent):
             guard pendingPings.removeValue(forKey: id) == clientSent,
                   clock.record(clientSent: clientSent, serverReceived: received, serverSent: sent, clientReceived: now()) else { return }
+            lastPongAt = now()
             if role == .client { applyLatest(force: forceCatchUp) }
             else if membershipConfirmed, latestState == nil { publishHostState(.heartbeat) }
+        case .resumeTicket(let room, let session, let token):
+            guard role == .host, membershipConfirmed, matches(room, session) else { return }
+            resumeToken = token
+        case .roomResumed(let room, let session):
+            guard role == .host, matches(room, session), !membershipConfirmed else { return }
+            membershipConfirmed = true; reconnectAttempts = 0; hostConnected = true
+            connectionState = .active(role: .host, room: room)
+            publishHostState(.heartbeat)
+        case .presence(let room, let session, let count, let online):
+            guard membershipConfirmed, matches(room, session) else { return }
+            let wasOnline = hostConnected
+            receivePresence(count: count, hostConnected: online)
+            if online, !wasOnline, role == .client { snapshotRequested = false; requestSnapshot() }
         case .roomCreated(let room, let session):
             guard role == .host, !membershipConfirmed else { return }
             self.room = room; sessionID = session; membershipConfirmed = true
+            updatePresence(count: 1, hostConnected: true)
             connectionState = .active(role: .host, room: room)
             publishHostState(.heartbeat)
             log("room created")
@@ -199,20 +232,26 @@ final class EclipseSyncCoordinator {
             guard sessionID == nil || sessionID == session else { terminate(.closed(.hostDisconnected)); return }
             let resync = !membershipConfirmed || snapshotRequested
             sessionID = session; membershipConfirmed = true; joinedAt = now()
+            if participantCount == 0 { updatePresence(count: 2, hostConnected: true) }
             connectionState = .waitingForState
             if let state { accept(state, reconnectSnapshot: resync) }
         case .state(let state): accept(state, reconnectSnapshot: false)
         case .participantJoined(let room, let session):
             guard matches(room, session) else { return }
+            if role == .host { receivePresence(count: max(2, participantCount), hostConnected: hostConnected) }
             log("client joined")
             if role == .host { publishHostState(.heartbeat) }
         case .participantLeft(let room, let session):
             guard matches(room, session) else { return }
+            if role == .host { receivePresence(count: max(1, participantCount - 1), hostConnected: hostConnected) }
             log("client left")
         case .roomClosed(let room, let session, let reason):
             guard matches(room, session) else { return }
             terminate(.closed(reason))
         case .error(let code):
+            if code == .roomFull, role == .client, reconnectAttempts > 0 {
+                connectionLost(.connection); return
+            }
             terminate(code == .mediaMismatch ? .mismatch : .rejected(code))
         default:
             // A relay cannot send client/host commands back as authority.
@@ -319,7 +358,7 @@ final class EclipseSyncCoordinator {
         forceCatchUp = true
         log("disconnected")
         if failure == .protocolViolation { terminate(.failed); return }
-        guard role == .client else { terminate(.closed(.hostDisconnected)); return }
+        guard role == .client || resumeToken != nil else { terminate(.closed(.hostDisconnected)); return }
         guard reconnectAttempts < 5 else { terminate(.failed); return }
         reconnectAttempts += 1
         connectionState = .reconnecting(attempt: reconnectAttempts)
@@ -336,9 +375,40 @@ final class EclipseSyncCoordinator {
 
     /// Tests bypass elapsed backoff; production calls it only from the bounded reconnect task.
     func reconnectNow() {
-        guard role == .client, !membershipConfirmed else { return }
+        guard role != nil, !membershipConfirmed, role == .client || resumeToken != nil else { return }
         reconnectTask?.cancel(); reconnectTask = nil
         do { try transport.connect() } catch { connectionLost(.connection) }
+    }
+
+    func applicationDidBecomeActive() {
+        guard role != nil else { return }
+        forceCatchUp = true
+        if !membershipConfirmed { reconnectNow(); return }
+        // Give a newly foregrounded socket a fresh state deadline rather than
+        // interpreting time spent suspended as a new network failure.
+        lastFreshStateAt = now()
+        lastPongAt = now()
+        ping()
+        if role == .client { snapshotRequested = false; requestSnapshot() }
+        else { publishHostState(.heartbeat) }
+    }
+
+    private func receivePresence(count: Int, hostConnected: Bool) {
+        if count < participantCount {
+            if pendingPresence?.count != count {
+                pendingPresence = (count, hostConnected, now() + 3)
+            }
+            updatePresence(count: participantCount, hostConnected: hostConnected)
+        } else {
+            pendingPresence = nil
+            updatePresence(count: count, hostConnected: hostConnected)
+        }
+    }
+
+    private func updatePresence(count: Int, hostConnected: Bool) {
+        guard participantCount != count || self.hostConnected != hostConnected else { return }
+        participantCount = count; self.hostConnected = hostConnected
+        playback?.eclipseSyncPresenceChanged(count: count, hostConnected: hostConnected)
     }
 
     private func terminate(_ state: EclipseSyncConnectionState) { reset(); connectionState = state }
@@ -351,6 +421,9 @@ final class EclipseSyncCoordinator {
         sendTask?.cancel(); sendTask = nil
         transport.disconnect()
         role = nil; room = nil; sessionID = nil; media = nil; latestState = nil
+        resumeToken = nil
+        pendingPresence = nil
+        updatePresence(count: 0, hostConnected: true)
         membershipConfirmed = false; sequence = 0; lastReceivedSequence = 0
         clock = EclipseSyncClock(); pendingPings.removeAll()
         pendingSends = 0; reconnectAttempts = 0; snapshotRequested = false

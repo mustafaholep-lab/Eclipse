@@ -67,7 +67,7 @@ final class EclipseSyncWebSocketTransport: NSObject, EclipseSyncTransport, URLSe
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 15
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-        let socket = session.webSocketTask(with: endpoint)
+        let socket = session.webSocketTask(with: endpoint, protocols: ["eclipse-sync.v2"])
         socket.maximumMessageSize = EclipseSyncMessage.maximumBytes
         self.session = session
         self.socket = socket

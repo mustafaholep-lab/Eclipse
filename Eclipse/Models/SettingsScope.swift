@@ -22,6 +22,8 @@ enum EclipseSettingsSyncPreference {
 enum EclipseSettingsRegistry {
 
     static let deviceKeys: Set<String> = [
+        "appLanguage",
+        "displayRefreshRate",
         "autoClearCacheEnabled",
         "autoClearCacheThresholdMB",
         "backgroundHLSPipelineEnabled",

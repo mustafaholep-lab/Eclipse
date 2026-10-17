@@ -565,9 +565,12 @@ enum AutoModeStreamSelection {
 
     static func stremioStreamLabel(for stream: StremioStream) -> String {
         var parts: [String] = []
-        if let name = stream.name, !name.isEmpty { parts.append(name) }
+        if let name = stream.name, !name.isEmpty {
+            parts.append(name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " "))
+        }
 
-        if let title = stream.title, !title.isEmpty {
+        if let title = [stream.title, stream.description, stream.behaviorHints?.filename]
+            .compactMap({ $0 }).first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
             let lines = title.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let qualityTags = extractQualityTags(from: lines)
             if !qualityTags.isEmpty {

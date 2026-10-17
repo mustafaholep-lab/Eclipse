@@ -106,7 +106,15 @@ final class PlaybackCoordinator {
         let controller = makeViewController(for: request, engine: engine)
         controller.modalPresentationStyle = .fullScreen
         presentationHosts.setObject(presenter, forKey: controller)
+        Logger.shared.log(
+            "player present \(type(of: controller)) container=\(request.url.pathExtension.isEmpty ? "none" : request.url.pathExtension.lowercased())",
+            type: "StreamFlow"
+        )
         presenter.present(controller, animated: animated) {
+            Logger.shared.log(
+                "player presented \(type(of: controller)) visible=\(controller.viewIfLoaded?.window != nil)",
+                type: "StreamFlow"
+            )
 #if !os(tvOS)
             (controller as? NormalPlayer)?.playAtDefaultSpeed()
 #endif

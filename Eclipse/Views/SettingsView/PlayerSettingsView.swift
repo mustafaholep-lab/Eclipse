@@ -1606,7 +1606,7 @@ private struct PlayerSubtitleDefaultsGroup: View {
             "por": "Portuguese",
             "rus": "Russian"
         ]
-        return languages[code] ?? code.uppercased()
+        return languages[code] ?? code.uppercased(with: LocalizationManager.selectedLocale)
     }
     private func isExpanded(_ key: String) -> Bool {
         expandedGroups.contains(key)

@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		ECA260012026101500000001 /* DownloadBackgroundExecution.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA260022026101500000001; };
+		ECA200012026101500000001 /* HLSBackgroundTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA200022026101500000001; };
+		ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA100022026101400000001 /* DisplayRefreshSettings.swift */; };
 		3C90E2239531A7EB59464043 /* EclipseSyncPlayerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97887B9F757FD5A989F87F2 /* EclipseSyncPlayerIntegrationTests.swift */; };
 		0B8AD17EEC5E61FAEA0FFB6F /* EclipseSyncPlayerAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8328B9C644A3E7BE5084A3 /* EclipseSyncPlayerAdapter.swift */; };
 		5DC053F5F802C29B6A381A18 /* EclipseSyncProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E8F5070D5B52FD96193466 /* EclipseSyncProtocol.swift */; };
@@ -71,6 +74,8 @@
 		TVUIBF0100000000000000001 /* EclipseTVRemoteSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TVUIFR0100000000000000001 /* EclipseTVRemoteSmokeTests.swift */; };
 		TVUTBF0400000000000000004 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = TVTSFR0100000000000000001 /* XCTest.framework */; };
 		TVUIBF0200000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = TVTSFR0100000000000000001 /* XCTest.framework */; };
+		E2EUIBF0100000000000000001 /* StreamSelectionFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EUIFR0100000000000000001 /* StreamSelectionFlowUITests.swift */; };
+		E2EUIBF0200000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = TVTSFR0100000000000000001 /* XCTest.framework */; };
 		TVBF00400000000000000040 /* PlaybackLaunchContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = TVFR00400000000000000040 /* PlaybackLaunchContext.swift */; };
 		TVBF00410000000000000041 /* PlaybackLaunchContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = TVFR00400000000000000040 /* PlaybackLaunchContext.swift */; };
 		TVBF00420000000000000042 /* AVPlayerResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = TVFR00410000000000000041 /* AVPlayerResourceLoader.swift */; };
@@ -403,9 +408,19 @@
 			remoteGlobalIDString = TVTG00010000000000000001;
 			remoteInfo = "Eclipse-tvOS";
 		};
+		E2EUIPX0100000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 13F072532E4B2D3300EF90EB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 13F0725A2E4B2D3300EF90EB;
+			remoteInfo = Eclipse;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		ECA260022026101500000001 /* DownloadBackgroundExecution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadBackgroundExecution.swift; sourceTree = "<group>"; };
+		ECA200022026101500000001 /* HLSBackgroundTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLSBackgroundTransport.swift; sourceTree = "<group>"; };
+		ECA100022026101400000001 /* DisplayRefreshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayRefreshSettings.swift; sourceTree = "<group>"; };
 		9C50A0010000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerCloudSync.swift; sourceTree = "<group>"; };
 		9C50A0010000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackerCloudSyncTests.swift; sourceTree = "<group>"; };
 		C90B9356AC0D4DD8B8D31500 /* DownloadResumeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadResumeTests.swift; sourceTree = "<group>"; };
@@ -455,6 +470,8 @@
 		TVUIFR0100000000000000001 /* EclipseTVRemoteSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EclipseTVRemoteSmokeTests.swift; sourceTree = "<group>"; };
 		TVUTPR0100000000000000001 /* Eclipse-tvOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Eclipse-tvOSTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		TVUIPR0100000000000000001 /* Eclipse-tvOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Eclipse-tvOSUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E2EUIFR0100000000000000001 /* StreamSelectionFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSelectionFlowUITests.swift; sourceTree = "<group>"; };
+		E2EUIPR0100000000000000001 /* EclipseUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EclipseUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		TVTSFR0100000000000000001 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		TVFR00400000000000000040 /* PlaybackLaunchContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackLaunchContext.swift; sourceTree = "<group>"; };
 		TVFR00410000000000000041 /* AVPlayerResourceLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVPlayerResourceLoader.swift; sourceTree = "<group>"; };
@@ -745,6 +762,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E2EUIPH0200000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E2EUIBF0200000000000000002 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		TVPH00020000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -835,6 +860,14 @@
 				TVUIFR0100000000000000001 /* EclipseTVRemoteSmokeTests.swift */,
 			);
 			path = EclipseTVUITests;
+			sourceTree = "<group>";
+		};
+		E2EUIGR0100000000000000001 /* EclipseUITests */ = {
+			isa = PBXGroup;
+			children = (
+				E2EUIFR0100000000000000001 /* StreamSelectionFlowUITests.swift */,
+			);
+			path = EclipseUITests;
 			sourceTree = "<group>";
 		};
 		TVGR00010000000000000001 /* EclipseTV */ = {
@@ -1206,6 +1239,7 @@
 				TVGR00010000000000000001 /* EclipseTV */,
 				TVUTGR0100000000000000001 /* EclipseTVTests */,
 				TVUIGR0100000000000000001 /* EclipseTVUITests */,
+				E2EUIGR0100000000000000001 /* EclipseUITests */,
 				13F0725D2E4B2D3300EF90EB /* Eclipse */,
 				13E1ED992ED9E65F00087629 /* Kanzen */,
 				129CC9062EBA1D4600D2D84B /* Build.xcconfig */,
@@ -1223,6 +1257,7 @@
 				TVFR00070000000000000007 /* Eclipse.app */,
 				TVUTPR0100000000000000001 /* Eclipse-tvOSTests.xctest */,
 				TVUIPR0100000000000000001 /* Eclipse-tvOSUITests.xctest */,
+				E2EUIPR0100000000000000001 /* EclipseUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1387,6 +1422,7 @@
 			children = (
 				129CC90B2EBA920A00D2D84B /* Bundle.swift */,
 				AD20000A2FE2000000AD200A /* Localization.swift */,
+				ECA100022026101400000001 /* DisplayRefreshSettings.swift */,
 				13F0728F2E4B2D9100EF90EB /* URLSession */,
 				13F0728D2E4B2D9100EF90EB /* UIImage */,
 				13F072912E4B2D9100EF90EB /* Color */,
@@ -1540,6 +1576,8 @@
 				DD1111102FB0000000DD1110 /* DownloadManager.swift */,
 				DLPATHFR000000000000000001 /* DownloadPathIdentityPolicy.swift */,
 				DD1111142FB0000000DD1114 /* HLSDownloader.swift */,
+				ECA260022026101500000001 /* DownloadBackgroundExecution.swift */,
+				ECA200022026101500000001 /* HLSBackgroundTransport.swift */,
 				AA5555502F10000000AA5550 /* CatalogManager.swift */,
 				PROFR0100000000000000001 /* ProfileManager.swift */,
 				PSSFR0100000000000000001 /* ProfileSettingsStore.swift */,
@@ -1630,6 +1668,25 @@
 			productReference = TVUIPR0100000000000000001 /* Eclipse-tvOSUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		E2EUITG0100000000000000001 /* EclipseUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E2EUICL0100000000000000001 /* Build configuration list for PBXNativeTarget "EclipseUITests" */;
+			buildPhases = (
+				E2EUIPH0100000000000000001 /* Sources */,
+				E2EUIPH0200000000000000002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E2EUIDP0100000000000000001 /* PBXTargetDependency */,
+			);
+			name = EclipseUITests;
+			packageProductDependencies = (
+			);
+			productName = EclipseUITests;
+			productReference = E2EUIPR0100000000000000001 /* EclipseUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		TVTG00010000000000000001 /* Eclipse-tvOS */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = TVCL00010000000000000001 /* Build configuration list for PBXNativeTarget "Eclipse-tvOS" */;
@@ -1708,6 +1765,10 @@
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = TVTG00010000000000000001;
 					};
+					E2EUITG0100000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 13F0725A2E4B2D3300EF90EB;
+					};
 				};
 			};
 			buildConfigurationList = 13F072562E4B2D3300EF90EB /* Build configuration list for PBXProject "Eclipse" */;
@@ -1737,6 +1798,7 @@
 				TVTG00010000000000000001 /* Eclipse-tvOS */,
 				TVUTTG0100000000000000001 /* Eclipse-tvOSTests */,
 				TVUITG0100000000000000001 /* Eclipse-tvOSUITests */,
+				E2EUITG0100000000000000001 /* EclipseUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -1860,6 +1922,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				TVUIBF0100000000000000001 /* EclipseTVRemoteSmokeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E2EUIPH0100000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E2EUIBF0100000000000000001 /* StreamSelectionFlowUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2070,6 +2140,8 @@
 				DD1111112FB0000000DD1111 /* DownloadManager.swift in Sources */,
 				DLPATHBF100000000000000001 /* DownloadPathIdentityPolicy.swift in Sources */,
 				DD1111152FB0000000DD1115 /* HLSDownloader.swift in Sources */,
+				ECA260012026101500000001 /* DownloadBackgroundExecution.swift in Sources */,
+				ECA200012026101500000001 /* HLSBackgroundTransport.swift in Sources */,
 				DD2222222FB0000000DD2222 /* DownloadsView.swift in Sources */,
 				DD4444442FB0000000DD4444 /* DownloadedShowDetailView.swift in Sources */,
 				AF00000000000000000000A1 /* AppHub.swift in Sources */,
@@ -2102,6 +2174,7 @@
 				13E1EDE82ED9E66000087629 /* MainMenu.swift in Sources */,
 				13E1EDE32ED9E66000087629 /* readerSettingsView.swift in Sources */,
 				13F0725F2E4B2D3300EF90EB /* SoraApp.swift in Sources */,
+				ECA100012026101400000001 /* DisplayRefreshSettings.swift in Sources */,
 				AD20000B2FE2000000AD200B /* Localization.swift in Sources */,
 				13F187AD2E6F38CE00747F7E /* LibraryItem.swift in Sources */,
 				13F187B02E6F38CE00747F7E /* CreateCollectionView.swift in Sources */,
@@ -2277,6 +2350,11 @@
 			target = TVTG00010000000000000001 /* Eclipse-tvOS */;
 			targetProxy = TVUIPX0100000000000000001 /* PBXContainerItemProxy */;
 		};
+		E2EUIDP0100000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 13F0725A2E4B2D3300EF90EB /* Eclipse */;
+			targetProxy = E2EUIPX0100000000000000001 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -2400,6 +2478,45 @@
 				TARGETED_DEVICE_FAMILY = 3;
 				TEST_TARGET_NAME = "Eclipse-tvOS";
 				TVOS_DEPLOYMENT_TARGET = 17.5;
+			};
+			name = Release;
+		};
+		E2EUICF0100000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "${DEVELOPMENT_TEAM}";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "${BUNDLE_IDENTIFIER}.UITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Eclipse;
+			};
+			name = Debug;
+		};
+		E2EUICF0200000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "${DEVELOPMENT_TEAM}";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "${BUNDLE_IDENTIFIER}.UITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Eclipse;
 			};
 			name = Release;
 		};
@@ -2531,7 +2648,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -2589,7 +2706,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
@@ -2743,6 +2860,15 @@
 			buildConfigurations = (
 				TVUICF0100000000000000001 /* Debug */,
 				TVUICF0200000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E2EUICL0100000000000000001 /* Build configuration list for PBXNativeTarget "EclipseUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E2EUICF0100000000000000001 /* Debug */,
+				E2EUICF0200000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

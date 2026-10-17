@@ -512,6 +512,18 @@ struct SettingsView: View {
 
                 GlassSection(header: "Basic") {
                     VStack(spacing: 0) {
+                        NavigationLink(destination: ApplicationLanguageSettingsView()) {
+                            GlassSettingsRow(icon: "globe", iconColor: .blue, title: "Language")
+                        }
+                        .buttonStyle(.plain)
+                        GlassDivider()
+#if os(iOS)
+                        NavigationLink(destination: DisplayRefreshSettingsView()) {
+                            GlassSettingsRow(icon: "speedometer", iconColor: .cyan, title: "Display Refresh Rate")
+                        }
+                        .buttonStyle(.plain)
+                        GlassDivider()
+#endif
                         NavigationLink(destination: settingsSearchableContent(PerformanceModeSettingsView())) {
                             GlassSettingsRow(icon: "bolt.fill", iconColor: .yellow, title: "Performance Mode") {
                                 HStack(spacing: 4) {
@@ -2158,6 +2170,7 @@ private struct NotificationHistorySettingsRow: View {
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter
@@ -2230,6 +2243,7 @@ private struct NotificationEpisodeReminderSettingsRow: View {
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = LocalizationManager.selectedLocale
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter

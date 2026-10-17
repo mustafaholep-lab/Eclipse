@@ -82,7 +82,7 @@ struct GlassSettingsRow<Trailing: View>: View {
         HStack(spacing: 12) {
             settingsIcon
 
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(rowTitleFont)
                 .foregroundColor(isTvOS ? Color.primary : Color.white)
 
@@ -176,7 +176,7 @@ struct GlassSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let header = header {
-                Text(header)
+                Text(LocalizedStringKey(header))
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundColor(EclipseTheme.shared.sectionHeaderColor)
@@ -263,7 +263,7 @@ struct GlassDetailRow<Trailing: View>: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .font(ExperimentalFeatureState.isEnabledAtLaunch ? .body.weight(.medium) : .body)
                     .foregroundColor(isTvOS ? Color.primary : Color.white)
 
@@ -299,7 +299,7 @@ struct GlassSliderRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
+                    Text(LocalizedStringKey(title))
                         .font(.body.weight(.medium))
                         .foregroundColor(.white)
                     if let subtitle {
@@ -358,7 +358,7 @@ struct GlassSelectionRow: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
+                    Text(LocalizedStringKey(title))
                         .font(ExperimentalFeatureState.isEnabledAtLaunch ? .body.weight(.medium) : .body)
                         .foregroundColor(isTvOS ? Color.primary : Color.white)
                     if let subtitle {
@@ -418,7 +418,7 @@ struct EclipseSectionHeader: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(EclipseType.sectionHeader)
                 .foregroundColor(.white)
                 .lineLimit(1)
@@ -479,7 +479,7 @@ struct EclipseEmptyState: View {
                 .font(.system(size: 46, weight: .regular))
                 .foregroundColor(.white.opacity(0.5))
 
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.system(size: isTvOS ? 34 : 19, weight: .semibold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
