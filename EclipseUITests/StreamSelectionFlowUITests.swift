@@ -125,15 +125,29 @@ final class StreamSelectionFlowUITests: XCTestCase {
         pickStream(app, index: 1)
         expectPlayer(app, step: "stream before in-player change (mp4)")
 
-        let services = app.buttons["player.services"]
+        let services = app.buttons.matching(NSPredicate(
+            format: "identifier IN %@", ["player.services", "AVPlayer.Services"]
+        )).firstMatch
         var opened = false
         for _ in 0..<3 where !opened {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            if services.waitForExistence(timeout: 3), services.isHittable {
+            if services.exists, services.isHittable {
                 services.tap()
                 opened = true
+            } else {
+                // Centre taps control play/pause and intentionally do not reveal
+                // the controls. Tap the video outside that central gesture area.
+                let surface = app.descendants(matching: .any).matching(NSPredicate(
+                    format: "identifier IN %@", ["player.mpv", "player.avplayer"]
+                )).firstMatch
+                XCTAssertTrue(surface.exists, "Player closed before source selection")
+                surface.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.4)).tap()
+                if services.waitForExistence(timeout: 3), services.isHittable {
+                    services.tap()
+                    opened = true
+                }
             }
         }
+        if !opened { attachHierarchy(app, name: "in-player source button missing") }
         XCTAssertTrue(opened, "Player source button never became tappable")
         openStreamPicker(app)
         pickStream(app, index: 0)

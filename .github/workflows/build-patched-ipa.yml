@@ -66,7 +66,7 @@ jobs:
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
-          ECLIPSE_RELEASE_VERSION = 6.0.1
+          ECLIPSE_RELEASE_VERSION = 6.0.2
           ECLIPSE_SYNC_SERVER_URL = wss:/$()/eclipse-sync.onrender.com
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =
@@ -177,7 +177,7 @@ jobs:
           set -euo pipefail
           PACKAGE_ROOT="$RUNNER_TEMP/unsigned-ipa"
           OUTPUT_DIR="$GITHUB_WORKSPACE/build"
-          IPA_PATH="$OUTPUT_DIR/Eclipse-Custom-6.0.1-unsigned.ipa"
+          IPA_PATH="$OUTPUT_DIR/Eclipse-Custom-6.0.2-unsigned.ipa"
 
           rm -rf "$PACKAGE_ROOT" "$OUTPUT_DIR"
           mkdir -p "$PACKAGE_ROOT/Payload" "$OUTPUT_DIR"
@@ -194,7 +194,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: Eclipse-Custom-6.0.1-${{ github.run_number }}
+          name: Eclipse-Custom-6.0.2-${{ github.run_number }}
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
           retention-days: 7
@@ -205,7 +205,7 @@ jobs:
         run: |
           set -euo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/EclipsePatched.xcarchive"
-          DSYM_ZIP="$GITHUB_WORKSPACE/build/Eclipse-Custom-6.0.1-dSYMs.zip"
+          DSYM_ZIP="$GITHUB_WORKSPACE/build/Eclipse-Custom-6.0.2-dSYMs.zip"
           test -d "$ARCHIVE_PATH/dSYMs"
           (cd "$ARCHIVE_PATH" && zip -qry "$DSYM_ZIP" dSYMs)
           echo "DSYM_ZIP=$DSYM_ZIP" >> "$GITHUB_ENV"
@@ -213,7 +213,7 @@ jobs:
       - name: Upload debug symbols
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: Eclipse-Custom-6.0.1-${{ github.run_number }}-dSYMs
+          name: Eclipse-Custom-6.0.2-${{ github.run_number }}-dSYMs
           path: ${{ env.DSYM_ZIP }}
           if-no-files-found: error
           retention-days: 30
@@ -254,7 +254,7 @@ jobs:
           APP_NAME = Eclipse Patched
           BUNDLE_IDENTIFIER = app.Eclipse.Soupy.Patched
           DEVELOPMENT_TEAM = ANMK3Y568U
-          ECLIPSE_RELEASE_VERSION = 6.0.1
+          ECLIPSE_RELEASE_VERSION = 6.0.2
           ECLIPSE_SYNC_SERVER_URL = wss:/$()/eclipse-sync.onrender.com
           CODE_SIGN_ENTITLEMENTS =
           ICLOUD_CONTAINER_ID =

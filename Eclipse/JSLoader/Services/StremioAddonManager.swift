@@ -810,6 +810,9 @@ class StremioAddonManager: ObservableObject {
     /// Runs both lookups concurrently in a frame of their own. As `async let`
     /// children of `fetchSubtitlesFromAddons` they stayed allocated until that
     /// function returned, past the task group created after them.
+    /// Keep this boundary in optimized builds: the affected toolchain aborted
+    /// while deallocating the async-let frame after the subtitle task group.
+    @inline(never)
     private func resolveSubtitleLookupIdentity(
         tmdbId: Int,
         imdbId: String?,
